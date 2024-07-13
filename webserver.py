@@ -76,7 +76,7 @@ async def run_webserver():
             log(f'Writing {full_input_filename} to {full_output_dirname} with channels {channels}')
 
             convert_and_save_brainflow_file(log, full_input_filename, full_output_filename, channels)
-            load_mne_fif_and_run_yasa(log, full_input_filename)
+            load_mne_fif_and_run_yasa(log, full_output_filename)
             upload_dir_to_gcs(log, 'examined-life-eeg', full_output_dirname, od)
 
         elif msg['command'] == 'convert_to_fif':
