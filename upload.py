@@ -3,9 +3,12 @@ import os
 
 # gcloud auth login
 # gcloud auth application-default login
-# The latter creates C:\Users\graha\AppData\Roaming\gcloud\application_default_credentials.json
+# The latter creates
+# Windows: %USERPROFILE%\AppData\Roaming\gcloud\application_default_credentials.json
+# Linux: $HOME/.config/gcloud/application_default_credentials.json
 # This is the ADC configuration
-# $HOME/.config/gcloud/application_default_credentials.json
+# Copy that to the target server:
+# scp %USERPROFILE%\AppData\Roaming\gcloud\application_default_credentials.json username@hostname:.config/gcloud/
 
 def upload_dir_to_gcs(log, bucket_name, source_dir, destination_blob_prefix):
     """Uploads a directory to a GCS bucket."""
@@ -25,7 +28,7 @@ def upload_dir_to_gcs(log, bucket_name, source_dir, destination_blob_prefix):
 
 
 def upload_file_to_gcs(log, bucket_name, full_local_filename, prefix):
-    """Uploads a directory to a GCS bucket."""
+    """Uploads a file to a GCS bucket."""
     storage_client = storage.Client()
     bucket = storage_client.bucket(bucket_name)
 
@@ -35,7 +38,7 @@ def upload_file_to_gcs(log, bucket_name, full_local_filename, prefix):
     blob = bucket.blob(cloud_storage_name)
 
     log(f"{full_local_filename} uploading to bucket {bucket_name}: {cloud_storage_name}")
-    blob.upload_from_filename(full_local_filename)
+    blob.upload_from_filename(full_local_filename, timeout=600)
 
 
 
