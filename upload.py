@@ -39,7 +39,3 @@ def upload_file_to_gcs(log, bucket_name, full_local_filename, prefix):
 
     log(f"{full_local_filename} uploading to bucket {bucket_name}: {cloud_storage_name}")
     blob.upload_from_filename(full_local_filename, timeout=600)
-
-
-
-

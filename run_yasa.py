@@ -91,7 +91,11 @@ def run_yasa_report(log, input_file_without_ext: str, raw: Raw):
     for i, channel in enumerate(channels):
         df_pred_ch = get_sleep_stages(filtered, data, channels, channel, sfreq);
         out = input_file_without_ext + f'.sleep_stages.{channel}.csv'
+        df_pred_ch['EpochTime'] = (df_pred_ch['Epoch'] * 30) + start_date.timestamp()
+        df_pred_ch['Timestamp'] = pd.to_datetime(df_pred_ch['EpochTime'], unit='s').dt.tz_localize('UTC').dt.tz_convert('Europe/London')
+        df_pred_ch.drop('EpochTime', axis=1, inplace=True)
         df_pred_ch.to_csv(out, index=False)
+        df_pred_ch.drop('Timestamp', axis=1, inplace=True)
         plot_spectro(input_file_without_ext, data, raw, channels, sfreq, df_pred_ch, channel)
         df_pred_ch.columns = [f"{channel}_{col}" if col not in ['Epoch'] else col for col in df_pred_ch.columns]
         all_dfs.append(df_pred_ch)
