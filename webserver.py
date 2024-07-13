@@ -8,7 +8,7 @@ from datetime import datetime
 
 from convert import convert_and_save_brainflow_file
 from run_yasa import load_mne_fif_and_run_yasa
-from upload import upload_dir_to_gcs
+from upload import upload_dir_to_gcs, upload_file_to_gcs
 from websocket import WebsocketHandler
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -73,11 +73,12 @@ async def run_webserver():
             full_output_dirname = output_dir(filename)
             full_output_filename = str(os.path.join(full_output_dirname, 'raw.fif'))
 
-            log(f'Writing {full_input_filename} to {full_output_dirname} with channels {channels}')
+            log(f'Input {full_input_filename} to output dir {full_output_dirname} with channels {channels}')
 
             convert_and_save_brainflow_file(log, full_input_filename, full_output_filename, channels)
+            upload_file_to_gcs(log, 'examined-life-input-eeg-raw', full_output_filename, od)
             load_mne_fif_and_run_yasa(log, full_output_filename)
-            upload_dir_to_gcs(log, 'examined-life-eeg', full_output_dirname, od)
+            upload_dir_to_gcs(log, 'examined-life-derived-eeg', full_output_dirname, od)
 
         elif msg['command'] == 'convert_to_fif':
             data = msg['data']
@@ -99,13 +100,13 @@ async def run_webserver():
             data = msg['data']
             dir = data['dir']
             full_input_dirname = str(os.path.join(args.data_dir, dir))
-            upload_dir_to_gcs(log, 'examined-life-eeg', full_input_dirname, dir)
+            upload_dir_to_gcs(log, 'examined-life-derived-eeg', full_input_dirname, dir)
 
         elif msg['command'] == 'quit':
             done = True
 
         else:
-            logger.warning('Unknown command')
+            log('Unknown command')
 
 
     websocket_handler = WebsocketHandler(on_websocket_message)
