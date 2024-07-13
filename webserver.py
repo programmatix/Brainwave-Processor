@@ -19,6 +19,8 @@ async def run_webserver():
     parser = argparse.ArgumentParser()
     parser.add_argument('-d', '--data_dir', type=str, required=True, help='The Brainflow board ID to connect to')
     parser.add_argument('-wp', '--websocket_port', default=9090, type=int, help='Websocket port')
+    parser.add_argument('--ssl_cert', type=str, help='SSL cert file for websocket server')
+    parser.add_argument('--ssl_key', type=str, help='SSL key file for websocket server')
     args = parser.parse_args()
 
     logger.setLevel(logging.DEBUG)
@@ -109,7 +111,7 @@ async def run_webserver():
             log('Unknown command')
 
 
-    websocket_handler = WebsocketHandler(on_websocket_message)
+    websocket_handler = WebsocketHandler(args.ssl_cert, args.ssl_key, on_websocket_message)
 
     websocket_server_task = None
     if args.websocket_port:
