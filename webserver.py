@@ -60,8 +60,14 @@ async def run_webserver():
                 file_size = os.path.getsize(file_path)
                 isfile = os.path.isfile(file_path)
                 files_info.append({'name': file, 'size': file_size, 'isfile': isfile})
+            try:
+                diskusage = os.statvfs(args.data_dir).f_frsize * os.statvfs(args.data_dir).f_blocks
+            except e:
+                log("Error getting disk usage " + str(e))
+                diskusage = 0
             asyncio.create_task(websocket_handler.broadcast_websocket_message(json.dumps({
                 'address': 'files',
+                'diskusage': diskusage,
                 'data': files_info
             })))
 
@@ -103,6 +109,21 @@ async def run_webserver():
             dir = data['dir']
             full_input_dirname = str(os.path.join(args.data_dir, dir))
             upload_dir_to_gcs(log, 'examined-life-derived-eeg', full_input_dirname, dir)
+
+        elif msg['command'] == 'delete':
+            data = msg['data']
+            filename = data['file']
+            full_input_filename = str(os.path.join(args.data_dir, filename))
+            os.remove(full_input_filename)
+
+        elif msg['command'] == 'delete_all_small_files':
+            for file in os.listdir(args.data_dir):
+                file_path = os.path.join(args.data_dir, file)
+                file_size = os.path.getsize(file_path)
+                isfile = os.path.isfile(file_path)
+                if isfile and file_size < 100_000_000:
+                    log(f"Deleting small file {file_path}")
+                    # os.remove(file_path)
 
         elif msg['command'] == 'quit':
             done = True
