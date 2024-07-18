@@ -5,6 +5,7 @@ import logging
 import os
 import traceback
 from datetime import datetime
+import shutil
 
 from convert import convert_and_save_brainflow_file
 from run_yasa import load_mne_fif_and_run_yasa
@@ -57,7 +58,12 @@ async def run_webserver():
             files_info = []
             for file in os.listdir(args.data_dir):
                 file_path = os.path.join(args.data_dir, file)
-                file_size = os.path.getsize(file_path)
+                if os.path.isfile(file_path):
+                    file_size = os.path.getsize(file_path)
+                elif os.path.isdir(file_path):
+                    file_size = sum(os.path.getsize(os.path.join(dirpath, filename)) for dirpath, dirnames, filenames in os.walk(file_path) for filename in filenames)
+                else:
+                    file_size = 0  # Or handle the case where the path is neither a file nor a directory
                 isfile = os.path.isfile(file_path)
                 lastmodified = os.path.getmtime(file_path)
                 files_info.append({'name': file, 'size': file_size, 'isfile': isfile, 'lastmodified': lastmodified})
@@ -118,7 +124,12 @@ async def run_webserver():
             data = msg['data']
             filename = data['file']
             full_input_filename = str(os.path.join(args.data_dir, filename))
-            os.remove(full_input_filename)
+            if os.path.isfile(full_input_filename):
+                os.remove(full_input_filename)
+            elif os.path.isdir(full_input_filename):
+                shutil.rmtree(full_input_filename)
+            else:
+                log(f"Path does not exist: {full_input_filename}")
 
         elif msg['command'] == 'delete_all_small_files':
             for file in os.listdir(args.data_dir):
@@ -126,7 +137,7 @@ async def run_webserver():
                 file_size = os.path.getsize(file_path)
                 isfile = os.path.isfile(file_path)
                 if isfile and file_size < 100_000_000:
-                    log(f"Deleting small file {file_path}")
+                    log(f"Deleting small file (size {file_size}): {file_path}")
                     os.remove(file_path)
 
         elif msg['command'] == 'quit':

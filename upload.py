@@ -24,7 +24,7 @@ def upload_dir_to_gcs(log, bucket_name, source_dir, destination_blob_prefix):
             blob = bucket.blob(blob_path)
 
             log(f"{local_path} uploading to {blob_path}")
-            blob.upload_from_filename(local_path)
+            blob.upload_from_filename(local_path, timeout=600)
 
 
 def upload_file_to_gcs(log, bucket_name, full_local_filename, prefix):
