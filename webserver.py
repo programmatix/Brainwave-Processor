@@ -59,15 +59,19 @@ async def run_webserver():
                 file_path = os.path.join(args.data_dir, file)
                 file_size = os.path.getsize(file_path)
                 isfile = os.path.isfile(file_path)
-                files_info.append({'name': file, 'size': file_size, 'isfile': isfile})
+                lastmodified = os.path.getmtime(file_path)
+                files_info.append({'name': file, 'size': file_size, 'isfile': isfile, 'lastmodified': lastmodified})
             try:
                 diskusage = os.statvfs(args.data_dir).f_frsize * os.statvfs(args.data_dir).f_blocks
+                diskremaining = os.statvfs(args.data_dir).f_frsize * os.statvfs(args.data_dir).f_bavail
             except e:
                 log("Error getting disk usage " + str(e))
                 diskusage = 0
+                diskremaining = 0
             asyncio.create_task(websocket_handler.broadcast_websocket_message(json.dumps({
                 'address': 'files',
                 'diskusage': diskusage,
+                'diskremaining': diskremaining,
                 'data': files_info
             })))
 
@@ -123,7 +127,7 @@ async def run_webserver():
                 isfile = os.path.isfile(file_path)
                 if isfile and file_size < 100_000_000:
                     log(f"Deleting small file {file_path}")
-                    # os.remove(file_path)
+                    os.remove(file_path)
 
         elif msg['command'] == 'quit':
             done = True
