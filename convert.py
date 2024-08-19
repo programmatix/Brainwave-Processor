@@ -28,7 +28,7 @@ def convert_and_save_brainflow_file(log, input_file: str, output_file: str, chan
 
     column_names = ['sampleIdx'] + channels + ['timestamp']
     idx_and_eeg_channels_and_timestamp.columns = column_names
-    idx_and_eeg_channels_and_timestamp['datetime'] = pd.to_datetime(idx_and_eeg_channels_and_timestamp['timestamp'],unit="s").dt.tz_localize('UTC')
+    idx_and_eeg_channels_and_timestamp['datetime'] = pd.to_datetime(idx_and_eeg_channels_and_timestamp['timestamp'],unit="ms").dt.tz_localize('UTC')
 
     eeg_channels_only = idx_and_eeg_channels_and_timestamp[channels]
 
@@ -47,10 +47,16 @@ def convert_and_save_brainflow_file(log, input_file: str, output_file: str, chan
 
     log(f"Info {info}")
 
-    # Saving EDF is expensive and generally gets killed, so we use FIF
-    log(f"Saving to {output_file}")
-
-    toSave.save(output_file, overwrite=True)
+    if output_file.endswith(".fif"):
+        log(f"Saving to {output_file}")
+        toSave.save(output_file, overwrite=True)
+        return toSave
+    elif output_file.endswith(".edf"):
+        log(f"Saving to {output_file}")
+        mne.export.export_raw(output_file, toSave, overwrite=True)
+        return toSave
+    else:
+        raise Exception(f"Unknown file type {output_file}")
 
     return toSave
 

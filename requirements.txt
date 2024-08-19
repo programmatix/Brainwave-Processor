@@ -9,3 +9,4 @@ influxdb
 paho-mqtt
 websockets
 google-cloud-storage
+edfio

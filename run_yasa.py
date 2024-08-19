@@ -1,5 +1,7 @@
+import json
 import os
 
+import pandas
 from mne.io import Raw
 
 import logging
@@ -14,10 +16,11 @@ import yasa
 import matplotlib.pyplot as plt
 from functools import reduce
 
+from yasa_helpers import sleep_stability, spindles, slow_waves, channel_comparison
 
 
-def get_sleep_stages(filtered, data, channels: list[str], channel_name: str, sfreq: int):
-    channel_data = data[channels.index(channel_name)]
+def get_sleep_stages(filtered: Raw, channels: list[str], channel_name: str, sfreq: int):
+    #channel_data = data[channels.index(channel_name)]
 
 
     # Slightly unclear whether to use filtered data or not, with parts of the YASA docs saying it's both not recommended but also optional.
@@ -26,26 +29,15 @@ def get_sleep_stages(filtered, data, channels: list[str], channel_name: str, sfr
     y_pred = sls.predict()
     hypno_pred = yasa.hypno_str_to_int(y_pred) # Convert "W" to 0, "N1" to 1, etc
 
-    # counts, probs = yasa.transition_matrix(hypno_pred)
-    # print(probs.round(3))
-    #
-    # sleep_stability = np.diag(probs.loc[2:, 2:]).mean().round(3)
-    # print (sleep_stability)
-    #
-    # ss = yasa.sleep_statistics(hypno_pred, sf_hyp=1/30)
-    # print(ss)
-    #
     confidence = sls.predict_proba().max(1)
-
-    # sp = yasa.spindles_detect(data, sfreq)
-    # print(sp)
-
 
     df_pred = pd.DataFrame({'Stage': y_pred, 'Confidence': confidence})
 
     df_pred['Epoch'] = range(len(df_pred))
 
-    return df_pred
+    stability = sleep_stability(hypno_pred)
+
+    return (df_pred, stability)
 
 
 def load_mne_fif_and_run_yasa(log, input_file: str):
@@ -67,6 +59,21 @@ def plot_spectro(input_file_without_ext, data, raw, channels: list[str], sfreq: 
         yasa.plot_hypnogram(hypno_up, sfreq)
 
 
+# MNE is in volts.  Filter it and scale it to uV
+def get_filtered_and_scaled_data(raw: Raw) -> (Raw, Raw):
+    filtered = raw.copy()
+
+    # AASM recommendation
+    filtered.filter(0.3, 35)
+
+    filtered.notch_filter(freqs=[50,100])
+
+    # Bit confused about this, something to do with MNE storing in volts.  But YASA complains it doesn't look uV if I don't do this.
+    data = filtered.get_data(units="uV") / 1_000_000
+    filtered._data = data
+
+    return filtered
+
 
 def run_yasa_report(log, input_file_without_ext: str, raw: Raw):
     channels = raw.info['ch_names']
@@ -75,28 +82,23 @@ def run_yasa_report(log, input_file_without_ext: str, raw: Raw):
 
     raw.plot_psd(average=False).savefig(input_file_without_ext + '.pre_filter_psd_plot.png', dpi=300)
 
-    filtered = raw.copy()
-
-    # AASM recommendation
-    filtered.filter(0.3, 35)
-
-    filtered.notch_filter(freqs=[50,100])
-
+    filtered = get_filtered_and_scaled_data(raw)
     filtered.plot_psd(average=False).savefig(input_file_without_ext + '.post_filter_psd_plot.png', dpi=300)
 
-    data = filtered.get_data(units="uV")
-
     all_dfs = []
+    json_out = {}
+    json_out['Stability'] = {}
 
     for i, channel in enumerate(channels):
-        df_pred_ch = get_sleep_stages(filtered, data, channels, channel, sfreq);
+        df_pred_ch, stability_ch = get_sleep_stages(filtered, channels, channel, sfreq);
+        json_out['Stability'][channel] = stability_ch
         out = input_file_without_ext + f'.sleep_stages.{channel}.csv'
         df_pred_ch['EpochTime'] = (df_pred_ch['Epoch'] * 30) + start_date.timestamp()
         df_pred_ch['Timestamp'] = pd.to_datetime(df_pred_ch['EpochTime'], unit='s').dt.tz_localize('UTC').dt.tz_convert('Europe/London')
         df_pred_ch.drop('EpochTime', axis=1, inplace=True)
         df_pred_ch.to_csv(out, index=False)
         df_pred_ch.drop('Timestamp', axis=1, inplace=True)
-        plot_spectro(input_file_without_ext, data, raw, channels, sfreq, df_pred_ch, channel)
+        plot_spectro(input_file_without_ext, filtered.get_data(units='uV'), raw, channels, sfreq, df_pred_ch, channel)
         df_pred_ch.columns = [f"{channel}_{col}" if col not in ['Epoch'] else col for col in df_pred_ch.columns]
         all_dfs.append(df_pred_ch)
 
@@ -137,6 +139,43 @@ def run_yasa_report(log, input_file_without_ext: str, raw: Raw):
     out = input_file_without_ext + f'.sleep_stages.csv'
     log(f"Writing to {out}")
     df.to_csv(out, index=False)
+
+    try:
+        json_out['Statistics'] = yasa.sleep_statistics(df['StageInt'], sf_hyp=1/30)
+    except Exception as e:
+        log("Failed getting statistics: " + str(e))
+        pass
+    try:
+        json_out['Stability']['Aggregated'] = sleep_stability(df['StageInt'])
+    except Exception as e:
+        log("Failed getting sleep_stability: " + str(e))
+        pass
+    try:
+        json_out['Spindles'] = spindles(filtered, input_file_without_ext)
+    except Exception as e:
+        log("Failed getting spindles: " + str(e))
+        pass
+    try:
+        json_out['SlowWaves'] = slow_waves(filtered, input_file_without_ext)
+    except Exception as e:
+        log("Failed getting slow_waves: " + str(e))
+        pass
+    try:
+        json_out['ChannelAgreement'] = channel_comparison(df, channels)
+    except Exception as e:
+        log("Failed getting channel_comparison: " + str(e))
+        pass
+
+    try:
+        with open(input_file_without_ext + '.sleep.json', 'w') as json_file:
+            json.dump(json_out, json_file, indent=4)
+    except Exception as e:
+        log("Failed writing JSON: " + str(e))
+        pass
+
+    log("All done!")
+
+    return df, json_out
 
 
 if __name__ == '__main__':

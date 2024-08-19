@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import traceback
 from datetime import datetime
 import shutil
@@ -68,9 +69,10 @@ async def run_webserver():
                 lastmodified = os.path.getmtime(file_path)
                 files_info.append({'name': file, 'size': file_size, 'isfile': isfile, 'lastmodified': lastmodified})
             try:
-                diskusage = os.statvfs(args.data_dir).f_frsize * os.statvfs(args.data_dir).f_blocks
-                diskremaining = os.statvfs(args.data_dir).f_frsize * os.statvfs(args.data_dir).f_bavail
-            except e:
+                diskusage_info = shutil.disk_usage(args.data_dir)
+                diskusage = diskusage_info.total
+                diskremaining = diskusage_info.free
+            except Exception as e:
                 log("Error getting disk usage " + str(e))
                 diskusage = 0
                 diskremaining = 0
@@ -98,12 +100,22 @@ async def run_webserver():
             load_mne_fif_and_run_yasa(log, full_output_filename)
             upload_dir_to_gcs(log, 'examined-life-derived-eeg', full_output_dirname, od)
 
+        # Saving EDF is expensive and generally gets killed, so we use FIF
         elif msg['command'] == 'convert_to_fif':
             data = msg['data']
             filename = data['file']
             channels = data['channels']
             full_input_filename = str(os.path.join(args.data_dir, filename))
             full_output_filename = str(os.path.join(output_dir(filename), 'raw.fif'))
+            log(f'Converting {full_input_filename} to {full_output_filename} with channels {channels}')
+            convert_and_save_brainflow_file(log, full_input_filename, full_output_filename, channels)
+
+        elif msg['command'] == 'convert_to_edf':
+            data = msg['data']
+            filename = data['file']
+            channels = data['channels']
+            full_input_filename = str(os.path.join(args.data_dir, filename))
+            full_output_filename = str(os.path.join(output_dir(filename), 'raw.edf'))
             log(f'Converting {full_input_filename} to {full_output_filename} with channels {channels}')
             convert_and_save_brainflow_file(log, full_input_filename, full_output_filename, channels)
 
