@@ -28,7 +28,7 @@ def convert_and_save_brainflow_file(log, input_file: str, output_file: str, chan
 
     column_names = ['sampleIdx'] + channels + ['timestamp']
     idx_and_eeg_channels_and_timestamp.columns = column_names
-    idx_and_eeg_channels_and_timestamp['datetime'] = pd.to_datetime(idx_and_eeg_channels_and_timestamp['timestamp'],unit="ms").dt.tz_localize('UTC')
+    idx_and_eeg_channels_and_timestamp['datetime'] = pd.to_datetime(idx_and_eeg_channels_and_timestamp['timestamp'],unit="s").dt.tz_localize('UTC')
 
     eeg_channels_only = idx_and_eeg_channels_and_timestamp[channels]
 
