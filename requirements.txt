@@ -10,3 +10,12 @@ paho-mqtt
 websockets
 google-cloud-storage
 edfio
+firebase-admin
+pytz
+xgboost
+lightgbm
+python-dotenv
+joblib
+catboost
+tensorflow<2.11
+keras

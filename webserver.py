@@ -130,6 +130,7 @@ async def run_webserver():
             data = msg['data']
             dir = data['dir']
             full_input_dirname = str(os.path.join(args.data_dir, dir))
+            upload_dir_to_gcs(log, 'examined-life-input-eeg-raw', full_input_dirname, dir)
             upload_dir_to_gcs(log, 'examined-life-derived-eeg', full_input_dirname, dir)
 
         elif msg['command'] == 'delete':

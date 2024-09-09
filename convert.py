@@ -8,6 +8,7 @@ from brainflow.board_shim import BoardShim, BoardIds
 from brainflow.data_filter import DataFilter
 
 from memory import garbage_collect
+import run_yasa
 
 def convert_and_save_brainflow_file(log, input_file: str, output_file: str, channels: list[str]):
     garbage_collect(log)
@@ -67,7 +68,26 @@ def convert_and_save_brainflow_file(log, input_file: str, output_file: str, chan
     else:
         raise Exception(f"Unknown file type {output_file}")
 
+    garbage_collect(log)
+
     return toSave
+
+
+def save_mne_as_downsample_edf(log, mne_filtered, input_file_without_ext):
+    resampled = mne_filtered.copy()
+    # 100 hz is very similar to 250 hz to naked eye.  50 gets too lossy.
+    resampled.resample(100, npad="auto")
+
+    mne.export.export_raw(input_file_without_ext + ".edf", resampled, overwrite=True)
+
+
+def load_mne_file(log, input_file: str) -> (mne.io.Raw, str, mne.io.Raw):
+    log(f"Reading file {input_file}")
+    raw = mne.io.read_raw_fif(input_file, preload=True)
+    log(f"Finished reading file {input_file}")
+    input_file_without_ext = os.path.splitext(input_file)[0]
+    mne_filtered = run_yasa.get_filtered_and_scaled_data(raw)
+    return raw, input_file_without_ext, mne_filtered
 
 
 if __name__ == '__main__':

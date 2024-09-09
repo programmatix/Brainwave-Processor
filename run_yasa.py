@@ -15,11 +15,20 @@ import mne
 import yasa
 import matplotlib.pyplot as plt
 from functools import reduce
+import warnings
+from sklearn.exceptions import InconsistentVersionWarning
 
 from yasa_helpers import sleep_stability, spindles, slow_waves, channel_comparison
 
 from memory import garbage_collect
 
+logging.getLogger('yasa').setLevel(logging.ERROR)
+logging.getLogger('sklearn').setLevel(logging.ERROR)
+warnings.filterwarnings("ignore", message="FigureCanvasAgg is non-interactive")
+warnings.filterwarnings("ignore", message="Channel locations not available. Disabling spatial colors.")
+warnings.filterwarnings("ignore", message="WARNING - Hypnogram is SHORTER than data")
+warnings.filterwarnings("ignore", category=InconsistentVersionWarning)
+mne.set_log_level('ERROR')
 
 
 def get_sleep_stages(filtered: Raw, channels: list[str], channel_name: str, sfreq: int):
@@ -72,13 +81,13 @@ def get_filtered_and_scaled_data(raw: Raw) -> (Raw, Raw):
     filtered.notch_filter(freqs=[50,100])
 
     # Bit confused about this, something to do with MNE storing in volts.  But YASA complains it doesn't look uV if I don't do this.
-    data = filtered.get_data(units="uV") / 1_000_000
+    data = filtered.get_data(units=dict(eeg="uV")) / 1_000_000
     filtered._data = data
 
     return filtered
 
 
-def run_yasa_report(log, input_file_without_ext: str, raw: Raw):
+def run_yasa_report(log, input_file_without_ext: str, raw: Raw, skip: bool = False):
     garbage_collect(log)
 
     channels = raw.info['ch_names']
@@ -145,54 +154,55 @@ def run_yasa_report(log, input_file_without_ext: str, raw: Raw):
     log(f"Writing to {out}")
     df.to_csv(out, index=False)
 
-    # Something in the following steps is OOM-ing, so trying forcing a GC between each step.
-    garbage_collect(log)
-    log("Processing sleep statistics")
-    try:
-        json_out['Statistics'] = yasa.sleep_statistics(df['StageInt'], sf_hyp=1/30)
-    except Exception as e:
-        log("Failed getting statistics: " + str(e))
-        pass
-    garbage_collect(log)
-    log("Processing sleep stability")
-    try:
-        json_out['Stability']['Aggregated'] = sleep_stability(df['StageInt'])
-    except Exception as e:
-        log("Failed getting sleep_stability: " + str(e))
-        pass
+    if not skip:
+        garbage_collect(log)
+        log("Processing sleep statistics")
+        try:
+            json_out['Statistics'] = yasa.sleep_statistics(df['StageInt'], sf_hyp=1/30)
+        except Exception as e:
+            log("Failed getting statistics: " + str(e))
+            pass
 
-    # This is the main OOM culprit
-    garbage_collect(log)
-    # try:
-    #     json_out['Spindles'] = spindles(filtered, input_file_without_ext)
-    # except Exception as e:
-    #     log("Failed getting spindles: " + str(e))
-    #     pass
-    # log("Step 4")
-    garbage_collect(log)
+        garbage_collect(log)
+        log("Processing sleep stability")
 
-    log("Processing slow waves")
-    try:
-        json_out['SlowWaves'] = slow_waves(filtered, input_file_without_ext)
-    except Exception as e:
-        log("Failed getting slow_waves: " + str(e))
-        pass
+        try:
+            json_out['Stability']['Aggregated'] = sleep_stability(df['StageInt'])
+        except Exception as e:
+            log("Failed getting sleep_stability: " + str(e))
+            pass
 
-    garbage_collect(log)
-    try:
-        json_out['ChannelAgreement'] = channel_comparison(df, channels)
-    except Exception as e:
-        log("Failed getting channel_comparison: " + str(e))
-        pass
+        # Temporarily removing as it is very memory intensive and is OOMing on my Rasperberry Pi 4GB..
+        # try:
+        #     json_out['Spindles'] = spindles(filtered, input_file_without_ext)
+        # except Exception as e:
+        #     log("Failed getting spindles: " + str(e))
+        #     pass
 
-    try:
-        with open(input_file_without_ext + '.sleep.json', 'w') as json_file:
-            json.dump(json_out, json_file, indent=4)
-    except Exception as e:
-        log("Failed writing JSON: " + str(e))
-        pass
+        garbage_collect(log)
 
-    log("All done!")
+        try:
+            json_out['SlowWaves'] = slow_waves(filtered, input_file_without_ext)
+        except Exception as e:
+            log("Failed getting slow_waves: " + str(e))
+            pass
+
+        garbage_collect(log)
+
+        try:
+            json_out['ChannelAgreement'] = channel_comparison(df, channels)
+        except Exception as e:
+            log("Failed getting channel_comparison: " + str(e))
+            pass
+
+        try:
+            with open(input_file_without_ext + '.sleep.json', 'w') as json_file:
+                json.dump(json_out, json_file, indent=4)
+        except Exception as e:
+            log("Failed writing JSON: " + str(e))
+            pass
+
+    log("YASA all done!")
 
     return df, json_out
 
