@@ -60,7 +60,6 @@ def spindles(filtered: Raw, input_file_without_ext: str):
         selected_columns = summary.columns[2:]
         mean_dict = {col: row[col] for col in selected_columns}
         out[channel] = mean_dict
-
     axes = sp.plot_average(time_before=0.4, time_after=0.8, center="Peak")
     axes.get_figure().savefig(input_file_without_ext + f'.average_spindle.png', dpi=300)
 
@@ -149,5 +148,6 @@ def channel_comparison(df, channels):
             json_out['-'.join(perm)] = compare_confidence_with_third_channel(df, perm[0], perm[1], perm[2])
     else:
         json_out[channels[0] + "-" + channels[1]] = compare_confidence(df, channels[0], channels[1])
+        json_out[channels[1] + "-" + channels[0]] = compare_confidence(df, channels[1], channels[0])
 
     return json_out

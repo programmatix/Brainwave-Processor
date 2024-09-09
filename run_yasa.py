@@ -18,6 +18,9 @@ from functools import reduce
 
 from yasa_helpers import sleep_stability, spindles, slow_waves, channel_comparison
 
+from memory import garbage_collect
+
+
 
 def get_sleep_stages(filtered: Raw, channels: list[str], channel_name: str, sfreq: int):
     #channel_data = data[channels.index(channel_name)]
@@ -76,6 +79,8 @@ def get_filtered_and_scaled_data(raw: Raw) -> (Raw, Raw):
 
 
 def run_yasa_report(log, input_file_without_ext: str, raw: Raw):
+    garbage_collect(log)
+
     channels = raw.info['ch_names']
     sfreq = raw.info['sfreq']
     start_date = raw.info['meas_date']
@@ -140,26 +145,40 @@ def run_yasa_report(log, input_file_without_ext: str, raw: Raw):
     log(f"Writing to {out}")
     df.to_csv(out, index=False)
 
+    # Something in the following steps is OOM-ing, so trying forcing a GC between each step.
+    garbage_collect(log)
+    log("Processing sleep statistics")
     try:
         json_out['Statistics'] = yasa.sleep_statistics(df['StageInt'], sf_hyp=1/30)
     except Exception as e:
         log("Failed getting statistics: " + str(e))
         pass
+    garbage_collect(log)
+    log("Processing sleep stability")
     try:
         json_out['Stability']['Aggregated'] = sleep_stability(df['StageInt'])
     except Exception as e:
         log("Failed getting sleep_stability: " + str(e))
         pass
-    try:
-        json_out['Spindles'] = spindles(filtered, input_file_without_ext)
-    except Exception as e:
-        log("Failed getting spindles: " + str(e))
-        pass
+
+    # This is the main OOM culprit
+    garbage_collect(log)
+    # try:
+    #     json_out['Spindles'] = spindles(filtered, input_file_without_ext)
+    # except Exception as e:
+    #     log("Failed getting spindles: " + str(e))
+    #     pass
+    # log("Step 4")
+    garbage_collect(log)
+
+    log("Processing slow waves")
     try:
         json_out['SlowWaves'] = slow_waves(filtered, input_file_without_ext)
     except Exception as e:
         log("Failed getting slow_waves: " + str(e))
         pass
+
+    garbage_collect(log)
     try:
         json_out['ChannelAgreement'] = channel_comparison(df, channels)
     except Exception as e:

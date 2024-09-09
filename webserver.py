@@ -148,7 +148,7 @@ async def run_webserver():
                 file_path = os.path.join(args.data_dir, file)
                 file_size = os.path.getsize(file_path)
                 isfile = os.path.isfile(file_path)
-                if isfile and file_size < 100_000_000:
+                if isfile and file_size < 200_000_000:
                     log(f"Deleting small file (size {file_size}): {file_path}")
                     os.remove(file_path)
 
