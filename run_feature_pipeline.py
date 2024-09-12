@@ -8,13 +8,16 @@ from yasa import sw_detect, spindles_detect
 import convert
 import models.manual_sleep_scoring_catboost_1.manual_sleep_scoring_catboost_1 as best_model
 import run_yasa
-import sleep
 import sleep_events
 import wakings
+import sleep
 import yasa_features
 from models.microwakings_1 import microwakings1
 from models.microwakings_1.microwakings1 import PerFile
 import tensorflow as tf
+import mne
+from memory import garbage_collect
+import traceback
 
 
 def cached_pipeline(log, input_file: str):
@@ -54,20 +57,24 @@ def pipeline(log, input_file: str, waking_start_time_tz = None, waking_end_time_
     end_date = start_date + timedelta(seconds=float(raw.times[-1]))
 
     # Save as EDF
+    garbage_collect(log)
     log("Saving as EDF")
     convert.save_mne_as_downsample_edf(log, mne_filtered, input_file_without_ext)
 
     # Sleep events
+    garbage_collect(log)
     log("Loading sleep events")
     ha_events = sleep_events.load_sleep_events(log, start_date, end_date, waking_start_time_tz, waking_end_time_tz)
     output_csv_file = input_file_without_ext + ".night_events.csv"
     ha_events.to_csv(output_csv_file, index=False)
 
     # YASA features
+    garbage_collect(log)
     log("Extracting YASA features")
     yasa_feats, channel_feats_dict = yasa_features.extract_yasa_features2(log, channels, mne_filtered)
 
     # YASA slow waves
+    garbage_collect(log)
     log("Detecting slow waves")
     sw = sw_detect(mne_filtered, sfreq)
     if sw is not None:
@@ -76,18 +83,22 @@ def pipeline(log, input_file: str, waking_start_time_tz = None, waking_end_time_
         sw_summary.to_csv(output_csv_file, index=False)
 
     # YASA spindles
-    log("Detecting spindles")
-    sp = spindles_detect(mne_filtered, sfreq)
-    if sp is not None:
-        sp_summary = sp.summary()
-        output_csv_file = input_file_without_ext + ".spindle_summary.csv"
-        sp_summary.to_csv(output_csv_file, index=False)
+    # Too intensive for Pi
+    # garbage_collect(log)
+    # log("Detecting spindles")
+    # sp = spindles_detect(mne_filtered, sfreq)
+    # if sp is not None:
+    #     sp_summary = sp.summary()
+    #     output_csv_file = input_file_without_ext + ".spindle_summary.csv"
+    #     sp_summary.to_csv(output_csv_file, index=False)
 
     # YASA proper
+    garbage_collect(log)
     log("Running YASA")
     yasa_copy, json_out = run_yasa.run_yasa_report(log, input_file_without_ext, raw, True)
 
     # Combine epochs and YASA features
+    garbage_collect(log)
     df = yasa_copy.copy()
     df['epoch'] = df['Epoch']
     df.set_index('epoch', inplace=True)
@@ -95,10 +106,12 @@ def pipeline(log, input_file: str, waking_start_time_tz = None, waking_end_time_
 
     # Automated waking scoring
     # We're training a model to more accurately predict waking than YASA.  So we have to be judicious in what YASA data we use - while being aware that manually scoring waking is challenging.  So only use data where YASA is supremely confident in wakefulness.
+    garbage_collect(log)
     log("Automated waking scoring")
     df_probably_awake = wakings.get_yasa_probably_awake(log, combined_df)
 
     # Manual waking scoring
+    garbage_collect(log)
     log("Manual waking scoring")
     df_definitely_awake = wakings.get_definitely_awake(df_probably_awake, ha_events, waking_start_time_tz, waking_end_time_tz)
 
@@ -108,8 +121,13 @@ def pipeline(log, input_file: str, waking_start_time_tz = None, waking_end_time_
     df_combined_awake['ProbablyAwake'] = (df_combined_awake['DefinitelyAwake'] == True) | (df_combined_awake['YASAProbablyAwake'] == True)
 
     # Epochs that are probably sleep
+    garbage_collect(log)
     log("Epochs that are probably sleep")
     df_asleep = sleep.probably_asleep(df_combined_awake)
+
+    # Remvoe when YASA-esque model restored
+    output_csv_file = input_file_without_ext + ".with_features.csv"
+    df_asleep.to_csv(output_csv_file, index=False)
 
     # Run current best YASAesque model
     # Skipping as seems to require Fpz
@@ -119,11 +137,17 @@ def pipeline(log, input_file: str, waking_start_time_tz = None, waking_end_time_
     # df_with_predictions.to_csv(output_csv_file, index=False)
 
     # Run current best microwakings model
+    garbage_collect(log)
     log("Running microwakings model")
-    microwakings_model = tf.keras.models.load_model('./models/microwakings_1/microwakings_multi1.h5')
-    pf = PerFile(None, mne_filtered, yasa_copy, input_file_without_ext)
-    pf.prepare_model_data(microwakings1.RESAMPLING_RATE, False)
-    microwakings1.predict_file(log, microwakings_model, pf)
+    try:
+        microwakings_model = tf.keras.models.load_model('./models/microwakings_1/microwakings_multi1.h5')
+        pf = PerFile(None, mne_filtered, yasa_copy, input_file_without_ext)
+        pf.prepare_model_data(microwakings1.RESAMPLING_RATE, False)
+        microwakings1.predict_file(log, microwakings_model, pf)
+    except Exception as e:
+        log("Error running microwakings model: " + str(e))
+        log(traceback.format_exc())
+        raise e
 
     log("All done! " + input_file)
 

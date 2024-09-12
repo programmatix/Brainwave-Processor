@@ -7,6 +7,7 @@ import numpy
 import pandas as pd
 import json
 from pandas import DataFrame
+import os
 
 # Training time is horrendous, trying to reduce
 RESAMPLING_RATE = 10
@@ -32,7 +33,7 @@ class PerFile:
         self.yasa_df = yasa_df
         self.input_file_without_ext = input_file_without_ext
         # "2024-08-22"
-        self.day_or_night_of = '-'.join(input_file_without_ext.split('\\')[-2].split('-')[0:3])
+        self.day_or_night_of = '-'.join(input_file_without_ext.split(os.path.sep)[-2].split('-')[0:3])
         self.start_time = mne_filtered.info['meas_date']
         self.sfreq = mne_filtered.info['sfreq']
         self.end_time = self.start_time + timedelta(seconds=float(mne_filtered.times[-1]))
