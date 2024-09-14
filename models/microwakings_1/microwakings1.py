@@ -123,6 +123,7 @@ from scipy.signal import savgol_filter
 from sklearn.metrics import accuracy_score, precision_score, recall_score, roc_auc_score
 from sklearn.metrics import classification_report, confusion_matrix
 from tensorflow.keras.utils import Sequence
+import tensorflow as tf
 
 
 class FlexibleDaySequence(Sequence):
@@ -139,6 +140,23 @@ class FlexibleDaySequence(Sequence):
             X_list.append(file.X.reshape(-1, 1))
         X_out = np.concatenate(X_list, axis=0)
         return X_out
+
+
+
+def load_model():
+    try:
+        model = tf.keras.models.load_model('./models/microwakings_1/microwakings_multi1.h5')
+    except OSError:
+        model = tf.keras.models.load_model('./microwakings_multi1.h5')
+    # Convert from TF 2.10
+    # for layer in model.layers:
+    #     if isinstance(layer, tf.keras.layers.LSTM):
+    #         config = layer.get_config()
+    #         if 'time_major' in config:
+    #             del config['time_major']
+    #         new_layer = tf.keras.layers.LSTM.from_config(config)
+    #         model = tf.keras.models.clone_model(model, clone_function=lambda l: new_layer if l == layer else l)
+    return model
 
 
 def predict_file(log, model, f: PerFile):
@@ -291,19 +309,62 @@ def predict_file(log, model, f: PerFile):
         print("\nConfusion Matrix:")
         print(cm)
 
-    new_data = np.vstack([f.X, processed_predictions, probabilities_channel, binary_predictions, cleaned_initial_predictions, filled_predictions, cleaned_predictions])
+    export_with_microwakings(f, log, processed_predictions, probabilities_channel, binary_predictions, cleaned_initial_predictions, filled_predictions, cleaned_predictions)
+
+
+def export_with_microwakings(self: PerFile, log, processed_predictions, probabilities_channel, binary_predictions, cleaned_initial_predictions, filled_predictions, cleaned_predictions):
+    #new_data = np.vstack([processed_predictions, probabilities_channel, binary_predictions, cleaned_initial_predictions, filled_predictions, cleaned_predictions])
+    new_data = np.vstack([processed_predictions])
+
+    # Copy the channels from the original mne_filtered
+    original_channels = self.mne_filtered.get_data()
+    original_sfreq = self.mne_filtered.info['sfreq']
+    new_sfreq = 10  # Assuming the new data is at 10 Hz
+
+    # Upsample the new data channels to the original sampling rate
+    upsampled_data = []
+    for channel in new_data:
+        upsampled_channel = np.interp(
+            np.arange(0, len(channel), new_sfreq / original_sfreq),
+            np.arange(0, len(channel)),
+            channel
+        )
+        # Pad with zeros to match the length of the original data
+        print("Channel")
+        print(original_channels.shape)
+        print(len(upsampled_data))
+        padding_needed = original_channels.shape[1] - len(upsampled_channel)
+        print(f"Padding needed {padding_needed}")
+        if padding_needed > 0:
+            upsampled_channel = np.pad(upsampled_channel, (0, padding_needed), 'constant')
+        elif padding_needed < 0:
+            upsampled_channel = upsampled_channel[:padding_needed]
+        print(len(upsampled_channel))
+        upsampled_data.append(upsampled_channel)
+        print(f"Upsampled channel: {len(upsampled_channel)}")
+    upsampled_data = np.array(upsampled_data)
+
+    print(f"Orig {original_channels.shape}")
+    print(upsampled_data.shape)
+    print(len(upsampled_data))
+    print(original_channels.shape[1])
+
+    upsampled_data = upsampled_data / 1_000_000
+
+    # Combine the original and new data
+    combined_data = np.vstack([original_channels, upsampled_data])
 
     new_info = mne.create_info(
-        ch_names=[f.most_frequent_channel, 'final', 'raw', 'binary', 'cleaned1', 'filled', 'cleaned2'],
-        sfreq=10,
-        ch_types=['eeg', 'misc', 'misc', 'misc', 'misc', 'misc', 'misc']
+        ch_names=self.mne_filtered.info['ch_names'] + ['MicrowakingModel'], # 'raw', 'binary', 'cleaned1', 'filled', 'cleaned2'],
+        sfreq=original_sfreq,
+        ch_types=['eeg'] * len(self.mne_filtered.info['ch_names']) + ['misc'] * len(new_data)
     )
+    new_info.set_meas_date(self.mne_filtered.info['meas_date'])
 
-    assert new_data.shape[0] == len(new_info['ch_names'])
+    # assert combined_data.shape[0] == len(new_info['ch_names'])
 
-    new_data_scaled = new_data / 1_000_000
+    new_raw = mne.io.RawArray(combined_data, new_info)
+    new_raw.resample(100, npad="auto")
 
-    new_raw = mne.io.RawArray(new_data_scaled, new_info)
-
-    log(f"Exporting to: {f.input_file_without_ext}.with_microwakings_multi1.edf")
-    mne.export.export_raw(f.input_file_without_ext + ".with_microwakings_multi1_debug.edf", new_raw, overwrite=True)
+    log(f"Exporting to: {self.input_file_without_ext}.edf")
+    mne.export.export_raw(self.input_file_without_ext + ".edf", new_raw, overwrite=True)

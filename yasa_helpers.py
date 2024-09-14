@@ -146,7 +146,7 @@ def channel_comparison(df, channels):
     if len(channels) >= 3:
         for perm in permutations(channels, 3):
             json_out['-'.join(perm)] = compare_confidence_with_third_channel(df, perm[0], perm[1], perm[2])
-    else:
+    elif (len(channels) == 2):
         json_out[channels[0] + "-" + channels[1]] = compare_confidence(df, channels[0], channels[1])
         json_out[channels[1] + "-" + channels[0]] = compare_confidence(df, channels[1], channels[0])
 

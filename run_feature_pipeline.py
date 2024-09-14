@@ -8,6 +8,7 @@ from yasa import sw_detect, spindles_detect
 import convert
 import models.manual_sleep_scoring_catboost_1.manual_sleep_scoring_catboost_1 as best_model
 import run_yasa
+import sleep
 import sleep_events
 import wakings
 import sleep
@@ -15,9 +16,18 @@ import yasa_features
 from models.microwakings_1 import microwakings1
 from models.microwakings_1.microwakings1 import PerFile
 import tensorflow as tf
-import mne
 from memory import garbage_collect
 import traceback
+import warnings
+import logging
+import mne
+
+logging.getLogger('yasa').setLevel(logging.ERROR)
+logging.getLogger('sklearn').setLevel(logging.ERROR)
+warnings.filterwarnings("ignore", message="FigureCanvasAgg is non-interactive")
+warnings.filterwarnings("ignore", message="Channel locations not available. Disabling spatial colors.")
+warnings.filterwarnings("ignore", message="WARNING - Hypnogram is SHORTER than data")
+mne.set_log_level('ERROR')
 
 
 def cached_pipeline(log, input_file: str):
@@ -28,21 +38,30 @@ def cached_pipeline(log, input_file: str):
         log("Loading cached file " + cached)
         out = pd.read_csv(cached)
 
-        # Most recent file
+        # Most recent files
         microwakings_exist = os.path.exists(input_file_without_ext + ".microwakings.csv")
+        json_exist = os.path.exists(input_file_without_ext + ".sleep.json")
 
-        # Check for most recently added column
-        if 'Predictions_Noise' not in out.columns:
-            log("Cached file " + cached + " is missing recent columns, rebuilding")
+        # Check for most recently added column - skipping as we are not using that model currently
+        # if 'Predictions_Noise' not in out.columns:
+        #     log("Cached file " + cached + " is missing recent columns, rebuilding")
+        #     return pipeline(log, input_file)
+        # el
+        if not any('eeg_auc' in col for col in out.columns):
+            log("Cached file " + cached + " is missing eeg_auc, rebuilding")
             return pipeline(log, input_file)
-        elif not microwakings_exist:
+        if not microwakings_exist:
             log("No microwakings, rebuilding")
             return pipeline(log, input_file)
-        else:
-            out['epoch'] = out['Epoch']
-            out.set_index('epoch', inplace=True)
-            return out
+        if not json_exist:
+            log("No sleep.json, rebuilding")
+            return pipeline(log, input_file)
+
+        out['epoch'] = out['Epoch']
+        out.set_index('epoch', inplace=True)
+        return out
     else:
+        log(f"No cached file {cached}, rebuilding")
         return pipeline(log, input_file)
 
 
@@ -95,7 +114,7 @@ def pipeline(log, input_file: str, waking_start_time_tz = None, waking_end_time_
     # YASA proper
     garbage_collect(log)
     log("Running YASA")
-    yasa_copy, json_out = run_yasa.run_yasa_report(log, input_file_without_ext, raw, True)
+    yasa_copy, json_out = run_yasa.run_yasa_report(log, input_file_without_ext, raw, False)
 
     # Combine epochs and YASA features
     garbage_collect(log)
@@ -140,7 +159,7 @@ def pipeline(log, input_file: str, waking_start_time_tz = None, waking_end_time_
     garbage_collect(log)
     log("Running microwakings model")
     try:
-        microwakings_model = tf.keras.models.load_model('./models/microwakings_1/microwakings_multi1.h5')
+        microwakings_model = microwakings1.load_model()
         pf = PerFile(None, mne_filtered, yasa_copy, input_file_without_ext)
         pf.prepare_model_data(microwakings1.RESAMPLING_RATE, False)
         microwakings1.predict_file(log, microwakings_model, pf)

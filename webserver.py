@@ -18,6 +18,11 @@ logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %
 logger = logging.getLogger(__name__)
 
 
+# "08-07-2024--22-51-16.brainflow.csv" -> "08-07-2024--22-51-16"
+def output_dirname(filename: str) -> str:
+    input_file_without_ext = os.path.splitext(filename)[0].replace(".brainflow", "")
+    return input_file_without_ext
+
 async def run_webserver():
     parser = argparse.ArgumentParser()
     parser.add_argument('-d', '--data_dir', type=str, required=True, help='The Brainflow board ID to connect to')
@@ -40,10 +45,6 @@ async def run_webserver():
             'msg': msg
         })))
 
-    # "08-07-2024--22-51-16.brainflow.csv" -> "08-07-2024--22-51-16"
-    def output_dirname(filename: str) -> str:
-        input_file_without_ext = os.path.splitext(filename)[0].replace(".brainflow", "")
-        return input_file_without_ext
 
     # "08-07-2024--22-51-16" -> "/path/to/08-07-2024--22-51-16"
     def output_dir(filename: str) -> str:
