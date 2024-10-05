@@ -122,6 +122,19 @@ def extract_yasa_features(data, sfreq):
         abs_signal = np.abs(epochs)
         feat["auc"] = np.trapz(abs_signal, axis=1)
 
+        # Possibly overkill to throw everything in Antropy in the mix, but why not
+        # We don't normalise new cols because we're going to normalise against multiple days of data later.
+        # Cols already in YASA continue to be normalised to not throw off their model.
+        feat["perment"] = ant.perm_entropy(epochs, normalize=False)
+        feat["specent"] = ant.spectral_entropy(epochs, sf=sfreq, method='welch', normalize=False, axis=1)
+        feat["svdent"] = ant.svd_entropy(epochs, normalize=False)
+
+        # approximate entropy and sample entropy are very expensive to calculate, and sample seems to be a strict improvement
+        # feat["apent"] = np.array([ant.app_entropy(epoch) for epoch in epochs])
+        # AKA SampEn as used in Automated Detection of Driver Fatigue Based on Entropy and feat Measures, Zhang, 2014
+        # Think this is too slow to run.
+        # feat["sampent"] = np.array([ant.sample_entropy(epoch) for epoch in epochs])
+
 
     # Convert to dataframe
     feat = pd.DataFrame(feat).add_prefix(c + "_")

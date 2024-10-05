@@ -18,6 +18,7 @@ from functools import reduce
 import warnings
 from sklearn.exceptions import InconsistentVersionWarning
 
+from convert import get_filtered_and_scaled_data
 from yasa_helpers import sleep_stability, spindles, slow_waves, channel_comparison
 
 from memory import garbage_collect
@@ -69,22 +70,6 @@ def plot_spectro(input_file_without_ext, data, raw, channels: list[str], sfreq: 
         yasa.plot_spectrogram(data[channels.index(channel_name)], sfreq, hypno_up).savefig(input_file_without_ext + f'.spectrogram.{channel_name}.png', dpi=300)
     else:
         yasa.plot_hypnogram(hypno_up, sfreq)
-
-
-# MNE is in volts.  Filter it and scale it to uV
-def get_filtered_and_scaled_data(raw: Raw) -> (Raw, Raw):
-    filtered = raw.copy()
-
-    # AASM recommendation
-    filtered.filter(0.3, 35)
-
-    filtered.notch_filter(freqs=[50,100])
-
-    # Bit confused about this, something to do with MNE storing in volts.  But YASA complains it doesn't look uV if I don't do this.
-    data = filtered.get_data(units=dict(eeg="uV")) / 1_000_000
-    filtered._data = data
-
-    return filtered
 
 
 def run_yasa_report(log, input_file_without_ext: str, raw: Raw, skip: bool = False):

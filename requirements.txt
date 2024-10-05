@@ -17,5 +17,8 @@ lightgbm
 python-dotenv
 joblib
 catboost
-tensorflow<2.11
+tensorflow
 keras
+pyedflib
+tqdm
+paramiko

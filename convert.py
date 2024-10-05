@@ -8,7 +8,7 @@ from brainflow.board_shim import BoardShim, BoardIds
 from brainflow.data_filter import DataFilter
 
 from memory import garbage_collect
-import run_yasa
+
 
 def convert_and_save_brainflow_file(log, input_file: str, output_file: str, channels: list[str]):
     garbage_collect(log)
@@ -57,6 +57,7 @@ def convert_and_save_brainflow_file(log, input_file: str, output_file: str, chan
 
     garbage_collect(log)
 
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
     if output_file.endswith(".fif"):
         log(f"Saving to {output_file}")
         toSave.save(output_file, overwrite=True)
@@ -81,18 +82,28 @@ def save_mne_as_downsample_edf(log, mne_filtered, input_file_without_ext):
     mne.export.export_raw(input_file_without_ext + ".edf", resampled, overwrite=True)
 
 
+
+
 def load_mne_file(log, input_file: str) -> (mne.io.Raw, str, mne.io.Raw):
     log(f"Reading file {input_file}")
     raw = mne.io.read_raw_fif(input_file, preload=True)
     log(f"Finished reading file {input_file}")
     input_file_without_ext = os.path.splitext(input_file)[0]
-    mne_filtered = run_yasa.get_filtered_and_scaled_data(raw)
+    mne_filtered = get_filtered_and_scaled_data(raw)
     return raw, input_file_without_ext, mne_filtered
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-i', '--input_file', type=str, help='Input file')
-    parser.add_argument('-c', '--channels', type=str, nargs='+', help='Channels')
-    args = parser.parse_args()
-    convert_and_save_brainflow_file(print, args.input_file, args.channels)
+# MNE is in volts.  Filter it and scale it to uV
+def get_filtered_and_scaled_data(raw: mne.io.Raw) -> (mne.io.Raw, mne.io.Raw):
+    filtered = raw.copy()
+
+    # AASM recommendation
+    filtered.filter(0.3, 35)
+
+    filtered.notch_filter(freqs=[50,100])
+
+    # Bit confused about this, something to do with MNE storing in volts.  But YASA complains it doesn't look uV if I don't do this.
+    data = filtered.get_data(units=dict(eeg="uV")) / 1_000_000
+    filtered._data = data
+
+    return filtered

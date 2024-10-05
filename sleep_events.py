@@ -17,7 +17,7 @@ def connect_to_firebase():
 
 
 
-def load_sleep_events(log, start_date, end_date, waking_start_time_tz, waking_end_time_tz):
+def load_sleep_events(log, start_date, end_date, waking_start_time_tz = None, waking_end_time_tz = None):
     db = connect_to_firebase()
 
     docs = db.collection('homeAssistantExperimental').stream()

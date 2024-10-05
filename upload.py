@@ -28,6 +28,17 @@ def calculate_md5(file_path):
             hash_md5.update(chunk)
     return hash_md5.hexdigest()
 
+def calculate_directory_md5(directory_path):
+    """Calculate the MD5 checksum of a directory."""
+    md5_list = []
+    for root, _, files in os.walk(directory_path):
+        for file in sorted(files):
+            file_path = os.path.join(root, file)
+            file_md5 = calculate_md5(file_path)
+            md5_list.append(file_md5)
+    combined_md5 = hashlib.md5("".join(md5_list).encode('utf-8')).hexdigest()
+    return combined_md5
+
 def base64_to_hex(base64_str):
     """Convert a base64-encoded string to a hexadecimal string."""
     return base64.b64decode(base64_str).hex()
@@ -37,6 +48,26 @@ def upload_dir_to_gcs_skipping_existing(log, bucket_name, source_dir, destinatio
     storage_client = storage.Client()
     bucket = storage_client.bucket(bucket_name)
 
+    # Calculate directory checksum
+    directory_md5 = calculate_directory_md5(source_dir)
+    checksum_blob_path = os.path.join(destination_blob_prefix, "directory_checksum.md5").replace("\\", "/")
+    checksum_blob = bucket.blob(checksum_blob_path)
+
+    try:
+        # Get the existing checksum
+        checksum_blob.reload()
+        remote_md5 = checksum_blob.download_as_text().strip()
+
+        # Compare checksums
+        if directory_md5 == remote_md5:
+            log(f"Skipping upload of {source_dir}, identical directory already exists in GCS.")
+            return
+    except NotFound:
+        # Checksum blob does not exist, proceed with upload
+        log(f"Directory checksum for {source_dir} does not exist in GCS, proceeding with upload.")
+        pass
+
+    # Proceed with file-by-file upload
     for root, _, files in os.walk(source_dir):
         for file in files:
             local_path = os.path.join(root, file)
@@ -56,8 +87,6 @@ def upload_dir_to_gcs_skipping_existing(log, bucket_name, source_dir, destinatio
                 blob.reload()
                 remote_md5 = base64_to_hex(blob.md5_hash)
 
-                #log(f"{local_path} Local MD5: {local_md5}, Remote MD5: {remote_md5}")
-
                 # Compare checksums
                 if local_md5 == remote_md5:
                     log(f"Skipping {local_path}, identical file already exists in GCS.")
@@ -70,6 +99,10 @@ def upload_dir_to_gcs_skipping_existing(log, bucket_name, source_dir, destinatio
 
             log(f"{local_path} uploading to {blob_path}, does_not_exist={does_not_exist} has_changed={has_changed}")
             blob.upload_from_filename(local_path, timeout=600)
+
+    # Upload the new directory checksum
+    checksum_blob.upload_from_string(directory_md5)
+    log(f"Uploaded directory checksum for {source_dir} to {checksum_blob_path}")
 
 def upload_dir_to_gcs(log, bucket_name, source_dir, destination_blob_prefix):
     """Uploads a directory to a GCS bucket."""

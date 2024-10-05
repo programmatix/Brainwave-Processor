@@ -15,7 +15,7 @@ def get_yasa_probably_awake(log, epochs_with_yasa_features):
     return df_probably_awake
 
 
-def get_definitely_awake(epochs_with_yasa_features, ha_events, waking_start_time_tz, waking_end_time_tz):
+def get_definitely_awake(epochs_with_yasa_features, ha_events, waking_start_time_tz = None, waking_end_time_tz = None):
     # Find epochs where confident am awake - based on notes, button presses, etc.
     df = epochs_with_yasa_features.copy()
 
