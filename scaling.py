@@ -42,6 +42,8 @@ def normalize_series(series, p10, p90):
 
 
 def scale_by_stats(yasa_df: pd.DataFrame, stats_df: pd.DataFrame) -> pd.DataFrame:
+    assert not any(col.startswith("Main") for col in yasa_df), "Do not want to double-scale Main channel"
+
     eeg = only_eeg(yasa_df)
     stats_dict = stats_df.set_index('Column').to_dict('index')
 
@@ -55,12 +57,6 @@ def scale_by_stats(yasa_df: pd.DataFrame, stats_df: pd.DataFrame) -> pd.DataFram
     return normalized_eeg
 
 
-# We designate one channel as the main channel.
-# If there's one forehead channel, it's that.
-# If there's multiple forehead channels, it's 'Fpz' (as I've used that most).
-# Otherwise it's the first channel.
-# We use the _s scaled values so we can compare across channels (hopefully...).
-# These columns are "Main..._s".
 def add_main_channel(df):
     columns = df.columns
     channels = df['Source'].unique()

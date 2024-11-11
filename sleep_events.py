@@ -3,6 +3,9 @@ from firebase_admin import credentials, firestore
 import os
 import pandas as pd
 import pytz
+import pandas as pd
+from pandas import json_normalize
+import json
 
 def connect_to_firebase():
     if not firebase_admin._apps:
@@ -55,4 +58,112 @@ def load_sleep_events(log, start_date, end_date, waking_start_time_tz = None, wa
     combined_df['timestamp_uk_str'] = combined_df['timestamp_uk'].dt.strftime('%Y-%m-%d %H:%M:%S%z')
 
     return combined_df
+
+
+def load_eeg_events(log):
+    db = connect_to_firebase()
+
+    docs = db.collection('eegEvents').stream()
+
+    records = [doc.to_dict() for doc in docs]
+
+    events_df = pd.DataFrame(records)
+
+    return events_df
+
+def convert_timestamp_to_uk(timestamp):
+    """
+    Convert a single timestamp to UK time, handling mixed timezone formats.
+
+    Parameters:
+    -----------
+    timestamp : str or Timestamp
+        A single timestamp value
+
+    Returns:
+    --------
+    Timestamp
+        The timestamp converted to UK time
+    """
+    try:
+        # Try parsing with timezone inference
+        ts = pd.to_datetime(timestamp)
+
+        # Check if timestamp is timezone-aware
+        is_tz_aware = ts.tz is not None
+
+        if is_tz_aware:
+            # If already timezone-aware, convert directly to UK time
+            return ts.tz_convert('Europe/London')
+        else:
+            # If timezone-naive, localize to UTC first
+            return ts.tz_localize('UTC').tz_convert('Europe/London')
+    except Exception:
+        try:
+            # Try parsing with explicit timezone offsets
+            ts = pd.to_datetime(timestamp, utc=True)
+            return ts.tz_convert('Europe/London')
+        except Exception as e:
+            print(f"Error converting timestamp: {timestamp}")
+            print(e)
+            return pd.NaT
+
+def convert_timestamps_to_uk(df, src_timestamp_col='Timestamp', dest_timestamp_col='Timestamp'):
+    """
+    Convert timestamps in a DataFrame to UK time, handling mixed timezone formats.
+
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        DataFrame containing the timestamp column
+    timestamp_col : str
+        Name of the column containing timestamps
+
+    Returns:
+    --------
+    pandas.DataFrame
+        DataFrame with additional column for UK time
+    """
+    df[dest_timestamp_col] = df[src_timestamp_col].apply(convert_timestamp_to_uk)
+
+
+def convert_to_datetime(row, time_column):
+    if pd.notna(row[time_column]):
+        #return pd.to_datetime(row[time_column], unit='s', origin=pd.Timestamp(row['dayAndNightOf']).normalize()).tz_localize('UTC').tz_convert('Europe/London')
+        origin = pd.Timestamp(row['dayAndNightOf']).normalize()
+        return convert_timestamp_to_uk(pd.to_datetime(row[time_column], unit='s', origin=origin))
+    else:
+        return pd.NaT
+
+def load_days_data(pimp = False):
+    # def load_sleep_events(log, start_date, end_date, waking_start_time_tz, waking_end_time_tz):
+    db = connect_to_firebase()
+
+    docs = db.collection('daysExperimental').stream()
+
+    # Convert to list of dictionaries
+    records = [doc.to_dict() for doc in docs]
+
+    days = pd.DataFrame(records)
+
+    df = days
+    json_column = 'ml'
+    exploded_df = json_normalize(df[json_column])
+    result_df = pd.concat([df['dayAndNightOf'], exploded_df], axis=1)
+    result_df = result_df.loc[:, ~result_df.columns.duplicated()]
+
+    return result_df
+
+def pimp_my_days_data(result_df):
+    day_data = result_df.copy()
+
+    day_data['dayAndNightOf'] = pd.to_datetime(day_data['dayAndNightOf'])
+
+    time_columns = ['night:aggregated:asleepTimeSSM', 'night:aggregated:wakeTimeSSM', 'night:aggregated:gotIntoBedTimeSSM', 'night:aggregated:readyToSleepTimeSSM', 'circadian:basic:entries:LEP:datetimeSSM']
+    new_columns = ['asleepTime', 'wakeTime', 'gotIntoBedTime', 'readyToSleepTime', 'LEPTime']
+
+    for time_col, new_col in zip(time_columns, new_columns):
+        day_data[new_col] = day_data.apply(lambda row: convert_to_datetime(row, time_col), axis=1)
+
+    return day_data
 

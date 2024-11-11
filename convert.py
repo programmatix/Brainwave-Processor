@@ -87,6 +87,12 @@ def save_mne_as_downsample_edf(log, mne_filtered, input_file_without_ext):
 def load_mne_file(log, input_file: str) -> (mne.io.Raw, str, mne.io.Raw):
     log(f"Reading file {input_file}")
     raw = mne.io.read_raw_fif(input_file, preload=True)
+
+    # Fix data bug
+    if 'Fpz' in raw.info['ch_names']:
+        # channels[channels.index('Fpz')] = 'Fpz-M1'
+        raw.rename_channels({'Fpz': 'Fpz-M1'}, verbose=True)
+
     log(f"Finished reading file {input_file}")
     input_file_without_ext = os.path.splitext(input_file)[0]
     mne_filtered = get_filtered_and_scaled_data(raw)

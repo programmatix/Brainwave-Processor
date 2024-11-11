@@ -48,7 +48,11 @@ def get_sleep_stages(filtered: Raw, channels: list[str], channel_name: str, sfre
 
     df_pred['Epoch'] = range(len(df_pred))
 
-    stability = sleep_stability(hypno_pred)
+    try:
+        stability = sleep_stability(hypno_pred)
+    except Exception as e:
+        print("Failed getting stability: " + str(e))
+        stability = {}
 
     return (df_pred, stability)
 
@@ -143,7 +147,10 @@ def run_yasa_report(log, input_file_without_ext: str, raw: Raw, skip: bool = Fal
         garbage_collect(log)
         log("Processing sleep statistics")
         try:
-            json_out['Statistics'] = yasa.sleep_statistics(df['StageInt'], sf_hyp=1/30)
+            statistics = yasa.sleep_statistics(df['StageInt'], sf_hyp=1/30)
+            # Remove NaN values from the statistics
+            statistics = {k: v for k, v in statistics.items() if not pd.isna(v)}
+            json_out['Statistics'] = statistics
         except Exception as e:
             log("Failed getting statistics: " + str(e))
             pass

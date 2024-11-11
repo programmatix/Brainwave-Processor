@@ -94,11 +94,26 @@ def extract_yasa_features(data, sfreq):
         # Calculate spectral power features (for EEG + EOG)
         freqs, psd = sp_sig.welch(epochs, sf, **kwargs_welch)
         if c != "emg":
-            bp = bandpower_from_psd_ndarray(psd, freqs, bands=bands)
+            bp = bandpower_from_psd_ndarray(psd, freqs, bands=bands, relative=True)
             for j, (_, _, b) in enumerate(bands):
                 feat[b] = bp[j]
+            bp_abs = bandpower_from_psd_ndarray(psd, freqs, bands=bands, relative=False)
+            for j, (_, _, b) in enumerate(bands):
+                feat[b + "abs"] = bp_abs[j]
 
-        #
+            # Calculate "delta and below" and "delta and above" features
+            for j, (_, _, b) in enumerate(bands):
+                if b == "sdelta" or b == "beta":
+                    continue
+                feat[b + "aa"] = sum(bp[k] for k in range(j, len(bands)))
+                feat[b + "absaa"] = sum(bp_abs[k] for k in range(j, len(bands)))
+                feat[b + "ab"] = sum(bp[k] for k in range(j + 1))
+                feat[b + "absab"] = sum(bp_abs[k] for k in range(j + 1))
+
+            # Calculate spectral centroid
+            spectral_centroid = np.sum(freqs * psd, axis=1) / np.sum(psd, axis=1)
+            feat["spectral_centroid"] = spectral_centroid
+
         # Add power ratios for EEG
         if c == "eeg":
             delta = feat["sdelta"] + feat["fdelta"]
