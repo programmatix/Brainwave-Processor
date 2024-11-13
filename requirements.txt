@@ -22,3 +22,5 @@ keras
 pyedflib
 tqdm
 paramiko
+shap
+pylsl

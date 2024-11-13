@@ -30,15 +30,19 @@ class TargetColMapper(BaseEstimator, TransformerMixin):
         return X
 
 class DataFrameSelector(BaseEstimator, TransformerMixin):
-    def __init__(self, target_col):
+    def __init__(self, target_col, realtime):
         self.target_col = target_col
+        self.realtime = realtime
 
     def fit(self, X, y=None):
-        self.columns_to_keep = [col for col in X.columns if "Main_" in col or col == self.target_col]
         return self
 
     def transform(self, X):
-        return X[self.columns_to_keep]
+        columns_to_keep = [col for col in X.columns if ("Main_" in col and col.endswith("_s")) or col == self.target_col]
+        if self.realtime:
+            columns_to_keep = [col for col in columns_to_keep if "_c7" not in col and "_p2" not in col]
+        print(columns_to_keep)
+        return X[columns_to_keep]
 
 
 
@@ -55,9 +59,9 @@ class ModelAndData:
     X_val: pd.DataFrame = None
     y_val: pd.Series = None
 
-def model_pipeline(name: str, input, target_col: str) -> ModelAndData:
+def model_pipeline(name: str, input, target_col: str, realtime: bool) -> ModelAndData:
     pipeline = Pipeline([
-        ('col_selector', DataFrameSelector(target_col)),
+        ('col_selector', DataFrameSelector(target_col, realtime)),
         ('row_selector', RowsWithTargetCol(target_col)),
         ('target_col_mapper', TargetColMapper(target_col))
     ])
@@ -70,9 +74,9 @@ def model_pipeline(name: str, input, target_col: str) -> ModelAndData:
     return ModelAndData(name, target_col, prepared_df, X, y)
 
 
-def predict_only_model_pipeline(name: str, input) -> ModelAndData:
+def predict_only_model_pipeline(name: str, input, realtime: bool) -> ModelAndData:
     pipeline = Pipeline([
-        ('col_selector', DataFrameSelector(None)),
+        ('col_selector', DataFrameSelector(None, realtime)),
     ])
 
     prepared_df = pipeline.fit_transform(input)

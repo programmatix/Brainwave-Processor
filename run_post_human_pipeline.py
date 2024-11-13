@@ -86,7 +86,7 @@ def post_human_pipeline(log, dir_name, input_file, stats_df, days_data, yasa_df,
     model.load_model("models/eeg_states/main_catboost_model.cbm")
     predictions = model.predict_proba(models_and_data[0].X)
     predictions_df = pd.DataFrame(predictions, index=models_and_data[0].X.index)
-    predictions_df['TiredVsWired'] = predictions_df[1]
+    predictions_df['TiredVsWired60MinsBeforeReadyToSleep'] = predictions_df[1]
     predictions_df.drop([0, 1], axis=1, inplace=True)
     yasa_df_with_predictions = pd.concat([yasa_df, predictions_df], axis=1)
 
@@ -97,6 +97,14 @@ def cached_post_human_pipeline(log, dir_name: str, input_file: str, stats_df: pd
     input_file_without_ext = os.path.splitext(input_file)[0]
     cached = input_file_without_ext + ".post_human.csv"
 
+    def regenerate():
+        out = post_human_pipeline(log, dir_name, input_file, stats_df, days_data, yasa_df, eeg_state_events)
+        output_csv_file = input_file_without_ext + ".post_human.csv"
+        log("Saving to: " + output_csv_file)
+        out.to_csv(output_csv_file, index=False)
+        return out
+
+
     if os.path.exists(cached):
         log("Loading cached file " + cached)
         out = pd.read_csv(cached)
@@ -106,15 +114,15 @@ def cached_post_human_pipeline(log, dir_name: str, input_file: str, stats_df: pd
 
         if modification_date < force_if_older_than:
             log("Cached file " + cached + f" mod date {modification_date} is < {force_if_older_than}, rebuilding")
-            return post_human_pipeline(log, dir_name, input_file, stats_df, days_data, yasa_df, eeg_state_events)
-        if not any(col for col in out.columns if col == 'TiredVsWired'):
-            log("Cached file " + cached + " is missing TiredVsWired, rebuilding")
-            return post_human_pipeline(log, dir_name, input_file, stats_df, days_data, yasa_df, eeg_state_events)
+            return regenerate()
+        if not any(col for col in out.columns if col == 'TiredVsWired60MinsBeforeReadyToSleep'):
+            log("Cached file " + cached + " is missing TiredVsWired60MinsBeforeReadyToSleep, rebuilding")
+            return regenerate()
 
         out['epoch'] = out['Epoch']
         out.set_index('epoch', inplace=True)
         return out
     else:
         log(f"No cached file {cached}, rebuilding")
-        return post_human_pipeline(log, dir_name, input_file, stats_df, days_data, yasa_df, eeg_state_events)
+        return regenerate()
 

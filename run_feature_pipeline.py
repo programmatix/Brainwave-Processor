@@ -32,7 +32,7 @@ warnings.filterwarnings("ignore", message="Channel locations not available. Disa
 warnings.filterwarnings("ignore", message="WARNING - Hypnogram is SHORTER than data")
 mne.set_log_level('ERROR')
 
-force_if_older_than = datetime(2024, 11, 8, 17, 0, 0)
+force_if_older_than = datetime(2024, 11, 11, 13, 30, 0)
 
 def cached_pipeline(log, input_file: str, stats_df: pd.DataFrame):
     input_file_without_ext = os.path.splitext(input_file)[0]
@@ -215,8 +215,6 @@ def pipeline(log, input_file: str, stats_df: pd.DataFrame):
     log("All done! " + input_file)
 
     return df_asleep
-
-
 
 
 def combine_all_file(log, input_dir: str):

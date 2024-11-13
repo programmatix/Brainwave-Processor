@@ -3,20 +3,21 @@ import asyncio
 import json
 import logging
 import os
+import pandas as pd
 import shutil
 import traceback
 from datetime import datetime
-import shutil
 
-from convert import convert_and_save_brainflow_file
+from convert import convert_and_save_brainflow_file, save_buffer_to_edf
 from run_yasa import load_mne_fif_and_run_yasa
 from upload import upload_dir_to_gcs, upload_file_to_gcs
 from websocket import WebsocketHandler
 import run_feature_pipeline
+from lsl import LSLReader  # Import the LSLReader
+from models.realtime.realtime import run_models  # Import the run_models function
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
 
 # "08-07-2024--22-51-16.brainflow.csv" -> "08-07-2024--22-51-16"
 def output_dirname(filename: str) -> str:
@@ -29,6 +30,8 @@ async def run_webserver():
     parser.add_argument('-wp', '--websocket_port', default=9090, type=int, help='Websocket port')
     parser.add_argument('--ssl_cert', type=str, help='SSL cert file for websocket server')
     parser.add_argument('--ssl_key', type=str, help='SSL key file for websocket server')
+    parser.add_argument('--stats_csv', type=str, required=False, help='Path to the stats.csv file')
+    parser.add_argument('--model_dir', type=str, required=False, help='Path to all models')
     args = parser.parse_args()
 
     logger.setLevel(logging.DEBUG)
@@ -45,6 +48,9 @@ async def run_webserver():
             'msg': msg
         })))
 
+    # Initialize LSLReader
+    lsl_reader = LSLReader()
+    lsl_reader.start()
 
     # "08-07-2024--22-51-16" -> "/path/to/08-07-2024--22-51-16"
     def output_dir(filename: str) -> str:
@@ -180,12 +186,38 @@ async def run_webserver():
                     log(f"Deleting small file (size {file_size}): {file_path}")
                     os.remove(file_path)
 
+        elif msg['command'] == 'run_models':
+            log('Run models command received')
+            buffer = lsl_reader.get_buffer()
+            log(f'Got buffer of shape {buffer.shape}')
+            sfreq = lsl_reader.sampling_rate
+            eeg_ch_names = ['Fpz-M1']
+            current_time = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f"temp-{current_time}.edf"
+            save_buffer_to_edf(buffer, eeg_ch_names, sfreq, filename)
+            log(f'Buffer saved to {filename} with sfreq {sfreq}')
+            log(f"Loading stats from {args.stats_csv}")
+            stats_df = pd.read_csv(args.stats_csv)
+            results = run_models(buffer, eeg_ch_names, sfreq, stats_df, args.model_dir)
+            asyncio.create_task(websocket_handler.broadcast_websocket_message(json.dumps({
+                'address': 'run_models',
+                'results': results
+            })))
+
+        elif msg['command'] == 'save_buffer_to_edf':
+            log('Save buffer to EDF command received')
+            buffer = lsl_reader.get_buffer()
+            eeg_ch_names = [f'ch{i}' for i in range(buffer.shape[1])]  # Example channel names
+            sfreq = lsl_reader.sampling_rate
+            filename = "temp.edf"
+            save_buffer_to_edf(buffer, eeg_ch_names, sfreq, filename)
+            log(f'Buffer saved to {filename}')
+
         elif msg['command'] == 'quit':
             done = True
 
         else:
             log('Unknown command')
-
 
     websocket_handler = WebsocketHandler(args.ssl_cert, args.ssl_key, on_websocket_message)
 
@@ -195,7 +227,6 @@ async def run_webserver():
         websocket_server_task = asyncio.create_task(websocket_handler.start_websocket_server(args.websocket_port))
 
     while not done:
-
         try:
             await asyncio.sleep(10 / 1000)
         except Exception as e:
@@ -203,8 +234,8 @@ async def run_webserver():
             traceback.print_exc()
             pass
 
+    lsl_reader.stop()
     logger.info('Done')
-
 
 if __name__ == "__main__":
     asyncio.run(run_webserver())

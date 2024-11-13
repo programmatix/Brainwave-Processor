@@ -8,6 +8,7 @@ from brainflow.board_shim import BoardShim, BoardIds
 from brainflow.data_filter import DataFilter
 
 from memory import garbage_collect
+import pyedflib
 
 
 def convert_and_save_brainflow_file(log, input_file: str, output_file: str, channels: list[str]):
@@ -81,6 +82,29 @@ def save_mne_as_downsample_edf(log, mne_filtered, input_file_without_ext):
 
     mne.export.export_raw(input_file_without_ext + ".edf", resampled, overwrite=True)
 
+
+
+def save_buffer_to_edf(buffer, channel_names, sfreq, filename):
+    n_channels = buffer.shape[0]
+    file = pyedflib.EdfWriter(filename, n_channels, file_type=pyedflib.FILETYPE_EDFPLUS)
+
+    channel_info = []
+    for ch in channel_names:
+        channel_info.append({
+            'label': ch,
+            'dimension': 'uV',
+            'sample_rate': sfreq,
+            'physical_min': -100000,
+            'physical_max': 100000,
+            'digital_min': -32768,
+            'digital_max': 32767,
+            'transducer': '',
+            'prefilter': ''
+        })
+
+    file.setSignalHeaders(channel_info)
+    file.writeSamples(buffer)
+    file.close()
 
 
 
