@@ -10,7 +10,7 @@ import pandas as pd
 import scaling
 from convert import get_filtered_and_scaled_data
 import yasa_features
-from catboost import CatBoostClassifier
+from catboost import CatBoostRegressor
 from models.eeg_states.eeg_states_model import predict_only_model_pipeline  # TiredVsWired model
 
 
@@ -48,10 +48,9 @@ def run_models(eeg_buffer: np.array, eeg_ch_names: [str], sfreq: float, stats_df
         "tired_vs_wired": tired_vs_wired_prediction
     }
 
-def run_tired_vs_wired(yasa_df: pd.DataFrame, model_dir: str) -> int:
+def run_tired_vs_wired(yasa_df: pd.DataFrame, model_dir: str) -> float:
     models_and_data = predict_only_model_pipeline('main', yasa_df, True)
-    model = CatBoostClassifier()
+    model = CatBoostRegressor()
     model.load_model(model_dir + os.path.sep + "realtime_catboost_model.cbm")
-    predictions = model.predict_proba(models_and_data.X)
-    predictions_df = pd.DataFrame(predictions, index=models_and_data.X.index)
-    return predictions_df[1].iloc[0]
+    predictions = model.predict(models_and_data.X)
+    return predictions[0]

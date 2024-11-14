@@ -17,21 +17,20 @@ def load_and_prepare_eeg_state_events():
 
 
 def load_events():
-
-
-
-    # def load_sleep_events(log, start_date, end_date, waking_start_time_tz, waking_end_time_tz):
     db = connect_to_firebase()
-
     docs = db.collection('homeAssistantExperimental').stream()
-
-    # Convert to list of dictionaries
     records = [doc.to_dict() for doc in docs]
 
     events = pd.DataFrame(records)
-    events = events[events['event'].isin(["tired", "tired_long", "wired", "wired_long"])]
+    events = events[events['event'].isin([
+        "wired", "wired_long",
+        "mid", "mid_long",
+        "tired", "tired_long",
+        "sleepy", "sleepy_long"
+    ])]
     
     return events
+
 
 def debounce_events(events: pd.DataFrame):
     events = events.sort_values(by='timestamp').reset_index(drop=True)
@@ -94,42 +93,26 @@ def process_row(yasa_row, events):
     epoch_start = yasa_row['TimestampUK']
     epoch_end = epoch_start + pd.Timedelta(seconds=30)
 
-    #print(f"epoch_start: {epoch_start}, epoch_end: {epoch_end}", flush=True)
-
     epoch_type = None
     matched_event = None
 
-    # Iterate over each row in events
     for j, event_row in events.iterrows():
         event = event_row['event']
         event_end = event_row['TimestampUK']
         event_start = event_row['SinceUK']
 
-        #print(f"event: {event}, start: {event_start}, end: {event_end}", flush=True)
-
-        # Check for tired and tired_long events
-        if event == 'tired' and epoch_start <= event_end <= epoch_end:
-            # print(f"tired as epoch_start: {epoch_start}, event: {event}, start: {event_start}, end: {event_end}", flush=True)
-            epoch_type = 'tired'
-            matched_event = j
-            break
-        elif event == 'tired_long' and not (event_start > epoch_end or event_start < epoch_start):
-            #print(f"tired as epoch_start: {epoch_start}, event: {event}, start: {event_start}, end: {event_end}", flush=True)
-            epoch_type = 'tired'
-            matched_event = j
-            break
-
-        # Check for wired and wired_long events
-        if event == 'wired' and epoch_start <= event_end <= epoch_end:
-            #print(f"wired as epoch_start: {epoch_start}, event: {event}, start: {event_start}, end: {event_end}", flush=True)
-            epoch_type = 'wired'
-            matched_event = j
-            break
-        elif event == 'wired_long' and not (event_start > epoch_end or event_start < epoch_start):
-            #print(f"wired as epoch_start: {epoch_start}, event: {event}, start: {event_start}, end: {event_end}", flush=True)
-            epoch_type = 'wired'
-            matched_event = j
-            break
+        base_event = event.replace('_long', '')
+        
+        if event.endswith('_long'):
+            if not (event_start > epoch_end or event_start < epoch_start):
+                epoch_type = base_event
+                matched_event = j
+                break
+        else:
+            if epoch_start <= event_end <= epoch_end:
+                epoch_type = base_event
+                matched_event = j
+                break
 
     return epoch_type, matched_event
 

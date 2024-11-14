@@ -26,9 +26,15 @@ class TargetColMapper(BaseEstimator, TransformerMixin):
 
     def transform(self, X):
         X = X.copy()
-        X[self.target_col] = X[self.target_col].map({'tired': 1, 'wired': 0})
+        mapping = {
+            'wired': 0.0,
+            'mid': 0.33,
+            'tired': 0.66,
+            'sleepy': 1.0
+        }
+        X[self.target_col] = X[self.target_col].map(mapping)
         return X
-
+    
 class DataFrameSelector(BaseEstimator, TransformerMixin):
     def __init__(self, target_col, realtime):
         self.target_col = target_col
