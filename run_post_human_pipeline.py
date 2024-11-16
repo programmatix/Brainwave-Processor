@@ -4,8 +4,8 @@ from catboost import CatBoostClassifier
 from datetime import datetime
 
 import run_feature_pipeline
-from models.eeg_states.eeg_states import load_and_prepare_eeg_state_events, add_event_type
-from models.eeg_states.eeg_states_model import predict_only_model_pipeline
+from models.eeg_states.eeg_states import load_and_prepare_tired_wired_eeg_state_events, add_event_type
+from models.eeg_states.eeg_states_model import predict_only_tired_vs_wired_model_pipeline
 from sleep_events import convert_timestamp_to_uk, convert_timestamps_to_uk
 import pandas as pd
 
@@ -81,7 +81,7 @@ def post_human_pipeline(log, dir_name, input_file, stats_df, days_data, yasa_df,
 
     # TiredVsWired model
     before_ready_to_sleep = yasa_df[yasa_df['60MinsBeforeReadyToSleep'] == 1]
-    models_and_data = [predict_only_model_pipeline('main', before_ready_to_sleep)]
+    models_and_data = [predict_only_tired_vs_wired_model_pipeline('main', before_ready_to_sleep)]
     model = CatBoostClassifier()
     model.load_model("models/eeg_states/main_catboost_model.cbm")
     predictions = model.predict_proba(models_and_data[0].X)

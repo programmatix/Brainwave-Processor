@@ -11,7 +11,8 @@ import scaling
 from convert import get_filtered_and_scaled_data
 import yasa_features
 from catboost import CatBoostRegressor
-from models.eeg_states.eeg_states_model import predict_only_model_pipeline  # TiredVsWired model
+from models.eeg_states.eeg_states_model import predict_only_tired_vs_wired_model_pipeline, \
+    predict_only_day_energy_model_pipeline  # TiredVsWired model
 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -43,14 +44,23 @@ def run_models(eeg_buffer: np.array, eeg_ch_names: [str], sfreq: float, stats_df
     yasa_df.rename(columns=lambda x: x.replace(channels[0], 'Main') if x.startswith(channels[0]) else x, inplace=True)
 
     tired_vs_wired_prediction = run_tired_vs_wired(yasa_df, model_dir)
+    day_energy_prediction = run_day_energy(yasa_df, model_dir)
 
     return {
-        "tired_vs_wired": tired_vs_wired_prediction
+        "tired_vs_wired": tired_vs_wired_prediction,
+        "day_energy": day_energy_prediction,
     }
 
 def run_tired_vs_wired(yasa_df: pd.DataFrame, model_dir: str) -> float:
-    models_and_data = predict_only_model_pipeline('main', yasa_df, True)
+    models_and_data = predict_only_tired_vs_wired_model_pipeline('ignored', yasa_df, True)
     model = CatBoostRegressor()
-    model.load_model(model_dir + os.path.sep + "realtime_catboost_model.cbm")
+    model.load_model(model_dir + os.path.sep + "settling-tired-vs-wired-realtime_catboost_model.cbm")
+    predictions = model.predict(models_and_data.X)
+    return predictions[0]
+
+def run_day_energy(yasa_df: pd.DataFrame, model_dir: str) -> float:
+    models_and_data = predict_only_day_energy_model_pipeline('ignored', yasa_df, True)
+    model = CatBoostRegressor()
+    model.load_model(model_dir + os.path.sep + "day-energy-realtime_catboost_model.cbm")
     predictions = model.predict(models_and_data.X)
     return predictions[0]

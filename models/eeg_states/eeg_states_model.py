@@ -17,7 +17,7 @@ class RowsWithTargetCol(BaseEstimator, TransformerMixin):
         X = X[~X[self.target_col].isna()]
         return X
 
-class TargetColMapper(BaseEstimator, TransformerMixin):
+class TiredVsWiredTargetColMapper(BaseEstimator, TransformerMixin):
     def __init__(self, target_col):
         self.target_col = target_col
 
@@ -34,7 +34,28 @@ class TargetColMapper(BaseEstimator, TransformerMixin):
         }
         X[self.target_col] = X[self.target_col].map(mapping)
         return X
-    
+
+class DayEnergyTargetColMapper(BaseEstimator, TransformerMixin):
+    def __init__(self, target_col):
+        self.target_col = target_col
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        X = X.copy()
+        mapping = {
+            'near worst': 0.0,
+            'struggling': 0.1,
+            'tired': 0.3,
+            'standard tired': 0.4,
+            'okish': 0.7,
+            'lockable': 0.9,
+            'great': 1.0
+        }
+        X[self.target_col] = X[self.target_col].map(mapping)
+        return X
+
 class DataFrameSelector(BaseEstimator, TransformerMixin):
     def __init__(self, target_col, realtime):
         self.target_col = target_col
@@ -65,11 +86,10 @@ class ModelAndData:
     X_val: pd.DataFrame = None
     y_val: pd.Series = None
 
-def model_pipeline(name: str, input, target_col: str, realtime: bool) -> ModelAndData:
+def generic_state_model_pipeline(name: str, input, target_col: str, realtime: bool) -> ModelAndData:
     pipeline = Pipeline([
         ('col_selector', DataFrameSelector(target_col, realtime)),
-        ('row_selector', RowsWithTargetCol(target_col)),
-        ('target_col_mapper', TargetColMapper(target_col))
+        ('row_selector', RowsWithTargetCol(target_col))
     ])
 
     prepared_df = pipeline.fit_transform(input)
@@ -80,7 +100,7 @@ def model_pipeline(name: str, input, target_col: str, realtime: bool) -> ModelAn
     return ModelAndData(name, target_col, prepared_df, X, y)
 
 
-def predict_only_model_pipeline(name: str, input, realtime: bool) -> ModelAndData:
+def predict_only_generic_state_model_pipeline(name: str, input, realtime: bool) -> ModelAndData:
     pipeline = Pipeline([
         ('col_selector', DataFrameSelector(None, realtime)),
     ])
@@ -88,6 +108,59 @@ def predict_only_model_pipeline(name: str, input, realtime: bool) -> ModelAndDat
     prepared_df = pipeline.fit_transform(input)
 
     return ModelAndData(name, None, prepared_df, prepared_df, None)
+
+
+
+
+def tired_vs_wired_model_pipeline(name: str, input, target_col: str, realtime: bool) -> ModelAndData:
+    pipeline = Pipeline([
+        ('col_selector', DataFrameSelector(target_col, realtime)),
+        ('row_selector', RowsWithTargetCol(target_col)),
+        ('target_col_mapper', TiredVsWiredTargetColMapper(target_col))
+    ])
+
+    prepared_df = pipeline.fit_transform(input)
+
+    X = prepared_df.drop(columns=[target_col])
+    y = prepared_df[target_col]
+
+    return ModelAndData(name, target_col, prepared_df, X, y)
+
+
+def predict_only_tired_vs_wired_model_pipeline(name: str, input, realtime: bool) -> ModelAndData:
+    pipeline = Pipeline([
+        ('col_selector', DataFrameSelector(None, realtime)),
+    ])
+
+    prepared_df = pipeline.fit_transform(input)
+
+    return ModelAndData(name, None, prepared_df, prepared_df, None)
+
+
+def day_energy_model_pipeline(name: str, input, target_col: str, realtime: bool) -> ModelAndData:
+    pipeline = Pipeline([
+        ('col_selector', DataFrameSelector(target_col, realtime)),
+        ('row_selector', RowsWithTargetCol(target_col)),
+        ('target_col_mapper', DayEnergyTargetColMapper(target_col))
+    ])
+
+    prepared_df = pipeline.fit_transform(input)
+
+    X = prepared_df.drop(columns=[target_col])
+    y = prepared_df[target_col]
+
+    return ModelAndData(name, target_col, prepared_df, X, y)
+
+
+def predict_only_day_energy_model_pipeline(name: str, input, realtime: bool) -> ModelAndData:
+    pipeline = Pipeline([
+        ('col_selector', DataFrameSelector(None, realtime)),
+    ])
+
+    prepared_df = pipeline.fit_transform(input)
+
+    return ModelAndData(name, None, prepared_df, prepared_df, None)
+
 
 
 
