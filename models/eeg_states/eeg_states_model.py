@@ -28,12 +28,23 @@ class TiredVsWiredTargetColMapper(BaseEstimator, TransformerMixin):
         X = X.copy()
         mapping = {
             'wired': 0.0,
-            'mid': 0.33,
+            'mid': 0,
+            'OTHER': 0,
             'tired': 0.66,
             'sleepy': 1.0
         }
         X[self.target_col] = X[self.target_col].map(mapping)
         return X
+
+day_energy_mapping = {
+    'near worst': 0.0,
+    'struggling': 0.1,
+    'tired': 0.3,
+    'standard tired': 0.4,
+    'okish': 0.7,
+    'lockable': 0.9,
+    'great': 1.0
+}
 
 class DayEnergyTargetColMapper(BaseEstimator, TransformerMixin):
     def __init__(self, target_col):
@@ -44,16 +55,7 @@ class DayEnergyTargetColMapper(BaseEstimator, TransformerMixin):
 
     def transform(self, X):
         X = X.copy()
-        mapping = {
-            'near worst': 0.0,
-            'struggling': 0.1,
-            'tired': 0.3,
-            'standard tired': 0.4,
-            'okish': 0.7,
-            'lockable': 0.9,
-            'great': 1.0
-        }
-        X[self.target_col] = X[self.target_col].map(mapping)
+        X[self.target_col] = X[self.target_col].map(day_energy_mapping)
         return X
 
 class DataFrameSelector(BaseEstimator, TransformerMixin):

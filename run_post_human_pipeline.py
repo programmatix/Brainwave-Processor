@@ -20,7 +20,9 @@ def add_periods(log, dir_name, input_file, stats_df, days_data, yasa_df):
     row = days_data[days_data['dayAndNightOf'] == day_and_night_of]
 
     if row.empty:
-        raise Exception(f"Don't have human data yet for {day_and_night_of}")
+        raise Exception(f"Don't have human data yet for {day_and_night_of} - complete MorningReview")
+    if not 'asleepTime' in row:
+        raise Exception(f"Don't have asleepTime yet for {day_and_night_of} - complete MorningReview")
 
     if pd.notna(row['asleepTime'].iloc[0]):
         yasa_df['asleepTime'] = row['asleepTime'].iloc[0]
@@ -81,7 +83,7 @@ def post_human_pipeline(log, dir_name, input_file, stats_df, days_data, yasa_df,
 
     # TiredVsWired model
     before_ready_to_sleep = yasa_df[yasa_df['60MinsBeforeReadyToSleep'] == 1]
-    models_and_data = [predict_only_tired_vs_wired_model_pipeline('main', before_ready_to_sleep)]
+    models_and_data = [predict_only_tired_vs_wired_model_pipeline('main', before_ready_to_sleep, False)]
     model = CatBoostClassifier()
     model.load_model("models/eeg_states/main_catboost_model.cbm")
     predictions = model.predict_proba(models_and_data[0].X)

@@ -25,3 +25,7 @@ paramiko
 shap
 pylsl
 pulearn
+unstructured
+pdfminer
+pymupdf
+pydrive

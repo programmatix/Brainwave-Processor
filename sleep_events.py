@@ -152,6 +152,9 @@ def load_days_data(pimp = False):
     result_df = pd.concat([df['dayAndNightOf'], exploded_df], axis=1)
     result_df = result_df.loc[:, ~result_df.columns.duplicated()]
 
+    if pimp:
+        result_df = pimp_my_days_data(result_df)
+
     return result_df
 
 def pimp_my_days_data(result_df):
