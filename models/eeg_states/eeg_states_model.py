@@ -27,11 +27,24 @@ class TiredVsWiredTargetColMapper(BaseEstimator, TransformerMixin):
     def transform(self, X):
         X = X.copy()
         mapping = {
-            'wired': 0.0,
-            'mid': 0,
-            'OTHER': 0,
-            'tired': 0.66,
-            'sleepy': 1.0
+            'alert': 0.0,
+            'tired': 1.0
+        }
+        X[self.target_col] = X[self.target_col].map(mapping)
+        return X
+
+class SettlingEventV4TargetColMapper(BaseEstimator, TransformerMixin):
+    def __init__(self, target_col):
+        self.target_col = target_col
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        X = X.copy()
+        mapping = {
+            'alert': 0.0,
+            'tired': 1.0
         }
         X[self.target_col] = X[self.target_col].map(mapping)
         return X
@@ -41,6 +54,7 @@ day_energy_mapping = {
     'struggling': 0.1,
     'tired': 0.3,
     'standard tired': 0.4,
+    'sub-optimal': 0.4,
     'okish': 0.7,
     'lockable': 0.9,
     'great': 1.0
@@ -67,7 +81,7 @@ class DataFrameSelector(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X):
-        columns_to_keep = [col for col in X.columns if ("Main_" in col and col.endswith("_s")) or col == self.target_col]
+        columns_to_keep = [col for col in X.columns if ("Main_" in col and col.endswith("_s") and "perment" not in col) or col == self.target_col]
         if self.realtime:
             columns_to_keep = [col for col in columns_to_keep if "_c7" not in col and "_p2" not in col]
         print(columns_to_keep)
@@ -117,8 +131,8 @@ def predict_only_generic_state_model_pipeline(name: str, input, realtime: bool) 
 def tired_vs_wired_model_pipeline(name: str, input, target_col: str, realtime: bool) -> ModelAndData:
     pipeline = Pipeline([
         ('col_selector', DataFrameSelector(target_col, realtime)),
-        ('row_selector', RowsWithTargetCol(target_col)),
-        ('target_col_mapper', TiredVsWiredTargetColMapper(target_col))
+        ('row_selector', RowsWithTargetCol(target_col))
+        # ('target_col_mapper', TiredVsWiredTargetColMapper(target_col))
     ])
 
     prepared_df = pipeline.fit_transform(input)
@@ -142,8 +156,8 @@ def predict_only_tired_vs_wired_model_pipeline(name: str, input, realtime: bool)
 def day_energy_model_pipeline(name: str, input, target_col: str, realtime: bool) -> ModelAndData:
     pipeline = Pipeline([
         ('col_selector', DataFrameSelector(target_col, realtime)),
-        ('row_selector', RowsWithTargetCol(target_col)),
-        ('target_col_mapper', DayEnergyTargetColMapper(target_col))
+        ('row_selector', RowsWithTargetCol(target_col))
+        # ('target_col_mapper', DayEnergyTargetColMapper(target_col))
     ])
 
     prepared_df = pipeline.fit_transform(input)

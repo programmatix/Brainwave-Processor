@@ -35,13 +35,18 @@ def sleep_stability(hypno):
     sleep_stability_deep = probs.loc[3, 3].round(3)
     sleep_stability_rem = probs.loc[4, 4].round(3)
 
+    # Calculate sleep stability for any non-Wake stage
+    sleep_stability_sleep = np.diag(probs.loc[1:, 1:]).mean().round(3)
+
     return {
         'AnyStage': sleep_stability_any_stage,
         'Wake': sleep_stability_wake,
         'N1': sleep_stability_n1,
         'N2': sleep_stability_n2,
-        'De ep': sleep_stability_deep,
-        'REM': sleep_stability_rem
+        'De ep': sleep_stability_deep, # deprecated - typo!
+        'N3': sleep_stability_deep,
+        'REM': sleep_stability_rem,
+        'Sleep': sleep_stability_sleep
     }
 
 

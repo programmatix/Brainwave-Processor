@@ -29,3 +29,5 @@ unstructured
 pdfminer
 pymupdf
 pydrive
+langchain
+langchain_community

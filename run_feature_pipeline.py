@@ -32,9 +32,9 @@ warnings.filterwarnings("ignore", message="Channel locations not available. Disa
 warnings.filterwarnings("ignore", message="WARNING - Hypnogram is SHORTER than data")
 mne.set_log_level('ERROR')
 
-force_if_older_than = datetime(2024, 11, 11, 13, 30, 0)
+force_if_older_than = datetime(2024, 12, 2, 0, 0, 0)
 
-def cached_pipeline(log, input_file: str, stats_df: pd.DataFrame):
+def cached_pipeline(log, input_file: str, stats_df: pd.DataFrame, force: bool = False):
     input_file_without_ext = os.path.splitext(input_file)[0]
     cached = input_file_without_ext + ".with_features.csv"
 
@@ -55,6 +55,9 @@ def cached_pipeline(log, input_file: str, stats_df: pd.DataFrame):
         #     return pipeline(log, input_file)
         # el
 
+        if force:
+            log("Forced rebuild")
+            return pipeline(log, input_file, stats_df)
         if modification_date < force_if_older_than:
             log("Cached file " + cached + f" mod date {modification_date} is < {force_if_older_than}, rebuilding")
             return pipeline(log, input_file, stats_df)
@@ -83,6 +86,8 @@ def cached_pipeline(log, input_file: str, stats_df: pd.DataFrame):
 
 
 def pipeline(log, input_file: str, stats_df: pd.DataFrame):
+    mne.use_log_level("warning")
+
     # Load MNE
     log("Loading MNE file " + input_file)
     raw, input_file_without_ext, mne_filtered = convert.load_mne_file(log, input_file)
@@ -134,13 +139,14 @@ def pipeline(log, input_file: str, stats_df: pd.DataFrame):
     yasa_feats = yasa_feats.join(scale_by_stats.add_suffix('_s'))
 
     # YASA slow waves
-    garbage_collect(log)
-    log("Detecting slow waves")
-    sw = sw_detect(mne_filtered, sfreq)
-    if sw is not None:
-        sw_summary = sw.summary()
-        output_csv_file = input_file_without_ext + ".sw_summary.csv"
-        sw_summary.to_csv(output_csv_file, index=False)
+    # Disabling - I haven't got much signal from this and it's very expensive
+    # garbage_collect(log)
+    # log("Detecting slow waves")
+    # sw = sw_detect(mne_filtered, sfreq)
+    # if sw is not None:
+    #     sw_summary = sw.summary()
+    #     output_csv_file = input_file_without_ext + ".sw_summary.csv"
+    #     sw_summary.to_csv(output_csv_file, index=False)
 
     # YASA spindles
     # Too intensive for Pi

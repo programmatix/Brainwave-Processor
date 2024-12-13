@@ -140,9 +140,11 @@ def extract_yasa_features(data, sfreq):
         # Possibly overkill to throw everything in Antropy in the mix, but why not
         # We don't normalise new cols because we're going to normalise against multiple days of data later.
         # Cols already in YASA continue to be normalised to not throw off their model.
-        feat["perment"] = ant.perm_entropy(epochs, normalize=False)
+        # Removing as seems to be broken and already have "perm" above
+        #feat["perment"] = ant.perm_entropy(epochs, normalize=False)
         feat["specent"] = ant.spectral_entropy(epochs, sf=sfreq, method='welch', normalize=False, axis=1)
-        feat["svdent"] = ant.svd_entropy(epochs, normalize=False)
+        # Seems to return nothing useful with normalize=False, switching to True 7th Dec
+        feat["svdent"] = ant.svd_entropy(epochs, normalize=True)
 
         # approximate entropy and sample entropy are very expensive to calculate, and sample seems to be a strict improvement
         # feat["apent"] = np.array([ant.app_entropy(epoch) for epoch in epochs])

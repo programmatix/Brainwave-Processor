@@ -83,10 +83,10 @@ def run_yasa_report(log, input_file_without_ext: str, raw: Raw, skip: bool = Fal
     sfreq = raw.info['sfreq']
     start_date = raw.info['meas_date']
 
-    raw.plot_psd(average=False).savefig(input_file_without_ext + '.pre_filter_psd_plot.png', dpi=300)
+    raw.plot_psd(average=False, verbose=False).savefig(input_file_without_ext + '.pre_filter_psd_plot.png', dpi=300)
 
     filtered = get_filtered_and_scaled_data(raw)
-    filtered.plot_psd(average=False).savefig(input_file_without_ext + '.post_filter_psd_plot.png', dpi=300)
+    filtered.plot_psd(average=False, verbose=False).savefig(input_file_without_ext + '.post_filter_psd_plot.png', dpi=300)
 
     all_dfs = []
     json_out = {}

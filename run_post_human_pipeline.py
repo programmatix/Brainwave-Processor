@@ -4,7 +4,7 @@ from catboost import CatBoostClassifier
 from datetime import datetime
 
 import run_feature_pipeline
-from models.eeg_states.eeg_states import load_and_prepare_tired_wired_eeg_state_events, add_event_type
+from models.eeg_states.eeg_states import load_and_prepare_settling_eeg_state_events, add_event_type
 from models.eeg_states.eeg_states_model import predict_only_tired_vs_wired_model_pipeline
 from sleep_events import convert_timestamp_to_uk, convert_timestamps_to_uk
 import pandas as pd
@@ -82,15 +82,33 @@ def post_human_pipeline(log, dir_name, input_file, stats_df, days_data, yasa_df,
     add_event_type(yasa_df, eeg_state_events)
 
     # TiredVsWired model
-    before_ready_to_sleep = yasa_df[yasa_df['60MinsBeforeReadyToSleep'] == 1]
-    models_and_data = [predict_only_tired_vs_wired_model_pipeline('main', before_ready_to_sleep, False)]
+    # before_ready_to_sleep = yasa_df[yasa_df['60MinsBeforeReadyToSleep'] == 1]
+    # models_and_data_before_ready_to_sleep = [predict_only_tired_vs_wired_model_pipeline('main', before_ready_to_sleep, False)]
+    models_and_data = [predict_only_tired_vs_wired_model_pipeline('main', yasa_df, False)]
+
     model = CatBoostClassifier()
-    model.load_model("models/eeg_states/main_catboost_model.cbm")
+    model.load_model("models/eeg_states/settling-tired-vs-wired-non-realtime_catboost_model.cbm")
     predictions = model.predict_proba(models_and_data[0].X)
     predictions_df = pd.DataFrame(predictions, index=models_and_data[0].X.index)
-    predictions_df['TiredVsWired60MinsBeforeReadyToSleep'] = predictions_df[1]
+    # predictions_df['TiredVsWired60MinsBeforeReadyToSleepPrediction'] = predictions_df[1]
+    predictions_df['SettlingTiredVsWiredPrediction'] = predictions_df[1]
     predictions_df.drop([0, 1], axis=1, inplace=True)
     yasa_df_with_predictions = pd.concat([yasa_df, predictions_df], axis=1)
+
+    model.load_model("models/eeg_states/settling-score-non-realtime_catboost_model.cbm")
+    predictions = model.predict_proba(models_and_data[0].X)
+    predictions_df = pd.DataFrame(predictions, index=models_and_data[0].X.index)
+    #predictions_df['TiredVsWired60MinsBeforeReadyToSleepPrediction'] = predictions_df[1]
+    predictions_df['SettlingScorePrediction'] = predictions_df[1]
+    predictions_df.drop([0, 1], axis=1, inplace=True)
+    yasa_df_with_predictions = pd.concat([yasa_df_with_predictions, predictions_df], axis=1)
+
+    model.load_model("models/eeg_states/settling-v4-score-non-realtime_catboost_model.cbm")
+    predictions = model.predict_proba(models_and_data[0].X)
+    predictions_df = pd.DataFrame(predictions, index=models_and_data[0].X.index)
+    predictions_df['SettlingV4ScorePrediction'] = predictions_df[1]
+    predictions_df.drop([0, 1], axis=1, inplace=True)
+    yasa_df_with_predictions = pd.concat([yasa_df_with_predictions, predictions_df], axis=1)
 
     return yasa_df_with_predictions
 
@@ -117,8 +135,11 @@ def cached_post_human_pipeline(log, dir_name: str, input_file: str, stats_df: pd
         if modification_date < force_if_older_than:
             log("Cached file " + cached + f" mod date {modification_date} is < {force_if_older_than}, rebuilding")
             return regenerate()
-        if not any(col for col in out.columns if col == 'TiredVsWired60MinsBeforeReadyToSleep'):
-            log("Cached file " + cached + " is missing TiredVsWired60MinsBeforeReadyToSleep, rebuilding")
+        if not any(col for col in out.columns if col == 'SettlingScorePrediction'):
+            log("Cached file " + cached + " is missing SettlingScorePrediction, rebuilding")
+            return regenerate()
+        if not any(col for col in out.columns if col == 'SettlingV4ScorePrediction'):
+            log("Cached file " + cached + " is missing SettlingV4ScorePrediction, rebuilding")
             return regenerate()
 
         out['epoch'] = out['Epoch']

@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import argparse
 import os
 
@@ -273,9 +275,19 @@ def get_filtered_and_scaled_data(raw: mne.io.Raw) -> (mne.io.Raw, mne.io.Raw):
     filtered = raw.copy()
 
     # AASM recommendation
-    filtered.filter(0.3, 35)
+    # Note that yasa_features & YASA do this also
+    # Clean signal tips: use a USB extension cable (v important!)
+    filtered.filter(0.3, 35, verbose=False)
 
-    filtered.notch_filter(freqs=[50,100])
+    # Remove power (probably unnecessary since we already bandstop at 35)
+    filtered.notch_filter(freqs=[50, 100], verbose=False)
+
+    start_date = raw.info['meas_date']
+    if start_date.date() >= datetime(2024, 11, 20).date() and start_date.date() < datetime(2024, 11, 27).date():
+        # Remove the spikes introduced by electric bed!
+        # From 27th started only using it for one hour.  Assuming I'll be asleep after it kicks off.
+        # If/when I look at the data for settling - I'll need to fix it, for that period it's on.
+        filtered.notch_filter(freqs=[16.6, 27.7, 38.8], verbose=False)
 
     # Bit confused about this, something to do with MNE storing in volts.  But YASA complains it doesn't look uV if I don't do this.
     data = filtered.get_data(units=dict(eeg="uV")) / 1_000_000
