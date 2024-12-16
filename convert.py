@@ -230,7 +230,6 @@ def save_mne_as_downsample_edf(log, mne_filtered, input_file_without_ext):
     mne.export.export_raw(input_file_without_ext + ".edf", resampled, overwrite=True)
 
 
-
 def save_buffer_to_edf(buffer, channel_names, sfreq, filename):
     n_channels = buffer.shape[0]
     file = pyedflib.EdfWriter(filename, n_channels, file_type=pyedflib.FILETYPE_EDFPLUS)

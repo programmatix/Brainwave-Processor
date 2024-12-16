@@ -113,7 +113,7 @@ def post_human_pipeline(log, dir_name, input_file, stats_df, days_data, yasa_df,
     return yasa_df_with_predictions
 
 
-def cached_post_human_pipeline(log, dir_name: str, input_file: str, stats_df: pd.DataFrame, days_data: pd.DataFrame, yasa_df: pd.DataFrame, eeg_state_events):
+def cached_post_human_pipeline(log, dir_name: str, input_file: str, stats_df: pd.DataFrame, days_data: pd.DataFrame, yasa_df: pd.DataFrame, eeg_state_events, force = False):
     input_file_without_ext = os.path.splitext(input_file)[0]
     cached = input_file_without_ext + ".post_human.csv"
 
@@ -122,10 +122,13 @@ def cached_post_human_pipeline(log, dir_name: str, input_file: str, stats_df: pd
         output_csv_file = input_file_without_ext + ".post_human.csv"
         log("Saving to: " + output_csv_file)
         out.to_csv(output_csv_file, index=False)
-        return out
+        return out, False
 
 
-    if os.path.exists(cached):
+    if force:
+        log("Forced rebuild")
+        return regenerate()
+    elif os.path.exists(cached):
         log("Loading cached file " + cached)
         out = pd.read_csv(cached)
 
@@ -144,7 +147,7 @@ def cached_post_human_pipeline(log, dir_name: str, input_file: str, stats_df: pd
 
         out['epoch'] = out['Epoch']
         out.set_index('epoch', inplace=True)
-        return out
+        return out, True
     else:
         log(f"No cached file {cached}, rebuilding")
         return regenerate()

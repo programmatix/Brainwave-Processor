@@ -2,44 +2,60 @@
 
 
 import pandas as pd
-
+import tqdm
 
 def only_eeg(yasa_df: pd.DataFrame) -> pd.DataFrame:
-    cols = [col for col in yasa_df.columns if "eeg" in col]
+    # Not calculating for scaled _s cols because - does that make any sense?
+    cols = [col for col in yasa_df.columns if "eeg" in col and not col.endswith("_s")]
     eeg = yasa_df[cols]
     return eeg
 
 
 def stats(yasa_df: pd.DataFrame) -> pd.DataFrame:
     eeg = only_eeg(yasa_df)
-
-    # List to store the results
     stats_list = []
 
-    # Iterate over each column in the `eeg` DataFrame
+    stages = yasa_df['Stage'].unique()
+    sleep_stages = yasa_df[yasa_df['Stage'] != 'W']
+    non_deep_sleep_stages = yasa_df[yasa_df['Stage'].isin(['W', 'N1', 'N2', 'R'])]
+
+    # for idx, col in enumerate(tqdm(eeg.columns, desc="EEG column stats")):
     for col in eeg.columns:
         col_data = eeg[col]
         stats = {
             'Column': col,
-            'Mean': col_data.mean(),
             'P10': col_data.quantile(0.10),
             'P90': col_data.quantile(0.90),
             'Min': col_data.min(),
-            'Max': col_data.max(),
-            'StdDev': col_data.std()
+            'Max': col_data.max()
         }
+
+        for stage in stages:
+            stage_data = yasa_df[yasa_df['Stage'] == stage]
+            stage_col_data = stage_data[col]
+            stats.update({
+                f'{stage}_P10': stage_col_data.quantile(0.10),
+                f'{stage}_P90': stage_col_data.quantile(0.90),
+                f'{stage}_Min': stage_col_data.min(),
+                f'{stage}_Max': stage_col_data.max()
+            })
+
+        for fake_stage, stage_data in [('Sleep', sleep_stages), ('NonDeepSleep', non_deep_sleep_stages)]:
+            fake_stage_col_data = stage_data[col]
+            stats.update({
+                f'{fake_stage}_P10': fake_stage_col_data.quantile(0.10),
+                f'{fake_stage}_P90': fake_stage_col_data.quantile(0.90),
+                f'{fake_stage}_Min': fake_stage_col_data.min(),
+                f'{fake_stage}_Max': fake_stage_col_data.max()
+            })
+
         stats_list.append(stats)
 
     stats_df = pd.DataFrame(stats_list)
-
     return stats_df
-
-
 
 def normalize_series(series, p10, p90):
     return (series - p10) / (p90 - p10)
-
-
 
 def scale_by_stats(yasa_df: pd.DataFrame, stats_df: pd.DataFrame) -> pd.DataFrame:
     assert not any(col.startswith("Main") for col in yasa_df), "Do not want to double-scale Main channel"
@@ -72,6 +88,8 @@ def add_main_channel(df):
         return df  # No main channel found, return the original DataFrame
 
     filtered_columns = [col for col in columns if "eeg" in col and col.startswith(main_channel) and col.endswith("_s")]
-    for col in filtered_columns:
-        renamed = col.replace(main_channel, "Main")
-        df[renamed] = df[col]
+    new_columns = {col.replace(main_channel, "Main"): df[col] for col in filtered_columns}
+
+    # Concatenate the new columns to the original DataFrame
+    df = pd.concat([df, pd.DataFrame(new_columns)], axis=1)
+    return df

@@ -1,5 +1,3 @@
-import shutil
-
 import pandas as pd
 import os
 import pytz
@@ -36,14 +34,17 @@ mne.set_log_level('ERROR')
 
 force_if_older_than = datetime(2024, 12, 2, 0, 0, 0)
 
-# This YASA pipeline is slow to run, so try to keep this immutable and solely related to YASA.
+# This is the 2nd pipeline, the post-YASA one.  Post-human runs next.
+# This gets YASA features, scales them, chooses main channel.
 
-def cached_pipeline(log, input_file: str, force: bool = False):
+
+# yasa_df: results from the YASA pipeline - raw.yasa.csv
+def cached_post_yasa_pipeline(log, input_file: str, yasa_df: pd.DataFrame, stats_df: pd.DataFrame, force: bool = False):
     input_file_without_ext = os.path.splitext(input_file)[0]
-    cached = input_file_without_ext + ".yasa.csv"
+    cached = input_file_without_ext + ".post_yasa.csv"
 
     def regenerate():
-        out = pipeline(log, input_file)
+        out = post_yasa_pipeline(log, input_file, yasa_df, stats_df)
         log("Saving to: " + cached)
         out.to_csv(cached, index=False)
         return out, False
@@ -52,83 +53,66 @@ def cached_pipeline(log, input_file: str, force: bool = False):
         log("Loading cached file " + cached)
         out = pd.read_csv(cached)
 
-        # Most recent files
-        json_exist = os.path.exists(input_file_without_ext + ".sleep.json")
-
         modification_time = os.path.getmtime(cached)
         modification_date = datetime.fromtimestamp(modification_time)
-
         if force:
             log("Forced rebuild")
             return regenerate()
         if modification_date < force_if_older_than:
             log("Cached file " + cached + f" mod date {modification_date} is < {force_if_older_than}, rebuilding")
             return regenerate()
-        if not json_exist:
-            log("No sleep.json, rebuilding")
-            return regenerate()
 
-        # Fixing old data bug without having to rebuild everything
-        if any('abspow' in col for col in out.columns):
-
-            if 'Fpz-M1_eeg_abspow' in out.columns:
-                log("Has excess columns, truncating and saving")
-                # Truncate the DataFrame to the specified columns
-                out = out[['Stage', 'Confidence', 'Epoch', 'Timestamp', 'Source', 'Fpz-M1_Stage', 'Fpz-M1_Confidence', 'StageInt']]
-                out.to_csv(cached, index=False)
-            else:
-                log("Has excess columns but cannot handle, rebuilding")
-                return regenerate()
-
-        out['epoch'] = out['Epoch']
-        out.set_index('epoch', inplace=True)
+        out.set_index('Epoch', inplace=True)
         return out, True
     else:
-        # Support the old way so we don't have to rebuild everything
-        # if os.path.exists(input_file_without_ext + ".with_features.csv"):
-        #     log("Cached file " + cached + " is missing, but with_features.csv exists, copying and using")
-        #     # shutil.copyfile(input_file_without_ext + ".with_features.csv", cached)
-        #     with_features = pd.read_csv(input_file_without_ext + ".with_features.csv")
-
         log(f"No cached file {cached}, rebuilding")
         return regenerate()
 
 
-def pipeline(log, input_file: str):
-    mne.use_log_level("warning")
-
+def post_yasa_pipeline(log, input_file: str, yasa_df: pd.DataFrame, stats_df: pd.DataFrame):
     # Load MNE
+    mne.use_log_level("warning")
     log("Loading MNE file " + input_file)
     raw, input_file_without_ext, mne_filtered = convert.load_mne_file(log, input_file)
 
     channels = raw.info['ch_names']
     sfreq = raw.info['sfreq']
     start_date = raw.info['meas_date']
+    end_date = start_date + timedelta(seconds=float(raw.times[-1]))
+
+    # Sleep events - v expensive, needs pushdown filter, not used for much
+    # garbage_collect(log)
+    # log("Loading sleep events")
+    # ha_events = sleep_events.load_sleep_events(log, start_date, end_date)
+    # output_csv_file = input_file_without_ext + ".night_events.csv"
+    # ha_events.to_csv(output_csv_file, index=False)
 
 
-    log(f"Start date: {start_date} channels: {channels} sfreq: {sfreq}")
-
-    # Hardcoded fixes for some borked files (may not be needed anymore)
-    if (start_date.year < 2000):
-        date_time_str = os.path.basename(os.path.dirname(input_file))
-
-        # Parse the date and time string into a datetime object
-        date_time_obj = datetime.strptime(date_time_str, '%Y-%m-%d-%H-%M-%S')
-
-        # Set the timezone to UK time
-        uk_timezone = pytz.timezone('Europe/London')
-        date_time_uk = uk_timezone.localize(date_time_obj)
-        date_time_utc = date_time_uk.astimezone(timezone.utc)
-
-        log(f"Have tried to fix broken startdate in {input_file} from {start_date} to {date_time_utc}")
-        start_date = date_time_utc
-        mne_filtered.set_meas_date(start_date)
-        raw.set_meas_date(start_date)
-
-    # Save as EDF
+    # YASA features
     garbage_collect(log)
-    log("Saving as EDF")
-    convert.save_mne_as_downsample_edf(log, mne_filtered, input_file_without_ext)
+    log("Extracting YASA features")
+    yasa_feats, channel_feats_dict = yasa_features.extract_yasa_features2(log, channels, mne_filtered)
+
+    print("YASA_df: ", yasa_df.columns)
+    print("yasa_feats: ", yasa_feats.columns)
+
+    # # Combine epochs and YASA features
+    # garbage_collect(log)
+    # df = yasa_feats.copy()
+    # df['epoch'] = df['Epoch']
+    # df.set_index('epoch', inplace=True)
+    combined_df = yasa_df.join(yasa_feats)
+
+    print("combined_df: ", combined_df.columns)
+
+    # Scaled
+    scale_by_stats = scaling.scale_by_stats(combined_df, stats_df)
+
+    print("scale_by_stats: ", scale_by_stats.columns)
+
+    yasa_feats = combined_df.join(scale_by_stats.add_suffix('_s'))
+
+    print("yasa_feats: ", yasa_feats.columns)
 
 
     # YASA slow waves
@@ -151,12 +135,41 @@ def pipeline(log, input_file: str):
     #     output_csv_file = input_file_without_ext + ".spindle_summary.csv"
     #     sp_summary.to_csv(output_csv_file, index=False)
 
-    # YASA proper
-    garbage_collect(log)
-    log("Running YASA")
-    yasa_copy, json_out = run_yasa.run_yasa_report(log, input_file_without_ext, raw, False)
+    # Main channel (want to do after scaling)
+    yasa_feats = scaling.add_main_channel(yasa_feats)
 
-    return yasa_copy
+    # Automated waking scoring
+    # We're training a model to more accurately predict waking than YASA.  So we have to be judicious in what YASA data we use - while being aware that manually scoring waking is challenging.  So only use data where YASA is supremely confident in wakefulness.
+    # This stuff needs updating to support Main channel (should be easy)
+    # garbage_collect(log)
+    # log("Automated waking scoring")
+    # df_probably_awake = wakings.get_yasa_probably_awake(log, combined_df)
+    #
+    # # Manual waking scoring
+    # garbage_collect(log)
+    # log("Manual waking scoring")
+    # df_definitely_awake = wakings.get_definitely_awake(df_probably_awake, ha_events)
+    #
+    # # Combine probably and definitely awake
+    # df_combined_awake = df_probably_awake.copy()
+    # df_combined_awake['DefinitelyAwake'] = df_definitely_awake['DefinitelyAwake']
+    # df_combined_awake['ProbablyAwake'] = (df_combined_awake['DefinitelyAwake'] == True) | (df_combined_awake['YASAProbablyAwake'] == True)
+    #
+    # # Epochs that are probably sleep
+    # garbage_collect(log)
+    # log("Epochs that are probably sleep")
+    # df_asleep = sleep.probably_asleep(df_combined_awake)
+
+    # Run current best YASAesque model
+    # Skipping as seems to require Fpz
+    # log("Running YASAesque model")
+    # df_with_predictions = best_model.run_model(df_asleep)
+    # output_csv_file = input_file_without_ext + ".with_features.csv"
+    # df_with_predictions.to_csv(output_csv_file, index=False)
+
+    log("All done! " + input_file)
+
+    return yasa_feats
 
 
 # def combine_all_file(log, input_dir: str):

@@ -310,6 +310,7 @@ def predict_file(log, model, f: PerFile):
         print(cm)
 
     export_with_microwakings(f, log, processed_predictions, probabilities_channel, binary_predictions, cleaned_initial_predictions, filled_predictions, cleaned_predictions)
+    return blocks_df
 
 
 def export_with_microwakings(self: PerFile, log, processed_predictions, probabilities_channel, binary_predictions, cleaned_initial_predictions, filled_predictions, cleaned_predictions):
