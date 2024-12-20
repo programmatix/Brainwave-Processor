@@ -126,6 +126,48 @@ def convert_timestamps_to_uk(df, src_timestamp_col='Timestamp', dest_timestamp_c
     """
     df[dest_timestamp_col] = df[src_timestamp_col].apply(convert_timestamp_to_uk)
 
+# Converts anything to datetime64[ns, Europe/London]
+# If there is anything suggesting a timezone, it'll use that, and convert into Europe/London.
+# Otherwise it'll assume it's a localtime in Europe/London already.
+def convert_timestamps_to_uk_optimised(df_series: pd.Series, debug = False) -> pd.Series:
+    out = df_series.copy()
+
+    dtype = df_series.dtype
+    if dtype == 'datetime64[ns]':
+        if debug:
+            print("Assuming datetime64[ns] is already a localtime in Europe/London zone, not timezone converting")
+        return pd.to_datetime(out, errors='coerce').dt.tz_localize('Europe/London')
+    elif dtype == 'str' or dtype == 'object':
+        # try:
+        # Handle strings with Z info
+        if debug:
+            print("Trying to handle string as though it has timezone info")
+        return pd.to_datetime(out, errors='coerce').dt.tz_convert('Europe/London')
+        # except TypeError as e:
+        #     # Handle TypeError: Cannot convert tz-naive timestamps, use tz_localize to localize
+        #     return pd.to_datetime(out, errors='coerce').dt.tz_localize('UTC').dt.tz_convert('Europe/London')
+    else:
+        raise ValueError(f"Unsupported dtype for convert_timestamps_to_uk_optimised: {dtype}")
+
+
+        # Check if timestamp is timezone-aware
+        # is_tz_aware = ts.tz is not None
+        #
+        # if is_tz_aware:
+        #     # If already timezone-aware, convert directly to UK time
+        #     return ts.tz_convert('Europe/London')
+        # else:
+        #     # If timezone-naive, localize to UTC first
+        #     return ts.tz_localize('UTC').tz_convert('Europe/London')
+    # except Exception as e:
+    #     try:
+    #         # Try parsing with explicit timezone offsets
+    #         ts = pd.to_datetime(out, utc=True)
+    #         return ts.tz_convert('Europe/London')
+    #     except Exception as e:
+    #         print(f"Error converting timestamp: {df_series}")
+    #         print(e)
+    #         raise e
 
 def convert_to_datetime(row, time_column):
     if pd.notna(row[time_column]):

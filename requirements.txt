@@ -3,7 +3,6 @@ numpy
 pandas
 brainflow
 mne
-jupyter
 yasa
 influxdb
 paho-mqtt
@@ -31,3 +30,5 @@ pymupdf
 pydrive
 langchain
 langchain_community
+papermill
+scrapbook

@@ -152,3 +152,33 @@ def cached_post_human_pipeline(log, dir_name: str, input_file: str, stats_df: pd
         log(f"No cached file {cached}, rebuilding")
         return regenerate()
 
+
+
+def combine_all_files(log, input_dir: str):
+    errors = []
+    dataframes = []
+
+    for root, dirs, files in os.walk(input_dir):
+        for dir_name in dirs:
+            input_file = os.path.join(root, dir_name, "raw.post_human.csv")
+            try:
+                log("Processing file: " + input_file)
+                if os.path.exists(input_file):
+                    df = pd.read_csv(input_file)
+                    df['filename'] = input_file
+                    dataframes.append(df)
+            except Exception as e:
+                log("Error processing file: " + input_dir)
+                errors.append("Error processing file: " + input_file + " - " + str(e))
+                log(e)
+
+    # Concatenate all dataframes into a single dataframe
+    if dataframes:
+        combined_df = pd.concat(dataframes, ignore_index=True)
+    else:
+        combined_df = pd.DataFrame()
+
+    for err in errors:
+        log(err)
+    df = combined_df
+    return df
