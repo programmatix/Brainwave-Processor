@@ -72,12 +72,11 @@ def evaluate_classification_model(md, X_train, y_train, X_val, y_val):
 
     plt.show()
 
-def evaluate_regression_model(md, X_train, y_train, X_val, y_val):
-    model = md.model
-    print("Evaluation for model: ", md.name)
+def evaluate_regression_model(model, name: str, X_train, y_train, X_val, y_val):
+    print("Evaluation for model: ", name)
 
     # Evaluate the model on the training set
-    print(f"{md.name} Training Set Evaluation:")
+    print(f"{name} Training Set Evaluation:")
     train_predictions = model.predict(X_train)
     train_mae = mean_absolute_error(y_train, train_predictions)
     train_mse = mean_squared_error(y_train, train_predictions)
@@ -89,11 +88,11 @@ def evaluate_regression_model(md, X_train, y_train, X_val, y_val):
     plt.plot([y_train.min(), y_train.max()], [y_train.min(), y_train.max()], 'k--', lw=2)
     plt.xlabel('Actual')
     plt.ylabel('Predicted')
-    plt.title(f'{md.name} Predictions vs Actual (training)')
+    plt.title(f'{name} Predictions vs Actual (training)')
     plt.show()
 
     # Evaluate the model on the validation set
-    print(f"{md.name} Validation Set Evaluation:")
+    print(f"{name} Validation Set Evaluation:")
     val_predictions = model.predict(X_val)
     val_mae = mean_absolute_error(y_val, val_predictions)
     val_mse = mean_squared_error(y_val, val_predictions)
@@ -106,7 +105,45 @@ def evaluate_regression_model(md, X_train, y_train, X_val, y_val):
     plt.plot([y_val.min(), y_val.max()], [y_val.min(), y_val.max()], 'k--', lw=2)
     plt.xlabel('Actual')
     plt.ylabel('Predicted')
-    plt.title(f'{md.name} Predictions vs Actual (validation)')
+    plt.title(f'{name} Predictions vs Actual (validation)')
     plt.show()
 
 
+def evaluate_regression_model_quick(model, X_train, y_train, X_val, y_val):
+    pred_train = model.predict(X_train)
+    pred_val = model.predict(X_val)
+    mae_train = mean_absolute_error(y_train, pred_train)
+    mae_val = mean_absolute_error(y_val, pred_val)
+    mse_train = mean_squared_error(y_train, pred_train)
+    mse_val = mean_squared_error(y_val, pred_val)
+    rmse_train = np.sqrt(mse_train)
+    rmse_val = np.sqrt(mse_val)
+
+    return {
+        'Rows_Train': len(X_train),
+        'MAE_Train': mae_train,
+        'MAE_Val': mae_val,
+        'MSE_Train': mse_train,
+        'MSE_Val': mse_val,
+        'RMSE_Train': rmse_train,
+        'RMSE_Val': rmse_val
+    }
+
+
+def evaluate_regression_models(models_and_data):
+    results = []
+    for md in models_and_data:
+        if not hasattr(md, 'is_classifier') or not md.is_classifier:
+            if hasattr(md, 'models'):
+                for ms in md.models:
+                    result = evaluate_regression_model_quick(ms.model, ms.X_train, ms.y_train, ms.X_val, ms.y_val)
+                    result['Model'] = md.name
+                    result.update(ms.settings)
+                    results.append(result)
+            elif hasattr(md, 'model'):
+                result = evaluate_regression_model_quick(md.model, md.X_train, md.y_train, md.X_val, md.y_val)
+                result['Model'] = md.name
+                results.append(result)
+
+    results_df = pd.DataFrame(results)
+    return results_df

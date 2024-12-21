@@ -20,9 +20,14 @@ def allowed_best_eeg_feature(feature: str) -> bool:
     def blacklist(feature: str) -> bool:
         # Don't understand svdent!
         # Unconvinced by kurt and skew in context of EEG
+        #
         return 'svdent' in feature \
             or 'kurt' in feature \
-            or 'skew' in feature
+            or 'skew' in feature \
+            or '_ds_' in feature \
+            or '_dt_' in feature \
+            or '_db_' in feature \
+            or '_at_' in feature \
 
     return whitelist(feature) and not blacklist(feature)
 
@@ -50,6 +55,15 @@ def allowed_time_feature(feature: str) -> bool:
 
     return whitelist(feature) and not blacklist(feature)
 
+def allowed_sleep_stages(feature: str) -> bool:
+    def whitelist(feature: str) -> bool:
+        return feature.startswith("SleepStage")
+
+    def blacklist(feature: str) -> bool:
+        return False
+
+    return whitelist(feature) and not blacklist(feature)
+
 def allowed_feature(sources: [str], feature: str) -> bool:
     if 'literally_all' in sources:
         return True
@@ -64,6 +78,9 @@ def allowed_feature(sources: [str], feature: str) -> bool:
             return True
     if 'times' in sources:
         if allowed_time_feature(feature):
+            return True
+    if 'sleep_stage' in sources:
+        if allowed_sleep_stages(feature):
             return True
     return False
 
@@ -89,6 +106,41 @@ class FeaturesHandler(BaseEstimator, TransformerMixin):
         # Sorting helps ensure model will line up with data later
         X = X.reindex(sorted(X.columns), axis=1)
         allowed = sorted(allowed)
-        print(f"Had {len(features)} features, after filtering have features", list(allowed))
 
-        return X[allowed]
+        out = X[allowed]
+        print(f"FeaturesHandler {X.shape} to {X.shape} Had {len(features)} features, after filtering have features", list(allowed))
+        return out
+
+
+import numpy as np
+
+class CleanTargetCol(BaseEstimator, TransformerMixin):
+    def __init__(self, target_col, max_value=1e6):
+        self.target_col = target_col
+        self.max_value = max_value
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        y = X[self.target_col]
+
+        # Check for NaN values
+        nan_indices = np.where(np.isnan(y))[0]
+        print(f"NaN indices: {nan_indices} ({len(nan_indices)} total of {len(y)})")
+
+        # Check for infinity values
+        infinity_indices = np.where(np.isinf(y))[0]
+        print(f"Infinity indices: {infinity_indices}")
+
+        # Check for excessively large values
+        too_large_indices = np.where(y > self.max_value)[0]
+        print(f"Too large indices: {too_large_indices}")
+
+        # Remove rows with NaN, infinity, or excessively large values
+        valid_indices = np.setdiff1d(np.arange(len(y)), np.concatenate((nan_indices, infinity_indices, too_large_indices)))
+        X_cleaned = X.iloc[valid_indices]
+
+        print(f"CleanTargetCol {X.shape} to {X_cleaned.shape}")
+
+        return X_cleaned

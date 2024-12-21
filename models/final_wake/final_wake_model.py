@@ -13,7 +13,7 @@ import numpy as np
 from sklearn.base import TransformerMixin, BaseEstimator
 from sklearn.pipeline import Pipeline
 
-from models.util.features import FeaturesHandler
+from models.util.features import FeaturesHandler, CleanTargetCol
 
 
 class AddAllTargetCols(BaseEstimator, TransformerMixin):
@@ -115,6 +115,32 @@ class DropBadRows(BaseEstimator, TransformerMixin):
         print(f"DropBadRows: before {len(X)} rows after {len(out)} rows")
         return out
 
+class RequireNonEmptyRows(BaseEstimator, TransformerMixin):
+    def __init__(self, rows_must_be_non_empty: list[str]):
+        self.rows_must_be_non_empty = rows_must_be_non_empty
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        # Remove rows with NaN, NaT, or other missing values in the specified columns
+        out = X.dropna(subset=self.rows_must_be_non_empty)
+        print(f"RequireNonEmptyRows: before {len(X)} rows after {len(out)} rows")
+        return out
+
+class Condition(BaseEstimator, TransformerMixin):
+    def __init__(self, condition: callable):
+        self.condition = condition
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        # Remove rows with NaN, NaT, or other missing values in the specified columns
+        out = self.condition(X)
+        print(f"Condition: before {len(X)} rows after {len(out)} rows")
+        return out
+
 @dataclass
 class ModelAndData:
     name: str
@@ -130,7 +156,16 @@ class ModelAndData:
     y_val: pd.Series = None
 
 
-def create_and_add(predict_mode: bool, models_and_data: [ModelAndData], is_classifier: bool, name: str, target_set: [int], target_col: str, sources: list[str], input):
+def create_and_add(predict_mode: bool,
+                   models_and_data: [ModelAndData],
+                   is_classifier: bool,
+                   name: str,
+                   target_set: [int],
+                   target_col: str,
+                   sources: list[str],
+                   rows_must_be_non_empty: list[str],
+                   condition: callable,
+                   input):
     #name = f"target:{target_col} allowed_sources:{allowed_sources} not_allowed_sources:{not_allowed_sources}"
 
     p = []
@@ -142,9 +177,12 @@ def create_and_add(predict_mode: bool, models_and_data: [ModelAndData], is_class
         ])
 
     p.extend([
+        ('clean_target', CleanTargetCol(target_col)),
+        ('condition', Condition(condition)),
         ('features_generic', FeaturesHandler(target_col, sources)),
         # ('features', UsefulFeatures(target_col, allowed_sources)),
         # ('not_allowed_features', NotAllowedFeatures(target_col, not_allowed_sources)),
+        ('drop_empty', RequireNonEmptyRows(rows_must_be_non_empty)),
         ('drop_bad', DropBadRows()),
     ])
 
@@ -184,8 +222,15 @@ DEFAULT_TARGET_SET = [10, 30, 60, 90, 120, 150, 240]
 
 def create_and_add_all(merged, predict_mode: bool, target_set = DEFAULT_TARGET_SET):
     models_and_data: list[ModelAndData] = []
-    create_and_add(predict_mode, models_and_data,  False, f"minsUntilWake", target_set, "minsUntilWake", ["best_eeg", "physical"], merged)
 
+    #create_and_add(predict_mode, models_and_data,  False, f"minsUntilWakeAny", target_set, "minsUntilWake", ["best_eeg", "physical"], [], merged)
+    create_and_add(predict_mode, models_and_data,  False, f"minsUntilWakeNeedTemp", target_set, "minsUntilWake", ["best_eeg", "physical"], ["Temp"], merged)
+    # create_and_add(predict_mode, models_and_data,  False, f"minsUntilWakeAnySettling", target_set, "minsUntilWake", ["best_eeg", "physical"], ["Temp"], lambda X: X[X['minsSinceReadyToSleep'] < 0], merged)
+
+    # Performance was horrible
+    # create_and_add(predict_mode, models_and_data,  False, f"minsUntilWakeJustPhysicalNeedTemp", target_set, "minsUntilWake", ["physical"], ["Temp"], merged)
+
+    # Regression has gone so well don't think we need this classfication anymore
     # for y in target_set:
     #     #create_and_add(models_and_data, f"WillWakeWithin{y}Mins", ["all"], [], merged)
     #     # create_and_add(models_and_data,  f"PredictFinalWakeWithinNext{y}MinsLiterallyAll", target_set, f"WillWakeWithin{y}Mins", ["literally_all"], merged)

@@ -76,15 +76,15 @@ def add_periods(log, dir_name, input_file, stats_df, days_data, yasa_df):
     return yasa_df
 
 
-def post_human_pipeline(log, dir_name, input_file, stats_df, days_data, yasa_df, eeg_state_events):
-    convert_timestamps_to_uk(yasa_df, 'Timestamp', 'TimestampUK')
-    yasa_df = add_periods(log, dir_name, input_file, stats_df, days_data, yasa_df)
-    add_event_type(yasa_df, eeg_state_events)
+def post_human_pipeline(log, dir_name, input_file, stats_df, days_data, post_yasa_df, eeg_state_events):
+    convert_timestamps_to_uk(post_yasa_df, 'Timestamp', 'TimestampUK')
+    post_yasa_df = add_periods(log, dir_name, input_file, stats_df, days_data, post_yasa_df)
+    add_event_type(post_yasa_df, eeg_state_events)
 
     # TiredVsWired model
-    # before_ready_to_sleep = yasa_df[yasa_df['60MinsBeforeReadyToSleep'] == 1]
+    # before_ready_to_sleep = post_yasa_df[post_yasa_df['60MinsBeforeReadyToSleep'] == 1]
     # models_and_data_before_ready_to_sleep = [predict_only_tired_vs_wired_model_pipeline('main', before_ready_to_sleep, False)]
-    models_and_data = [predict_only_tired_vs_wired_model_pipeline('main', yasa_df, False)]
+    models_and_data = [predict_only_tired_vs_wired_model_pipeline('main', post_yasa_df, False)]
 
     model = CatBoostClassifier()
     model.load_model("models/eeg_states/settling-tired-vs-wired-non-realtime_catboost_model.cbm")
@@ -93,7 +93,7 @@ def post_human_pipeline(log, dir_name, input_file, stats_df, days_data, yasa_df,
     # predictions_df['TiredVsWired60MinsBeforeReadyToSleepPrediction'] = predictions_df[1]
     predictions_df['SettlingTiredVsWiredPrediction'] = predictions_df[1]
     predictions_df.drop([0, 1], axis=1, inplace=True)
-    yasa_df_with_predictions = pd.concat([yasa_df, predictions_df], axis=1)
+    post_yasa_df_with_predictions = pd.concat([post_yasa_df, predictions_df], axis=1)
 
     model.load_model("models/eeg_states/settling-score-non-realtime_catboost_model.cbm")
     predictions = model.predict_proba(models_and_data[0].X)
@@ -101,24 +101,24 @@ def post_human_pipeline(log, dir_name, input_file, stats_df, days_data, yasa_df,
     #predictions_df['TiredVsWired60MinsBeforeReadyToSleepPrediction'] = predictions_df[1]
     predictions_df['SettlingScorePrediction'] = predictions_df[1]
     predictions_df.drop([0, 1], axis=1, inplace=True)
-    yasa_df_with_predictions = pd.concat([yasa_df_with_predictions, predictions_df], axis=1)
+    post_yasa_df_with_predictions = pd.concat([post_yasa_df_with_predictions, predictions_df], axis=1)
 
     model.load_model("models/eeg_states/settling-v4-score-non-realtime_catboost_model.cbm")
     predictions = model.predict_proba(models_and_data[0].X)
     predictions_df = pd.DataFrame(predictions, index=models_and_data[0].X.index)
     predictions_df['SettlingV4ScorePrediction'] = predictions_df[1]
     predictions_df.drop([0, 1], axis=1, inplace=True)
-    yasa_df_with_predictions = pd.concat([yasa_df_with_predictions, predictions_df], axis=1)
+    post_yasa_df_with_predictions = pd.concat([post_yasa_df_with_predictions, predictions_df], axis=1)
 
-    return yasa_df_with_predictions
+    return post_yasa_df_with_predictions
 
 
-def cached_post_human_pipeline(log, dir_name: str, input_file: str, stats_df: pd.DataFrame, days_data: pd.DataFrame, yasa_df: pd.DataFrame, eeg_state_events, force = False):
+def cached_post_human_pipeline(log, dir_name: str, input_file: str, stats_df: pd.DataFrame, days_data: pd.DataFrame, post_yasa_df: pd.DataFrame, eeg_state_events, force = False):
     input_file_without_ext = os.path.splitext(input_file)[0]
     cached = input_file_without_ext + ".post_human.csv"
 
     def regenerate():
-        out = post_human_pipeline(log, dir_name, input_file, stats_df, days_data, yasa_df, eeg_state_events)
+        out = post_human_pipeline(log, dir_name, input_file, stats_df, days_data, post_yasa_df, eeg_state_events)
         output_csv_file = input_file_without_ext + ".post_human.csv"
         log("Saving to: " + output_csv_file)
         out.to_csv(output_csv_file, index=False)

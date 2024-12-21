@@ -1,8 +1,13 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 
-def xgboost_importances(md):
-    feature_importances = md.model.get_booster().get_score(importance_type='weight')
+def get_importances(model, feature_names):
+    if 'xgboost' in str(type(model)):
+        return xgboost_importances(model)
+    return catboost_importances(model, feature_names)
+
+def xgboost_importances(model):
+    feature_importances = model.get_booster().get_score(importance_type='weight')
     importance_df = pd.DataFrame({
         'Feature': feature_importances.keys(),
         'Importance': feature_importances.values()
@@ -11,12 +16,11 @@ def xgboost_importances(md):
 
     return importance_df
 
-def catboost_importances(md):
+def catboost_importances(model, feature_names):
     # Get feature importances
-    feature_importances = md.model.get_feature_importance()
+    feature_importances = model.get_feature_importance()
 
     # Create a DataFrame to display the feature importances
-    feature_names = md.X_train.columns
     importance_df = pd.DataFrame({
         'Feature': feature_names,
         'Importance': feature_importances

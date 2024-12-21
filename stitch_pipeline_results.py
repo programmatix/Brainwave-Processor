@@ -10,6 +10,16 @@ import pandas as pd
 def post_stitch(df) -> pd.DataFrame:
     out = df.copy()
     out['dayAndNightOf'] = pd.to_datetime(out['dayAndNightOf'])
+    out['SleepStageDeep'] = out['Stage'] == 'N3'
+    out['SleepStageWake'] = out['Stage'] == 'W'
+    out['SleepStageN1'] = out['Stage'] == 'N1'
+    out['SleepStageN2'] = out['Stage'] == 'N2'
+    out['SleepStageR'] = out['Stage'] == 'R'
+    out['SleepStagePreReadyToSleep'] = out['minsSinceReadyToSleep'] <= 0
+    out['SleepStageDuringReadyToSleep'] = out['DuringReadyToSleep']
+    out['SleepStageAfterSleep'] = out['minsSinceAsleep'] >= 0
+    out['SleepStageAfterWake'] = out['minsUntilWake'] < 0
+
     return out
 
 def stitch_all_days(input_dir: str, force: bool = False):
