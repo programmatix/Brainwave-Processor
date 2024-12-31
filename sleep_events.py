@@ -177,7 +177,7 @@ def convert_to_datetime(row, time_column):
     else:
         return pd.NaT
 
-def load_days_data(pimp = False):
+def load_days_data(pimp = True):
     # def load_sleep_events(log, start_date, end_date, waking_start_time_tz, waking_end_time_tz):
     db = connect_to_firebase()
 
@@ -210,5 +210,27 @@ def pimp_my_days_data(result_df):
     for time_col, new_col in zip(time_columns, new_columns):
         day_data[new_col] = day_data.apply(lambda row: convert_to_datetime(row, time_col), axis=1)
 
+    duration_columns = ['night:aggregated:timeAwakeAfterSleepSecs']
+    new_duration_columns = ['timeAwakeAfterSleep']
+
+    for old_col, new_col in zip(duration_columns, new_duration_columns):
+        day_data[new_col] = pd.to_timedelta(day_data[old_col], unit='s')
+
     return day_data
 
+
+def load_nights_data(pimp = True):
+    db = connect_to_firebase()
+    docs = db.collection('nightsExperimental').stream()
+    records = [doc.to_dict() for doc in docs]
+    days = pd.DataFrame(records)
+
+    df = days
+    json_column = 'morningQuestionnaire'
+    exploded_df = json_normalize(df[json_column])
+    result_df = pd.concat([df['dayAndNightOf'], exploded_df], axis=1)
+    result_df = result_df.loc[:, ~result_df.columns.duplicated()]
+
+    result_df['dayAndNightOf'] = pd.to_datetime(result_df['dayAndNightOf'])
+
+    return result_df

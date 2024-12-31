@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import hashlib
 
 from google.cloud import storage
@@ -45,12 +47,39 @@ def base64_to_hex(base64_str):
 
 def upload_dir_to_gcs_skipping_existing(log, bucket_name, source_dir, destination_blob_prefix):
     """Uploads a directory to a GCS bucket, skipping identical files."""
+    # Calculate directory checksum
+    local_md5_file = os.path.join(source_dir, "directory_checksum.md5")
+
+    # Check if the local checksum file exists and its modification date
+    if os.path.exists(local_md5_file):
+        local_md5_mod_time = os.path.getmtime(local_md5_file)
+        local_md5_mod_time_dt = datetime.fromtimestamp(local_md5_mod_time)
+
+        # Check if any file has been modified since the local checksum file
+        files_modified = False
+        for root, _, files in os.walk(source_dir):
+            for file in files:
+                file_path = os.path.join(root, file)
+                file_mod_time = os.path.getmtime(file_path)
+                log(f"File {file_path} modified at {datetime.fromtimestamp(file_mod_time)}")
+                if file_mod_time > local_md5_mod_time:
+                    files_modified = True
+                    break
+            if files_modified:
+                break
+
+        if not files_modified:
+            log(f"Skipping upload of {source_dir}, no files modified since last checksum.")
+            return
+
+    directory_md5 = calculate_directory_md5(source_dir)
+    with open(local_md5_file, "w") as f:
+        f.write(directory_md5)
+
+    checksum_blob_path = os.path.join(destination_blob_prefix, "directory_checksum.md5").replace("\\", "/")
     storage_client = storage.Client()
     bucket = storage_client.bucket(bucket_name)
 
-    # Calculate directory checksum
-    directory_md5 = calculate_directory_md5(source_dir)
-    checksum_blob_path = os.path.join(destination_blob_prefix, "directory_checksum.md5").replace("\\", "/")
     checksum_blob = bucket.blob(checksum_blob_path)
 
     try:

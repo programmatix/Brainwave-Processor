@@ -12,6 +12,16 @@ def allowed_eeg_feature(feature: str) -> bool:
 
     return whitelist(feature) and not blacklist(feature)
 
+def allowed_eeg_no_future_feature(feature: str) -> bool:
+    def whitelist(feature: str) -> bool:
+        return True
+
+    def blacklist(feature: str) -> bool:
+        # Remove the central rolling average as it includes future knowledge
+        return '_c7min_' in feature
+
+    return allowed_eeg_feature(feature) and whitelist(feature) and not blacklist(feature)
+
 # Assumes has already gone through all_allowed_eeg_features
 def allowed_best_eeg_feature(feature: str) -> bool:
     def whitelist(feature: str) -> bool:
@@ -20,7 +30,7 @@ def allowed_best_eeg_feature(feature: str) -> bool:
     def blacklist(feature: str) -> bool:
         # Don't understand svdent!
         # Unconvinced by kurt and skew in context of EEG
-        #
+        # Not using the derived ones as they're confusing to think about and hopefully the model can learn them
         return 'svdent' in feature \
             or 'kurt' in feature \
             or 'skew' in feature \
@@ -57,18 +67,30 @@ def allowed_time_feature(feature: str) -> bool:
 
 def allowed_sleep_stages(feature: str) -> bool:
     def whitelist(feature: str) -> bool:
-        return feature.startswith("SleepStage")
+        return feature.startswith("SS")
 
     def blacklist(feature: str) -> bool:
         return False
 
     return whitelist(feature) and not blacklist(feature)
 
+def allowed_sleep_stages_no_times(feature: str) -> bool:
+    def whitelist(feature: str) -> bool:
+        return True
+
+    def blacklist(feature: str) -> bool:
+        return "MinsUntil" in feature or "MinsSince" in feature
+
+    return allowed_sleep_stages(feature) and whitelist(feature) and not blacklist(feature)
+
 def allowed_feature(sources: [str], feature: str) -> bool:
     if 'literally_all' in sources:
         return True
     if 'eeg' in sources:
         if allowed_eeg_feature(feature):
+            return True
+    if 'eeg_no_future' in sources:
+        if allowed_eeg_no_future_feature(feature):
             return True
     if 'best_eeg' in sources:
         if allowed_eeg_feature(feature) and allowed_best_eeg_feature(feature):
@@ -81,6 +103,9 @@ def allowed_feature(sources: [str], feature: str) -> bool:
             return True
     if 'sleep_stage' in sources:
         if allowed_sleep_stages(feature):
+            return True
+    if 'sleep_stage_no_times' in sources:
+        if allowed_sleep_stages_no_times(feature):
             return True
     return False
 

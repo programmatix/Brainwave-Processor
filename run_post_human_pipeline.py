@@ -11,6 +11,7 @@ import pandas as pd
 
 force_if_older_than = datetime(2024, 11, 8, 17, 0, 0)
 
+# Some addl useful stages get added in poststitch so we don't have to regenerate all post-human regularly
 def add_periods(log, dir_name, input_file, stats_df, days_data, yasa_df):
     day_and_night_of_date = datetime.strptime(dir_name, "%Y-%m-%d-%H-%M-%S")
     day_and_night_of = day_and_night_of_date.date().isoformat()
@@ -19,6 +20,7 @@ def add_periods(log, dir_name, input_file, stats_df, days_data, yasa_df):
 
     row = days_data[days_data['dayAndNightOf'] == day_and_night_of]
 
+    # Arguably should do this check earlier
     if row.empty:
         raise Exception(f"Don't have human data yet for {day_and_night_of} - complete MorningReview")
     if not 'asleepTime' in row:
@@ -137,6 +139,9 @@ def cached_post_human_pipeline(log, dir_name: str, input_file: str, stats_df: pd
 
         if modification_date < force_if_older_than:
             log("Cached file " + cached + f" mod date {modification_date} is < {force_if_older_than}, rebuilding")
+            return regenerate()
+        if not any(col for col in out.columns if col == 'minsSinceAsleep'):
+            log("Cached file " + cached + " is missing minsSinceAsleep, rebuilding")
             return regenerate()
         if not any(col for col in out.columns if col == 'SettlingScorePrediction'):
             log("Cached file " + cached + " is missing SettlingScorePrediction, rebuilding")

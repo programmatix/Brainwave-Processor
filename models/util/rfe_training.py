@@ -7,6 +7,7 @@ import pandas as pd
 @dataclass
 class ModelAndSettings:
     model: object
+    name: str
     # For RFE, need to keep the data we trained on
     X_train: pd.DataFrame
     y_train: pd.Series
@@ -37,7 +38,7 @@ def train_rfe(create_model: callable, name: str, X_train, y_train, X_val, y_val,
             'n_features': n_features,
         }
         aux.update(extra)
-        models.append(ModelAndSettings(model, X_train.copy(), y_train.copy(), X_val, y_val, aux))
+        models.append(ModelAndSettings(model, name, X_train.copy(), y_train.copy(), X_val, y_val, aux))
 
         if not do_rfe:
             break

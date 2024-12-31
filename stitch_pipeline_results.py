@@ -7,18 +7,95 @@ from jupyter_client.manager import KernelManager
 import scrapbook as sb
 import pandas as pd
 
-def post_stitch(df) -> pd.DataFrame:
+# 2024-12-28 needed 7
+# from_hour and to_hour are because I'm looking for insomnia really - either waking up way too early, or waking for
+# a long period in middle of night.  Also want to avoid false starts like 2024-11-25.
+def find_long_wakes(df, min_epochs=60, max_gap=7, from_hour_inc=0, to_hour_exc=6):
+    """Find stretches of SSWakeDuringSleep with small allowed gaps"""
+
+    current_stretch = []
+    gap_count = 0
+    long_wakes = []
+
+    for idx, is_wake in enumerate(df['SSWakeDuringSleep']):
+        if is_wake:
+            hour = df['Timestamp'].iloc[idx].hour
+            if hour >= from_hour_inc and hour < to_hour_exc:
+                if gap_count > 0:
+                    # Fill in the gap epochs if the gap was small enough
+                    if gap_count <= max_gap:
+                        current_stretch.extend(range(idx - gap_count, idx))
+                current_stretch.append(idx)
+                gap_count = 0
+        else:
+            if len(current_stretch) > 0:
+                gap_count += 1
+                if gap_count > max_gap:
+                    # Gap too large, check if current stretch is long enough
+                    if len(current_stretch) >= min_epochs:
+                        long_wakes.append(current_stretch)
+                    current_stretch = []
+                    gap_count = 0
+
+    # Check final stretch
+    if len(current_stretch) >= min_epochs:
+        long_wakes.append(current_stretch)
+
+    return long_wakes
+
+def add_mins_until_long_wake(df):
+    df['SSMinsUntilLongWake'] = -1
+    for day, group in df.groupby('dayAndNightOf'):
+        long_wake_indices = group[group['SSDuringLongWake']].index
+        if not long_wake_indices.empty:
+            first_long_wake_idx = long_wake_indices[0]
+            df.loc[group.index, 'SSMinsUntilLongWake'] = (df.loc[first_long_wake_idx, 'Timestamp'] - df.loc[group.index, 'Timestamp']).dt.total_seconds() / 60
+    return df
+
+def add_ss_long_wake_this_night_and_before_it(df):
+    df['SSLongWakeThisNight'] = df.groupby('dayAndNightOf')['SSDuringLongWake'].transform('any')
+    df['SSLongWakeThisNightAndIsBefore'] = df['SSLongWakeThisNight'] & (df['SSMinsUntilLongWake'] > 0)
+    return df
+
+
+# Generally when stitching the data together we want to work with solid nights.
+def remove_days_per_questionnaire(df):
+    nights = sleep_events.load_nights_data()
+    # Could rescue a few more partial days if required - see UsuableEEGDataEDA.  Not enough to bother with for now.
+    usable_nights = nights[nights['yasa.usable'] == 'Yes']
+    df = df[df['dayAndNightOf'].isin(usable_nights['dayAndNightOf'])]
+    return df
+
+
+def post_stitch(df,
+                should_remove_days_per_questionnaire: bool = True) -> pd.DataFrame:
     out = df.copy()
     out['dayAndNightOf'] = pd.to_datetime(out['dayAndNightOf'])
-    out['SleepStageDeep'] = out['Stage'] == 'N3'
-    out['SleepStageWake'] = out['Stage'] == 'W'
-    out['SleepStageN1'] = out['Stage'] == 'N1'
-    out['SleepStageN2'] = out['Stage'] == 'N2'
-    out['SleepStageR'] = out['Stage'] == 'R'
-    out['SleepStagePreReadyToSleep'] = out['minsSinceReadyToSleep'] <= 0
-    out['SleepStageDuringReadyToSleep'] = out['DuringReadyToSleep']
-    out['SleepStageAfterSleep'] = out['minsSinceAsleep'] >= 0
-    out['SleepStageAfterWake'] = out['minsUntilWake'] < 0
+
+    if should_remove_days_per_questionnaire:
+        out = remove_days_per_questionnaire(out)
+
+    out.reset_index(drop=True, inplace=True)
+
+    out['SSDeep'] = out['Stage'] == 'N3'
+    out['SSWake'] = out['Stage'] == 'W'
+    out['SSN1'] = out['Stage'] == 'N1'
+    out['SSN2'] = out['Stage'] == 'N2'
+    out['SSR'] = out['Stage'] == 'R'
+
+    out['SSPreReadyToSleep'] = out['minsSinceReadyToSleep'] <= 0
+    out['SSAfterSleep'] = out['minsSinceAsleep'] >= 0
+    out['SSDuringReadyToSleep'] = out['SSPreReadyToSleep'] & ~out['SSAfterSleep']
+    out['SSAfterFinalWake'] = out['minsUntilWake'] < 0
+    out['SSDuringSleep'] = out['SSAfterSleep'] & ~out['SSAfterFinalWake']
+    out['SSWakeDuringSleep'] = out['SSDuringSleep'] & out['SSWake']
+
+    long_wake_periods = find_long_wakes(out)
+    out['SSDuringLongWake'] = False
+    for period in long_wake_periods:
+        out.loc[period, 'SSDuringLongWake'] = True
+    add_mins_until_long_wake(out)
+    add_ss_long_wake_this_night_and_before_it(out)
 
     return out
 
@@ -53,19 +130,22 @@ def stitch_all_days(input_dir: str, force: bool = False):
     return post_stitch(pd.concat(all_dfs))
 
 # The papermill workflow is about 6x slower than this sadly
-def stitch_all_days_optimised(input_dir: str, force: bool = False):
+def stitch_all_days_optimised(input_dir: str,
+                              force: bool = False,
+                              remove_non_main_eeg: bool = True,
+                              should_remove_days_per_questionnaire: bool = True):
     all_dfs = []
 
     dirs = next(os.walk(input_dir))[1]
     for idx, dir_name in enumerate(tqdm(dirs)):
         #tqdm.write(f"Processing notebook in: {dir_name}")
 
-        out_df = stitch_day_optimised(input_dir, dir_name, force)
+        out_df = stitch_day_optimised(input_dir, dir_name, force, remove_non_main_eeg)
         if out_df is None:
             continue
         all_dfs.append(out_df)
 
-    return post_stitch(pd.concat(all_dfs))
+    return post_stitch(pd.concat(all_dfs), should_remove_days_per_questionnaire)
 
 from sleep_events import convert_timestamps_to_uk
 from models.util.papermill_util import exit_early
@@ -76,7 +156,7 @@ from importlib import reload
 reload(sleep_events)
 from sleep_events import convert_timestamps_to_uk_optimised
 
-def stitch_day_optimised(input_dir: str, dir_name: str, force: bool = False):
+def stitch_day_optimised(input_dir: str, dir_name: str, force: bool = False, remove_non_main_eeg: bool = True):
 
 
     yasa_file = os.path.join(input_dir, dir_name, "raw.yasa.csv")
@@ -129,4 +209,10 @@ def stitch_day_optimised(input_dir: str, dir_name: str, force: bool = False):
     duplicate_columns = [col for col in out_df.columns if 'duplicate' in col]
     out_df.drop(columns=duplicate_columns, inplace=True)
     out_df['Timestamp'] = convert_timestamps_to_uk_optimised(out_df['Timestamp'])
+
+    if remove_non_main_eeg:
+        # Getting rid of "T4-M1_Stage" here also
+        cols_to_remove = [col for col in out_df if ("_eeg_" in col and "Main" not in col) or "-M1_" in col]
+        out_df.drop(columns=cols_to_remove, inplace=True)
+
     return out_df

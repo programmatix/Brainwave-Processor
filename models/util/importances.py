@@ -1,7 +1,7 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 
-def get_importances(model, feature_names):
+def get_importances(model, feature_names = None):
     if 'xgboost' in str(type(model)):
         return xgboost_importances(model)
     return catboost_importances(model, feature_names)

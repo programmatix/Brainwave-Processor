@@ -129,7 +129,50 @@ def evaluate_regression_model_quick(model, X_train, y_train, X_val, y_val):
         'RMSE_Val': rmse_val
     }
 
+import numpy as np
+from sklearn.metrics import confusion_matrix
 
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
+
+def evaluate_classification_model_quick(model, X_train, y_train, X_val, y_val):
+    pred_train = model.predict(X_train)
+    pred_val = model.predict(X_val)
+
+    accuracy_val = accuracy_score(y_val, pred_val)
+    precision_val = precision_score(y_val, pred_val, average='binary')
+    recall_val = recall_score(y_val, pred_val, average='binary')
+    f1_val = f1_score(y_val, pred_val, average='binary')
+
+    cm_val = confusion_matrix(y_val, pred_val)
+    tn_val, fp_val, fn_val, tp_val = cm_val.ravel()
+
+    accuracy_train = accuracy_score(y_train, pred_train)
+    precision_train = precision_score(y_train, pred_train, average='binary')
+    recall_train = recall_score(y_train, pred_train, average='binary')
+    f1_train = f1_score(y_train, pred_train, average='binary')
+
+    cm_train = confusion_matrix(y_train, pred_train)
+    tn_train, fp_train, fn_train, tp_train = cm_train.ravel()
+
+    return {
+        'RowsTrain': len(X_train),
+        'AccVal': accuracy_val,
+        'PrecVal': precision_val,
+        'RecVal': recall_val,
+        'F1Val': f1_val,
+        'TPVal': tp_val,
+        'FPVal': fp_val,
+        'TNVal': tn_val,
+        'FNVal': fn_val,
+        'AccTrain': accuracy_train,
+        'PrecTrain': precision_train,
+        'RecTrain': recall_train,
+        'F1Train': f1_train,
+        'TPTrain': tp_train,
+        'FPTrain': fp_train,
+        'TNTrain': tn_train,
+        'FNTrain': fn_train
+    }
 def evaluate_regression_models(models_and_data):
     results = []
     for md in models_and_data:
@@ -144,6 +187,26 @@ def evaluate_regression_models(models_and_data):
                 result = evaluate_regression_model_quick(md.model, md.X_train, md.y_train, md.X_val, md.y_val)
                 result['Model'] = md.name
                 results.append(result)
+
+
+    results_df = pd.DataFrame(results)
+    return results_df
+
+def evaluate_classification_models(models_and_data):
+    results = []
+    for md in models_and_data:
+        if hasattr(md, 'is_classifier') and md.is_classifier:
+            if hasattr(md, 'models'):
+                for ms in md.models:
+                    result = evaluate_classification_model_quick(ms.model, ms.X_train, ms.y_train, ms.X_val, ms.y_val)
+                    result['Model'] = md.name
+                    result.update(ms.settings)
+                    results.append(result)
+            elif hasattr(md, 'model'):
+                result = evaluate_classification_model_quick(md.model, md.X_train, md.y_train, md.X_val, md.y_val)
+                result['Model'] = md.name
+                results.append(result)
+
 
     results_df = pd.DataFrame(results)
     return results_df
