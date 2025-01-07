@@ -43,7 +43,6 @@ def sleep_stability(hypno):
         'Wake': sleep_stability_wake,
         'N1': sleep_stability_n1,
         'N2': sleep_stability_n2,
-        'De ep': sleep_stability_deep, # deprecated - typo!
         'N3': sleep_stability_deep,
         'REM': sleep_stability_rem,
         'Sleep': sleep_stability_sleep

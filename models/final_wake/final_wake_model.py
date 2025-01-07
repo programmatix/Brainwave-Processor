@@ -1,6 +1,4 @@
-from memory import garbage_collect
 from dataclasses import dataclass
-from sklearn.base import TransformerMixin, BaseEstimator
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder as SklearnOneHotEncoder
 import pandas as pd
@@ -13,7 +11,8 @@ import numpy as np
 from sklearn.base import TransformerMixin, BaseEstimator
 from sklearn.pipeline import Pipeline
 
-from models.util.features import FeaturesHandler, CleanTargetCol
+from models.util.epoch_level_features import EpochLevelFeaturesHandler
+from models.util.pipeline import CleanTargetCol
 
 
 class AddAllTargetCols(BaseEstimator, TransformerMixin):
@@ -164,8 +163,9 @@ def create_and_add(predict_mode: bool,
                    target_col: str,
                    sources: list[str],
                    rows_must_be_non_empty: list[str],
+                   input,
                    condition: callable,
-                   input):
+                   ):
     #name = f"target:{target_col} allowed_sources:{allowed_sources} not_allowed_sources:{not_allowed_sources}"
 
     p = []
@@ -179,7 +179,7 @@ def create_and_add(predict_mode: bool,
     p.extend([
         ('clean_target', CleanTargetCol(target_col)),
         ('condition', Condition(condition)),
-        ('features_generic', FeaturesHandler(target_col, sources)),
+        ('features_generic', EpochLevelFeaturesHandler(target_col, sources)),
         # ('features', UsefulFeatures(target_col, allowed_sources)),
         # ('not_allowed_features', NotAllowedFeatures(target_col, not_allowed_sources)),
         ('drop_empty', RequireNonEmptyRows(rows_must_be_non_empty)),
@@ -223,8 +223,10 @@ DEFAULT_TARGET_SET = [10, 30, 60, 90, 120, 150, 240]
 def create_and_add_all(merged, predict_mode: bool, target_set = DEFAULT_TARGET_SET):
     models_and_data: list[ModelAndData] = []
 
-    #create_and_add(predict_mode, models_and_data,  False, f"minsUntilWakeAny", target_set, "minsUntilWake", ["best_eeg", "physical"], [], merged)
-    create_and_add(predict_mode, models_and_data,  False, f"minsUntilWakeNeedTemp", target_set, "minsUntilWake", ["best_eeg", "physical"], ["Temp"], merged)
+    create_and_add(predict_mode, models_and_data,  False, f"minsUntilWakeSleepOnly", target_set, "minsUntilWake", ["eeg", "physical"], [], merged, lambda X:X)
+    create_and_add(predict_mode, models_and_data,  False, f"minsUntilWake", target_set, "minsUntilWake", ["eeg", "physical"], [], merged, lambda X:X)
+    # create_and_add(predict_mode, models_and_data,  False, f"minsUntilWakeAny", target_set, "minsUntilWake", ["best_eeg", "physical"], [], merged)
+    # create_and_add(predict_mode, models_and_data,  False, f"minsUntilWakeNeedTemp", target_set, "minsUntilWake", ["best_eeg", "physical"], ["Temp"], merged)
     # create_and_add(predict_mode, models_and_data,  False, f"minsUntilWakeAnySettling", target_set, "minsUntilWake", ["best_eeg", "physical"], ["Temp"], lambda X: X[X['minsSinceReadyToSleep'] < 0], merged)
 
     # Performance was horrible

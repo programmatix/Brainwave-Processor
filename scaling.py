@@ -87,7 +87,8 @@ def add_main_channel(df):
     if main_channel is None:
         return df  # No main channel found, return the original DataFrame
 
-    filtered_columns = [col for col in columns if "eeg" in col and col.startswith(main_channel) and col.endswith("_s")]
+    # Keep both the _s and not versions of the main column
+    filtered_columns = [col for col in columns if "eeg" in col and col.startswith(main_channel)]
     new_columns = {col.replace(main_channel, "Main"): df[col] for col in filtered_columns}
 
     # Concatenate the new columns to the original DataFrame

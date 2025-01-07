@@ -5,27 +5,13 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix
 import seaborn as sns
 
-def evaluate_model(md, model, X, y):
-    # Predict the target values using the trained model
-    predictions = model.predict(X)
-
-    # Calculate Mean Absolute Error (MAE)
-    mae = mean_absolute_error(y, predictions)
-
-    # Calculate Mean Squared Error (MSE)
-    mse = mean_squared_error(y, predictions)
-
-    # Calculate Root Mean Squared Error (RMSE)
-    rmse = np.sqrt(mse)
-
-    print(f"{md.name} Mean Absolute Error (MAE): {mae}")
-    print(f"{md.name} Mean Squared Error (MSE): {mse}")
-    print(f"{md.name} Root Mean Squared Error (RMSE): {rmse}")
-
-    return mae, mse, rmse
-
-def evaluate_classification_model(md, X_train, y_train, X_val, y_val):
-    model = md.model
+def evaluate_model(model, name, X_train, y_train, X_val, y_val, is_classifier):
+    if is_classifier:
+        evaluate_classification_model(model, name, X_train, y_train, X_val, y_val)
+    else:
+        evaluate_regression_model(model, name, X_train, y_train, X_val, y_val)
+        
+def evaluate_classification_model(model, name, X_train, y_train, X_val, y_val):
     # print("Evaluation for model: ", md.name)
     # Evaluate the model on the training set
     # print(f"{md.name} Training Set Evaluation:")
@@ -62,15 +48,25 @@ def evaluate_classification_model(md, X_train, y_train, X_val, y_val):
     annotate_heatmap(axes[0], cm_train)
     axes[0].set_xlabel('Predicted')
     axes[0].set_ylabel('Actual')
-    axes[0].set_title(f'{md.name} (training)')
+    axes[0].set_title(f'{name} (training)')
 
     sns.heatmap(cm_val, annot=True, fmt='d', cmap='Blues', ax=axes[1])
     annotate_heatmap(axes[1], cm_val)
     axes[1].set_xlabel('Predicted')
     axes[1].set_ylabel('Actual')
-    axes[1].set_title(f'{md.name} (validation)')
+    axes[1].set_title(f'{name} (validation)')
 
     plt.show()
+
+import numpy as np
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+import pandas as pd
+import matplotlib.pyplot as plt
+
+import numpy as np
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+import pandas as pd
+import matplotlib.pyplot as plt
 
 def evaluate_regression_model(model, name: str, X_train, y_train, X_val, y_val):
     print("Evaluation for model: ", name)
@@ -83,14 +79,6 @@ def evaluate_regression_model(model, name: str, X_train, y_train, X_val, y_val):
     train_rmse = np.sqrt(train_mse)
     print(f"MAE: {train_mae}, MSE: {train_mse}, RMSE: {train_rmse}")
 
-    plt.figure(figsize=(10, 7))
-    plt.scatter(y_train, train_predictions, alpha=0.3)
-    plt.plot([y_train.min(), y_train.max()], [y_train.min(), y_train.max()], 'k--', lw=2)
-    plt.xlabel('Actual')
-    plt.ylabel('Predicted')
-    plt.title(f'{name} Predictions vs Actual (training)')
-    plt.show()
-
     # Evaluate the model on the validation set
     print(f"{name} Validation Set Evaluation:")
     val_predictions = model.predict(X_val)
@@ -99,16 +87,50 @@ def evaluate_regression_model(model, name: str, X_train, y_train, X_val, y_val):
     val_rmse = np.sqrt(val_mse)
     print(f"MAE: {val_mae}, MSE: {val_mse}, RMSE: {val_rmse}")
 
-    # Plot the predictions vs actual values for the validation set
-    plt.figure(figsize=(10, 7))
-    plt.scatter(y_val, val_predictions, alpha=0.3)
-    plt.plot([y_val.min(), y_val.max()], [y_val.min(), y_val.max()], 'k--', lw=2)
-    plt.xlabel('Actual')
-    plt.ylabel('Predicted')
-    plt.title(f'{name} Predictions vs Actual (validation)')
+    # Calculate errors
+    train_errors = y_train - train_predictions
+    val_errors = y_val - val_predictions
+
+    # Calculate standard deviation of errors for each integer value of actual
+    def calculate_error_bars(y, errors):
+        unique_values = np.arange(np.floor(y.min()), np.ceil(y.max()) + 1)
+        means = []
+        stds = []
+        for val in unique_values:
+            mask = (y >= val) & (y < val + 1)
+            if np.any(mask):
+                means.append(np.mean(errors[mask]))
+                stds.append(np.std(errors[mask]))
+            else:
+                means.append(np.nan)
+                stds.append(np.nan)
+        return unique_values, means, stds
+
+    val_unique_values, val_means, val_stds = calculate_error_bars(y_val, val_errors)
+
+    # Plot the predictions vs actual values and errors
+    fig, axes = plt.subplots(1, 3, figsize=(30, 7))
+
+    axes[0].scatter(y_train, train_predictions, alpha=0.3)
+    axes[0].plot([y_train.min(), y_train.max()], [y_train.min(), y_train.max()], 'k--', lw=2)
+    axes[0].set_xlabel('Actual')
+    axes[0].set_ylabel('Predicted')
+    axes[0].set_title(f'{name} Predictions vs Actual (training)')
+
+    axes[1].scatter(y_val, val_predictions, alpha=0.3)
+    axes[1].plot([y_val.min(), y_val.max()], [y_val.min(), y_val.max()], 'k--', lw=2)
+    axes[1].set_xlabel('Actual')
+    axes[1].set_ylabel('Predicted')
+    axes[1].set_title(f'{name} Predictions vs Actual (validation)')
+
+    axes[2].scatter(y_val, val_errors, alpha=0.3)
+    axes[2].errorbar(val_unique_values, val_means, yerr=val_stds, fmt='o', color='r', ecolor='r', elinewidth=2, capsize=4)
+    axes[2].axhline(0, color='k', linestyle='--', lw=2)
+    axes[2].set_xlabel('Actual')
+    axes[2].set_ylabel('Error')
+    axes[2].set_title(f'{name} Errors (validation)')
+
     plt.show()
-
-
 def evaluate_regression_model_quick(model, X_train, y_train, X_val, y_val):
     pred_train = model.predict(X_train)
     pred_val = model.predict(X_val)
@@ -120,13 +142,11 @@ def evaluate_regression_model_quick(model, X_train, y_train, X_val, y_val):
     rmse_val = np.sqrt(mse_val)
 
     return {
-        'Rows_Train': len(X_train),
         'MAE_Train': mae_train,
         'MAE_Val': mae_val,
-        'MSE_Train': mse_train,
-        'MSE_Val': mse_val,
         'RMSE_Train': rmse_train,
-        'RMSE_Val': rmse_val
+        'RMSE_Val': rmse_val,
+        'Rows_Train': len(X_train),
     }
 
 import numpy as np
@@ -136,15 +156,26 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 
 def evaluate_classification_model_quick(model, X_train, y_train, X_val, y_val):
     pred_train = model.predict(X_train)
-    pred_val = model.predict(X_val)
 
-    accuracy_val = accuracy_score(y_val, pred_val)
-    precision_val = precision_score(y_val, pred_val, average='binary')
-    recall_val = recall_score(y_val, pred_val, average='binary')
-    f1_val = f1_score(y_val, pred_val, average='binary')
+    accuracy_val = None
+    precision_val = None
+    recall_val = None
+    f1_val = None
+    tp_val = None
+    fp_val = None
+    tn_val = None
+    fn_val = None
 
-    cm_val = confusion_matrix(y_val, pred_val)
-    tn_val, fp_val, fn_val, tp_val = cm_val.ravel()
+
+    if len(np.unique(y_val)) >= 2:
+        pred_val = model.predict(X_val)
+        accuracy_val = accuracy_score(y_val, pred_val)
+        precision_val = precision_score(y_val, pred_val, average='binary')
+        recall_val = recall_score(y_val, pred_val, average='binary')
+        f1_val = f1_score(y_val, pred_val, average='binary')
+
+        cm_val = confusion_matrix(y_val, pred_val)
+        tn_val, fp_val, fn_val, tp_val = cm_val.ravel()
 
     accuracy_train = accuracy_score(y_train, pred_train)
     precision_train = precision_score(y_train, pred_train, average='binary')
@@ -155,32 +186,35 @@ def evaluate_classification_model_quick(model, X_train, y_train, X_val, y_val):
     tn_train, fp_train, fn_train, tp_train = cm_train.ravel()
 
     return {
-        'RowsTrain': len(X_train),
-        'AccVal': accuracy_val,
-        'PrecVal': precision_val,
-        'RecVal': recall_val,
-        'F1Val': f1_val,
-        'TPVal': tp_val,
-        'FPVal': fp_val,
-        'TNVal': tn_val,
-        'FNVal': fn_val,
         'AccTrain': accuracy_train,
         'PrecTrain': precision_train,
         'RecTrain': recall_train,
         'F1Train': f1_train,
+        'AccVal': accuracy_val,
+        'PrecVal': precision_val,
+        'RecVal': recall_val,
+        'F1Val': f1_val,
         'TPTrain': tp_train,
         'FPTrain': fp_train,
         'TNTrain': tn_train,
-        'FNTrain': fn_train
+        'FNTrain': fn_train,
+        'TPVal': tp_val,
+        'FPVal': fp_val,
+        'TNVal': tn_val,
+        'FNVal': fn_val,
+        'RowsTrain': len(X_train),
     }
+
 def evaluate_regression_models(models_and_data):
     results = []
-    for md in models_and_data:
+    for md_idx, md in enumerate(models_and_data):
         if not hasattr(md, 'is_classifier') or not md.is_classifier:
             if hasattr(md, 'models'):
-                for ms in md.models:
+                for ms_idx, ms in enumerate(md.models):
                     result = evaluate_regression_model_quick(ms.model, ms.X_train, ms.y_train, ms.X_val, ms.y_val)
                     result['Model'] = md.name
+                    result['MdIdx'] = md_idx
+                    result['MsIdx'] = ms_idx
                     result.update(ms.settings)
                     results.append(result)
             elif hasattr(md, 'model'):
@@ -194,13 +228,16 @@ def evaluate_regression_models(models_and_data):
 
 def evaluate_classification_models(models_and_data):
     results = []
-    for md in models_and_data:
+    for md_idx, md in enumerate(models_and_data):
         if hasattr(md, 'is_classifier') and md.is_classifier:
             if hasattr(md, 'models'):
-                for ms in md.models:
-                    result = evaluate_classification_model_quick(ms.model, ms.X_train, ms.y_train, ms.X_val, ms.y_val)
+                for ms_idx, ms in enumerate(md.models):
+                    result =  {}
                     result['Model'] = md.name
+                    result['MdIdx'] = md_idx
+                    result['MsIdx'] = ms_idx
                     result.update(ms.settings)
+                    result.update(evaluate_classification_model_quick(ms.model, ms.X_train, ms.y_train, ms.X_val, ms.y_val))
                     results.append(result)
             elif hasattr(md, 'model'):
                 result = evaluate_classification_model_quick(md.model, md.X_train, md.y_train, md.X_val, md.y_val)
@@ -209,4 +246,6 @@ def evaluate_classification_models(models_and_data):
 
 
     results_df = pd.DataFrame(results)
+    results_df = results_df.applymap(lambda x: str(x) if isinstance(x, float) else x)
+
     return results_df

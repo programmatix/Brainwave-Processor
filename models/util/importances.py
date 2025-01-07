@@ -2,8 +2,23 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 def get_importances(model, feature_names = None):
-    if 'xgboost' in str(type(model)):
+    if 'feature_importances_' in dir(model):
+        return pd.DataFrame({
+            'Feature': feature_names,
+            'Importance': model.feature_importances_
+        }).sort_values(by='Importance', ascending=False)
+    elif 'xgboost' in str(type(model)):
         return xgboost_importances(model)
+    elif 'importance_data_' in dir(model):
+        return pd.DataFrame({
+            'Feature': feature_names,
+            'Importance': model.importance_data_
+        }).sort_values(by='Importance', ascending=False)
+    elif 'coef_' in dir(model):
+        return pd.DataFrame({
+            'Feature': feature_names,
+            'Importance': model.coef_
+        }).sort_values(by='Importance', ascending=False)
     return catboost_importances(model, feature_names)
 
 def xgboost_importances(model):

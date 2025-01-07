@@ -32,7 +32,7 @@ warnings.filterwarnings("ignore", message="Channel locations not available. Disa
 warnings.filterwarnings("ignore", message="WARNING - Hypnogram is SHORTER than data")
 mne.set_log_level('ERROR')
 
-force_if_older_than = datetime(2024, 12, 2, 0, 0, 0)
+force_if_older_than = datetime(2025, 1, 1, 0, 0, 0)
 
 # This is the 2nd pipeline, the post-YASA one.  Post-human runs next.
 # This gets YASA features, scales them, chooses main channel.
@@ -60,6 +60,9 @@ def cached_post_yasa_pipeline(log, input_file: str, yasa_df: pd.DataFrame, stats
             return regenerate()
         if modification_date < force_if_older_than:
             log("Cached file " + cached + f" mod date {modification_date} is < {force_if_older_than}, rebuilding")
+            return regenerate()
+        if "Main_eeg_sigmaabs" not in out.columns:
+            log("Cached file " + cached + " is missing columns, rebuilding")
             return regenerate()
 
         out.set_index('Epoch', inplace=True)

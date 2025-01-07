@@ -13,82 +13,9 @@ import numpy as np
 from sklearn.base import TransformerMixin, BaseEstimator
 from sklearn.pipeline import Pipeline
 
-from models.util.features import FeaturesHandler, CleanTargetCol
+from models.util.epoch_level_features import EpochLevelFeaturesHandler
+from models.util.pipeline import CleanTargetCol, Condition, RequireNonEmptyRows, DropBadRows
 
-
-# class AddAllTargetCols(BaseEstimator, TransformerMixin):
-#     def __init__(self, target_set):
-#         self.target_set = target_set
-#
-#     def fit(self, X, y=None):
-#         return self
-#
-#     def transform(self, X):
-#         X = X.copy()
-#         for y in self.target_set:
-#             X[f'WillWakeWithin{y}Mins'] = X['minsUntilWake'].apply(lambda x: True if 0 < x <= y else False)
-#         return X
-
-# class DropAllNearTargetCols(BaseEstimator, TransformerMixin):
-#     def __init__(self, target_col):
-#         self.target_col = target_col
-#
-#     def fit(self, X, y=None):
-#         return self
-#
-#     def transform(self, X):
-#         keep = [col for col in X.columns if (self.target_col == col or ('WillWakeWithin' not in col and 'minsUntilWake' not in col))]
-#         return X[keep]
-
-class DropBadRows(BaseEstimator, TransformerMixin):
-    def fit(self, X, y=None):
-        return self
-
-    def transform(self, X):
-        # Identify rows with NaN values
-        bad_rows = X.isin([np.inf, -np.inf]).any(axis=1)
-
-        # Log the indexes of dropped and kept rows
-        dropped_indexes = X[bad_rows].index.tolist()
-        kept_indexes = X[~bad_rows].index.tolist()
-
-        # Log the first column that had NaN for each dropped row
-        # reasons = X[bad_rows].apply(lambda row: row[row.isin([np.inf, -np.inf])].index[0], axis=1).tolist()
-        #
-        # print(f"Dropped row indexes: {dropped_indexes}")
-        # print(f"Kept row indexes: {kept_indexes}")
-        # print(f"Reasons for dropping: {reasons}")
-
-        out = X[~bad_rows].select_dtypes(exclude=['object', 'datetime64[ns]'])
-
-        print(f"DropBadRows: before {len(X)} rows after {len(out)} rows")
-        return out
-
-class RequireNonEmptyRows(BaseEstimator, TransformerMixin):
-    def __init__(self, rows_must_be_non_empty: list[str]):
-        self.rows_must_be_non_empty = rows_must_be_non_empty
-
-    def fit(self, X, y=None):
-        return self
-
-    def transform(self, X):
-        # Remove rows with NaN, NaT, or other missing values in the specified columns
-        out = X.dropna(subset=self.rows_must_be_non_empty)
-        print(f"RequireNonEmptyRows: before {len(X)} rows after {len(out)} rows")
-        return out
-
-class Condition(BaseEstimator, TransformerMixin):
-    def __init__(self, condition: callable):
-        self.condition = condition
-
-    def fit(self, X, y=None):
-        return self
-
-    def transform(self, X):
-        # Remove rows with NaN, NaT, or other missing values in the specified columns
-        out = self.condition(X)
-        print(f"Condition: before {len(X)} rows after {len(out)} rows")
-        return out
 
 @dataclass
 class ModelAndData:
@@ -98,11 +25,13 @@ class ModelAndData:
     prepared_df: pd.DataFrame
     X: pd.DataFrame
     y: pd.Series
+    removed_nan: bool
     model: object = None
     X_train: pd.DataFrame = None
     y_train: pd.Series = None
     X_val: pd.DataFrame = None
     y_val: pd.Series = None
+
 
 
 def create_and_add(predict_mode: bool,
@@ -114,7 +43,8 @@ def create_and_add(predict_mode: bool,
                    sources: list[str],
                    rows_must_be_non_empty: list[str],
                    input,
-                   condition: callable):
+                   removed_nan: bool,
+                    condition: callable):
     #name = f"target:{target_col} allowed_sources:{allowed_sources} not_allowed_sources:{not_allowed_sources}"
 
     p = []
@@ -128,10 +58,13 @@ def create_and_add(predict_mode: bool,
     p.extend([
         ('clean_target', CleanTargetCol(target_col)),
         ('condition', Condition(condition)),
-        ('features_generic', FeaturesHandler(target_col, sources)),
+        ('features_generic', EpochLevelFeaturesHandler(target_col, sources)),
         ('drop_empty', RequireNonEmptyRows(rows_must_be_non_empty)),
         ('drop_bad', DropBadRows()),
     ])
+
+    if removed_nan:
+        p.append(('drop_nan', RequireNonEmptyRows()))
 
     pipeline = Pipeline(p)
 
@@ -144,7 +77,7 @@ def create_and_add(predict_mode: bool,
         X = prepared_df.drop(columns=[target_col])
         y = prepared_df[target_col]
 
-    md = ModelAndData(name, target_col, is_classifier, prepared_df, X, y)
+    md = ModelAndData(name, target_col, is_classifier, prepared_df, X, y, removed_nan)
     models_and_data.append(md)
 
 def run_all(merged):
@@ -167,7 +100,12 @@ def run_all(merged):
 def create_and_add_all(merged, predict_mode: bool):
     models_and_data: list[ModelAndData] = []
 
-    create_and_add(predict_mode, models_and_data,  False, f"minsSinceReadyToSleep", "minsSinceReadyToSleep", ["best_eeg", "physical"], [], merged, lambda X: X[X['minsSinceReadyToSleep'] <= 0])
+    # create_and_add(predict_mode, models_and_data,  False, f"minsSinceSleepAllEeg1HrBeforeJustEeg", "minsSinceAsleep", ["eeg"], [], merged, True, lambda X: X[(X['minsSinceReadyToSleep'] <= 0) & (X['minsSinceReadyToSleep'] >= -60)])
+    # create_and_add(predict_mode, models_and_data,  False, f"minsSinceReadyToSleepAllEeg1HrBeforeJustEeg", "minsSinceReadyToSleep", ["eeg"], [], merged, True, lambda X: X[(X['minsSinceReadyToSleep'] <= 0) & (X['minsSinceReadyToSleep'] >= -60)])
+    create_and_add(predict_mode, models_and_data,  False, f"minsSinceAsleepAllEeg1HrBefore", "minsSinceAsleep", ["eeg",  "physical"], [], merged, False, lambda X: X[(X['minsSinceAsleep'] <= 0) & (X['minsSinceAsleep'] >= -60)])
+    create_and_add(predict_mode, models_and_data,  False, f"minsSinceReadyToSleepAllEeg1HrBefore", "minsSinceReadyToSleep", ["eeg",  "physical"], [], merged, False, lambda X: X[(X['minsSinceReadyToSleep'] <= 0) & (X['minsSinceReadyToSleep'] >= -60)])
+    create_and_add(predict_mode, models_and_data,  False, f"minsSinceReadyToSleepAllEeg", "minsSinceReadyToSleep", ["eeg",  "physical"], [], merged, False, lambda X: X[X['minsSinceReadyToSleep'] <= 0])
+    create_and_add(predict_mode, models_and_data,  False, f"minsSinceReadyToSleep", "minsSinceReadyToSleep", ["best_eeg", "physical"], [], merged, False, lambda X: X[X['minsSinceReadyToSleep'] <= 0])
 
     return models_and_data
 

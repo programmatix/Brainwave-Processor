@@ -1,27 +1,14 @@
 import shutil
 
-import pandas as pd
 import os
 import pytz
-from datetime import timedelta, datetime
+from datetime import datetime
 
 import pandas as pd
-from yasa import sw_detect, spindles_detect
 
 import convert
-import models.manual_sleep_scoring_catboost_1.manual_sleep_scoring_catboost_1 as best_model
 import run_yasa
-import scaling
-import sleep
-import sleep_events
-import wakings
-import sleep
-import yasa_features
-from models.microwakings_1 import microwakings1
-from models.microwakings_1.microwakings1 import PerFile
-import tensorflow as tf
 from memory import garbage_collect
-import traceback
 import warnings
 import logging
 import mne

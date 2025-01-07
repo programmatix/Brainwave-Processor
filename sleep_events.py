@@ -132,17 +132,24 @@ def convert_timestamps_to_uk(df, src_timestamp_col='Timestamp', dest_timestamp_c
 def convert_timestamps_to_uk_optimised(df_series: pd.Series, debug = False) -> pd.Series:
     out = df_series.copy()
 
+    if (len(out) == 0):
+        if debug:
+            print("Empty series, returning empty series")
+        return out
+
     dtype = df_series.dtype
     if dtype == 'datetime64[ns]':
         if debug:
             print("Assuming datetime64[ns] is already a localtime in Europe/London zone, not timezone converting")
-        return pd.to_datetime(out, errors='coerce').dt.tz_localize('Europe/London')
+        #return pd.to_datetime(out, errors='coerce').dt.tz_localize('Europe/London')
+        return pd.to_datetime(out).dt.tz_localize('Europe/London')
     elif dtype == 'str' or dtype == 'object':
         # try:
         # Handle strings with Z info
         if debug:
             print("Trying to handle string as though it has timezone info")
-        return pd.to_datetime(out, errors='coerce').dt.tz_convert('Europe/London')
+        # Mixed as have seen microwakings file with mixed formats e.g. '2024-09-30 21:03:51.300000+00:00,2024-09-30 21:03:58+00:00' (2024-09-30)
+        return pd.to_datetime(out, format='mixed').dt.tz_convert('Europe/London')
         # except TypeError as e:
         #     # Handle TypeError: Cannot convert tz-naive timestamps, use tz_localize to localize
         #     return pd.to_datetime(out, errors='coerce').dt.tz_localize('UTC').dt.tz_convert('Europe/London')

@@ -1,4 +1,4 @@
-
+import numpy as np
 from tqdm.auto import tqdm
 import os
 
@@ -67,16 +67,7 @@ def remove_days_per_questionnaire(df):
     return df
 
 
-def post_stitch(df,
-                should_remove_days_per_questionnaire: bool = True) -> pd.DataFrame:
-    out = df.copy()
-    out['dayAndNightOf'] = pd.to_datetime(out['dayAndNightOf'])
-
-    if should_remove_days_per_questionnaire:
-        out = remove_days_per_questionnaire(out)
-
-    out.reset_index(drop=True, inplace=True)
-
+def add_sleep_stages(out):
     out['SSDeep'] = out['Stage'] == 'N3'
     out['SSWake'] = out['Stage'] == 'W'
     out['SSN1'] = out['Stage'] == 'N1'
@@ -96,6 +87,19 @@ def post_stitch(df,
         out.loc[period, 'SSDuringLongWake'] = True
     add_mins_until_long_wake(out)
     add_ss_long_wake_this_night_and_before_it(out)
+
+
+def post_stitch(df,
+                should_remove_days_per_questionnaire: bool = True) -> pd.DataFrame:
+    out = df.copy()
+    out['dayAndNightOf'] = pd.to_datetime(out['dayAndNightOf'])
+
+    if should_remove_days_per_questionnaire:
+        out = remove_days_per_questionnaire(out)
+
+    out.reset_index(drop=True, inplace=True)
+
+    add_sleep_stages(out)
 
     return out
 
@@ -133,14 +137,20 @@ def stitch_all_days(input_dir: str, force: bool = False):
 def stitch_all_days_optimised(input_dir: str,
                               force: bool = False,
                               remove_non_main_eeg: bool = True,
-                              should_remove_days_per_questionnaire: bool = True):
+                              should_remove_days_per_questionnaire: bool = True,
+                              # False by default as it's a bit slo
+                              include_microwakings: bool = False):
     all_dfs = []
 
     dirs = next(os.walk(input_dir))[1]
     for idx, dir_name in enumerate(tqdm(dirs)):
-        #tqdm.write(f"Processing notebook in: {dir_name}")
+        # tqdm.write(f"Processing notebook in: {dir_name}")
 
-        out_df = stitch_day_optimised(input_dir, dir_name, force, remove_non_main_eeg)
+        out_df = stitch_day_optimised(input_dir,
+                                      dir_name,
+                                      force,
+                                      remove_non_main_eeg,
+                                      include_microwakings)
         if out_df is None:
             continue
         all_dfs.append(out_df)
@@ -156,7 +166,11 @@ from importlib import reload
 reload(sleep_events)
 from sleep_events import convert_timestamps_to_uk_optimised
 
-def stitch_day_optimised(input_dir: str, dir_name: str, force: bool = False, remove_non_main_eeg: bool = True):
+def stitch_day_optimised(input_dir: str,
+                         dir_name: str,
+                         force: bool = False,
+                         remove_non_main_eeg: bool = True,
+                         include_microwakings: bool = False):
 
 
     yasa_file = os.path.join(input_dir, dir_name, "raw.yasa.csv")
@@ -209,6 +223,11 @@ def stitch_day_optimised(input_dir: str, dir_name: str, force: bool = False, rem
     duplicate_columns = [col for col in out_df.columns if 'duplicate' in col]
     out_df.drop(columns=duplicate_columns, inplace=True)
     out_df['Timestamp'] = convert_timestamps_to_uk_optimised(out_df['Timestamp'])
+    out_df['EpochEnd'] = out_df['Timestamp'] + pd.Timedelta(seconds=30)
+
+    microwakings_file = os.path.join(input_dir, dir_name, "raw.microwakings.csv")
+    if include_microwakings and os.path.exists(microwakings_file):
+        out_df = load_and_merge_microwakings(microwakings_file, out_df)
 
     if remove_non_main_eeg:
         # Getting rid of "T4-M1_Stage" here also
@@ -216,3 +235,41 @@ def stitch_day_optimised(input_dir: str, dir_name: str, force: bool = False, rem
         out_df.drop(columns=cols_to_remove, inplace=True)
 
     return out_df
+
+def load_and_merge_microwakings(microwakings_file, df):
+    df = df.copy().reset_index()
+    microwakings = pd.read_csv(microwakings_file)
+
+    # Convert timestamps in microwakings to UK-optimized format
+    microwakings['Start'] = convert_timestamps_to_uk_optimised(microwakings['Start'])
+    microwakings['End'] = convert_timestamps_to_uk_optimised(microwakings['End'])
+
+    # Add EpochEnd and initialize new columns
+    df['EpochEnd'] = df['Timestamp'] + pd.Timedelta(seconds=30)
+    df['MicrowakingDbgIndex'] = -1
+    df['MicrowakingDbgStart'] = pd.NaT
+    df['MicrowakingDbgEnd'] = pd.NaT
+
+    # Use a vectorized approach to check overlaps
+    microwakings_array = microwakings[['Start', 'End']].to_numpy()
+    timestamp_array = df[['Timestamp', 'EpochEnd']].to_numpy()
+
+    # Calculate overlaps
+    starts = np.maximum(timestamp_array[:, 0][:, None], microwakings_array[:, 0])
+    ends = np.minimum(timestamp_array[:, 1][:, None], microwakings_array[:, 1])
+    overlap_durations = (ends - starts).astype('timedelta64[s]').astype(float)
+    overlaps = overlap_durations > 1
+
+    # Determine the most recent microwaking index for overlapping rows
+    idxs, microwaking_idxs = np.where(overlaps)
+    df.loc[idxs, 'MicrowakingDbgIndex'] = microwaking_idxs
+    df.loc[idxs, 'MicrowakingDbgStart'] = microwakings['Start'].iloc[microwaking_idxs].values
+    df.loc[idxs, 'MicrowakingDbgEnd'] = microwakings['End'].iloc[microwaking_idxs].values
+
+    # Calculate nearby microwaking flags
+    df['MicrowakingHere'] = df['MicrowakingDbgIndex'] != -1
+    df['MicrowakingInNext'] = df['MicrowakingHere'].shift(-1, fill_value=False)
+    df['MicrowakingInPrev'] = df['MicrowakingHere'].shift(1, fill_value=False)
+    df['MicrowakingHereOrNearby'] = df['MicrowakingHere'] | df['MicrowakingInNext'] | df['MicrowakingInPrev']
+
+    return df
