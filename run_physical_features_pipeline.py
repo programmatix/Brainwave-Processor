@@ -7,7 +7,6 @@ import pandas as pd
 from yasa import sw_detect, spindles_detect
 
 import convert
-import models.manual_sleep_scoring_catboost_1.manual_sleep_scoring_catboost_1 as best_model
 import run_yasa
 import scaling
 import sleep

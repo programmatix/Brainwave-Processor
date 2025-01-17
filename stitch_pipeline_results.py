@@ -138,7 +138,7 @@ def stitch_all_days_optimised(input_dir: str,
                               force: bool = False,
                               remove_non_main_eeg: bool = True,
                               should_remove_days_per_questionnaire: bool = True,
-                              # False by default as it's a bit slo
+                              # False by default as it's a bit slow
                               include_microwakings: bool = False):
     all_dfs = []
 

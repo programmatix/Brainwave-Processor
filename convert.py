@@ -229,6 +229,9 @@ def save_mne_as_downsample_edf(log, mne_filtered, input_file_without_ext):
 
     mne.export.export_raw(input_file_without_ext + ".edf", resampled, overwrite=True)
 
+def save_mne_as_edf(log, mne_filtered, input_file_without_ext):
+    mne.export.export_raw(input_file_without_ext + ".edf", mne_filtered, overwrite=True)
+
 
 def save_buffer_to_edf(buffer, channel_names, sfreq, filename):
     n_channels = buffer.shape[0]
@@ -276,7 +279,8 @@ def get_filtered_and_scaled_data(raw: mne.io.Raw) -> (mne.io.Raw, mne.io.Raw):
     # AASM recommendation
     # Note that yasa_features & YASA do this also
     # Clean signal tips: use a USB extension cable (v important!)
-    filtered.filter(0.3, 35, verbose=False)
+    # Changed to 0.5 to 35 2025-01-08
+    filtered.filter(0.5, 35, verbose=False)
 
     # Remove power (probably unnecessary since we already bandstop at 35)
     filtered.notch_filter(freqs=[50, 100], verbose=False)

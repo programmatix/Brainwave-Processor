@@ -1,22 +1,15 @@
-import pandas as pd
 import os
 import pytz
 from datetime import timedelta, datetime
 
 import pandas as pd
-from yasa import sw_detect, spindles_detect
 
 import convert
-import models.manual_sleep_scoring_catboost_1.manual_sleep_scoring_catboost_1 as best_model
 import run_yasa
 import scaling
 import sleep
-import sleep_events
-import wakings
-import sleep
 import yasa_features
 from models.microwakings_1 import microwakings1
-from models.microwakings_1.microwakings1 import PerFile
 import tensorflow as tf
 from memory import garbage_collect
 import traceback
@@ -32,7 +25,7 @@ warnings.filterwarnings("ignore", message="Channel locations not available. Disa
 warnings.filterwarnings("ignore", message="WARNING - Hypnogram is SHORTER than data")
 mne.set_log_level('ERROR')
 
-force_if_older_than = datetime(2025, 1, 1, 0, 0, 0)
+force_if_older_than = datetime(2025, 1, 8, 0, 0, 0)
 
 # This is the 2nd pipeline, the post-YASA one.  Post-human runs next.
 # This gets YASA features, scales them, chooses main channel.
@@ -96,9 +89,6 @@ def post_yasa_pipeline(log, input_file: str, yasa_df: pd.DataFrame, stats_df: pd
     log("Extracting YASA features")
     yasa_feats, channel_feats_dict = yasa_features.extract_yasa_features2(log, channels, mne_filtered)
 
-    print("YASA_df: ", yasa_df.columns)
-    print("yasa_feats: ", yasa_feats.columns)
-
     # # Combine epochs and YASA features
     # garbage_collect(log)
     # df = yasa_feats.copy()
@@ -106,16 +96,10 @@ def post_yasa_pipeline(log, input_file: str, yasa_df: pd.DataFrame, stats_df: pd
     # df.set_index('epoch', inplace=True)
     combined_df = yasa_df.join(yasa_feats)
 
-    print("combined_df: ", combined_df.columns)
-
     # Scaled
     scale_by_stats = scaling.scale_by_stats(combined_df, stats_df)
 
-    print("scale_by_stats: ", scale_by_stats.columns)
-
     yasa_feats = combined_df.join(scale_by_stats.add_suffix('_s'))
-
-    print("yasa_feats: ", yasa_feats.columns)
 
 
     # YASA slow waves

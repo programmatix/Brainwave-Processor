@@ -46,6 +46,7 @@ import scipy.stats as sp_stats
 import matplotlib.pyplot as plt
 from mne.filter import filter_data
 from sklearn.preprocessing import robust_scale
+from mne.time_frequency import psd_array_multitaper
 
 
 def extract_yasa_features(data, sfreq):
@@ -73,7 +74,7 @@ def extract_yasa_features(data, sfreq):
 
     for i, c in enumerate(ch_types):
         # Preprocessing
-        # - Filter the data
+        # The data has already been filtered so this is unnecessary, but the code breaks when I remove it :/
         dt_filt = filter_data(data[i, :], sf, l_freq=freq_broad[0], h_freq=freq_broad[1], verbose=False)
         # - Extract epochs. Data is now of shape (n_epochs, n_samples).
         times, epochs = sliding_window(dt_filt, sf=sf, window=30)
@@ -92,12 +93,16 @@ def extract_yasa_features(data, sfreq):
         }
 
         # Calculate spectral power features (for EEG + EOG)
-        freqs, psd = sp_sig.welch(epochs, sf, **kwargs_welch)
+        # freqs, psd = sp_sig.welch(epochs, sf, **kwargs_welch)
+        # Multitaper is slightly more accurate than Welch
+        psd, freqs = psd_array_multitaper(epochs, sf, adaptive=True, normalization='full', verbose=0)
+
         if c != "emg":
             bp = bandpower_from_psd_ndarray(psd, freqs, bands=bands, relative=True)
             for j, (_, _, b) in enumerate(bands):
                 feat[b] = bp[j]
-            bp_abs = bandpower_from_psd_ndarray(psd, freqs, bands=bands, relative=False)
+            # Multiply by an arbitrary constant just to make these tiny values much easier to work with
+            bp_abs = bandpower_from_psd_ndarray(psd, freqs, bands=bands, relative=False) * 1_000_000_000
             for j, (_, _, b) in enumerate(bands):
                 feat[b + "abs"] = bp_abs[j]
 
@@ -123,9 +128,10 @@ def extract_yasa_features(data, sfreq):
             feat["at"] = feat["alpha"] / feat["theta"]
 
         # Add total power
-        idx_broad = np.logical_and(freqs >= freq_broad[0], freqs <= freq_broad[1])
+        # This sums the PSD.  "auc" is the area under the eeg line, which is another way of looking at abspow.
+        idx_broad = np.logical_and(freqs >= 0.5, freqs <= 35)
         dx = freqs[1] - freqs[0]
-        feat["abspow"] = np.trapz(psd[:, idx_broad], dx=dx)
+        feat["abspow"] = np.trapz(psd[:, idx_broad], dx=dx) * 1_000_000_000
 
         # Calculate entropy and fractal dimension features
         feat["perm"] = np.apply_along_axis(ant.perm_entropy, axis=1, arr=epochs, normalize=True)

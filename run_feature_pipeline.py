@@ -115,7 +115,9 @@ def pipeline(log, input_file: str):
     # Save as EDF
     garbage_collect(log)
     log("Saving as EDF")
-    convert.save_mne_as_downsample_edf(log, mne_filtered, input_file_without_ext)
+    # Not worth any confusion or perceived data bugs to downsample
+    #convert.save_mne_as_downsample_edf(log, mne_filtered, input_file_without_ext)
+    convert.save_mne_as_edf(log, mne_filtered, input_file_without_ext)
 
 
     # YASA slow waves
@@ -126,9 +128,10 @@ def pipeline(log, input_file: str):
     # if sw is not None:
     #     sw_summary = sw.summary()
     #     output_csv_file = input_file_without_ext + ".sw_summary.csv"
+
     #     sw_summary.to_csv(output_csv_file, index=False)
 
-    # YASA spindles
+    # YASA spindlesk
     # Too intensive for Pi
     # garbage_collect(log)
     # log("Detecting spindles")
