@@ -48,7 +48,7 @@ def load_day_data_energy_events():
         "okish", "okish_long",
         "lockable", "lockable_long",
         "great", "great_long"
-    ], "day")
+    ])
 
 
 def load_custom_event_types(phase: str = None):

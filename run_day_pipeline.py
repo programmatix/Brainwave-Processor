@@ -3,24 +3,6 @@ import os
 import pytz
 from datetime import timedelta, datetime
 
-from yasa import sw_detect, spindles_detect
-from models.eeg_states.eeg_states import process_row
-from tqdm import tqdm
-
-import convert
-import models.manual_sleep_scoring_catboost_1.manual_sleep_scoring_catboost_1 as best_model
-import run_yasa
-import scaling
-import sleep
-import sleep_events
-import wakings
-import sleep
-import yasa_features
-from models.microwakings_1 import microwakings1
-from models.microwakings_1.microwakings1 import PerFile
-import tensorflow as tf
-from memory import garbage_collect
-import traceback
 import warnings
 import logging
 import mne

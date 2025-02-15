@@ -18,6 +18,10 @@ RESAMPLING_RATE = 10
 # 01:56:36Z (tails off too soon)
 
 
+# Force TF to use CPU not GPU, as having memory problems
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+
+
 class PerFile:
     # What channel came up most often in the microwakings file.  We will only train with this.
     most_frequent_channel: str = None
