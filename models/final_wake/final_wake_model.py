@@ -223,7 +223,7 @@ DEFAULT_TARGET_SET = [10, 30, 60, 90, 120, 150, 240]
 def create_and_add_all(merged, predict_mode: bool, target_set = DEFAULT_TARGET_SET):
     models_and_data: list[ModelAndData] = []
 
-    create_and_add(predict_mode, models_and_data,  False, f"minsUntilWakeSleepOnly", target_set, "minsUntilWake", ["eeg", "physical"], [], merged, lambda X:X)
+    #create_and_add(predict_mode, models_and_data,  False, f"minsUntilWakeLast2HoursSleep", target_set, "minsUntilWake", ["eeg", "physical"], [], merged, lambda X: X['minsUntilWake' <= 120])
     create_and_add(predict_mode, models_and_data,  False, f"minsUntilWake", target_set, "minsUntilWake", ["eeg", "physical"], [], merged, lambda X:X)
     # create_and_add(predict_mode, models_and_data,  False, f"minsUntilWakeAny", target_set, "minsUntilWake", ["best_eeg", "physical"], [], merged)
     # create_and_add(predict_mode, models_and_data,  False, f"minsUntilWakeNeedTemp", target_set, "minsUntilWake", ["best_eeg", "physical"], ["Temp"], merged)

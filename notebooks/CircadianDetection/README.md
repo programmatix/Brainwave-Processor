@@ -1,0 +1,1 @@
+Spun off from FinalWakeEDA, as I realise that what I'm trying to do there really, is detect circadian rhythm patterns throughout night.

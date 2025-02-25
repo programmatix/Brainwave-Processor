@@ -176,11 +176,13 @@ def convert_timestamps_to_uk_optimised(df_series: pd.Series, debug = False) -> p
     #         print(e)
     #         raise e
 
+# Converts a col like 'night:aggregated:asleepTimeSSM' which is in local time to a datetime64[ns, Europe/London]
 def convert_to_datetime(row, time_column):
     if pd.notna(row[time_column]):
         #return pd.to_datetime(row[time_column], unit='s', origin=pd.Timestamp(row['dayAndNightOf']).normalize()).tz_localize('UTC').tz_convert('Europe/London')
         origin = pd.Timestamp(row['dayAndNightOf']).normalize()
-        return convert_timestamp_to_uk(pd.to_datetime(row[time_column], unit='s', origin=origin))
+        # Already in local time to don't pass through convert_timestamps_to_uk - just say it's a London timezone
+        return pd.to_datetime(row[time_column], unit='s', origin=origin).tz_localize('Europe/London')
     else:
         return pd.NaT
 
@@ -205,6 +207,10 @@ def load_days_data(pimp = True):
         result_df = pimp_my_days_data(result_df)
 
     return result_df
+
+def test_days_data(results_df):
+    assert results_df[results_df['dayAndNightOf'] == '2024-09-02']['asleepTime'].iloc[0] == pd.Timestamp('2024-09-02 23:30:00+01:00'), "Assertion failed: asleepTime does not match"
+    #assert results_df[results_df['dayAndNightOf'] == '2024-09-02']['wakeTime'].iloc[0] == pd.Timestamp('2024-09-02 23:30:00+01:00'), "Assertion failed: asleepTime does not match"
 
 def pimp_my_days_data(result_df):
     day_data = result_df.copy()
