@@ -1,5 +1,6 @@
+# YASA wants numpy 1.x
+numpy==1.24.3
 nptyping==1.4.4
-numpy
 pandas
 brainflow
 mne
@@ -16,9 +17,10 @@ lightgbm
 python-dotenv
 joblib
 catboost
-tensorflow
+# Last version on Windows that supported GPU.  Also needs no higher than Python 3.10.
+tensorflow==2.10
 keras
-pyedflib
+#pyedflib
 tqdm
 paramiko
 shap
