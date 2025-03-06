@@ -20,7 +20,7 @@ catboost
 # Last version on Windows that supported GPU.  Also needs no higher than Python 3.10.
 tensorflow==2.10
 keras
-#pyedflib
+pyedflib
 tqdm
 paramiko
 shap
@@ -36,3 +36,4 @@ papermill
 scrapbook
 imodels
 pymongo
+firebase-admin
