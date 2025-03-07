@@ -102,10 +102,11 @@ def create_and_add_all(merged, predict_mode: bool):
 
     # create_and_add(predict_mode, models_and_data,  False, f"minsSinceSleepAllEeg1HrBeforeJustEeg", "minsSinceAsleep", ["eeg"], [], merged, True, lambda X: X[(X['minsSinceReadyToSleep'] <= 0) & (X['minsSinceReadyToSleep'] >= -60)])
     # create_and_add(predict_mode, models_and_data,  False, f"minsSinceReadyToSleepAllEeg1HrBeforeJustEeg", "minsSinceReadyToSleep", ["eeg"], [], merged, True, lambda X: X[(X['minsSinceReadyToSleep'] <= 0) & (X['minsSinceReadyToSleep'] >= -60)])
-    create_and_add(predict_mode, models_and_data,  False, f"minsSinceAsleepAllEeg1HrBefore", "minsSinceAsleep", ["eeg",  "physical"], [], merged, False, lambda X: X[(X['minsSinceAsleep'] <= 0) & (X['minsSinceAsleep'] >= -60)])
-    create_and_add(predict_mode, models_and_data,  False, f"minsSinceReadyToSleepAllEeg1HrBefore", "minsSinceReadyToSleep", ["eeg",  "physical"], [], merged, False, lambda X: X[(X['minsSinceReadyToSleep'] <= 0) & (X['minsSinceReadyToSleep'] >= -60)])
-    create_and_add(predict_mode, models_and_data,  False, f"minsSinceReadyToSleepAllEeg", "minsSinceReadyToSleep", ["eeg",  "physical"], [], merged, False, lambda X: X[X['minsSinceReadyToSleep'] <= 0])
-    create_and_add(predict_mode, models_and_data,  False, f"minsSinceReadyToSleep", "minsSinceReadyToSleep", ["best_eeg", "physical"], [], merged, False, lambda X: X[X['minsSinceReadyToSleep'] <= 0])
+    # create_and_add(predict_mode, models_and_data,  False, f"minsSinceAsleepAllEeg1HrBefore", "minsSinceAsleep", ["eeg",  "physical"], [], merged, False, lambda X: X[(X['minsSinceAsleep'] <= 0) & (X['minsSinceAsleep'] >= -60)])
+    create_and_add(predict_mode, models_and_data,  False, f"minsSinceReadyToSleep_AllEeg+Physical_1HrBefore", "minsSinceReadyToSleep", ["eeg",  "physical"], [], merged, False, lambda X: X[(X['minsSinceReadyToSleep'] <= 0) & (X['minsSinceReadyToSleep'] >= -60)])
+    create_and_add(predict_mode, models_and_data,  False, f"minsSinceReadyToSleep_BestEeg+Physical_1HrBefore", "minsSinceReadyToSleep", ["best_eeg",  "physical"], [], merged, False, lambda X: X[(X['minsSinceReadyToSleep'] <= 0) & (X['minsSinceReadyToSleep'] >= -60)])
+    #create_and_add(predict_mode, models_and_data,  False, f"minsSinceReadyToSleep_Eeg+Physical", "minsSinceReadyToSleep", ["eeg",  "physical"], [], merged, False, lambda X: X[X['minsSinceReadyToSleep'] <= 0])
+    #create_and_add(predict_mode, models_and_data,  False, f"minsSinceReadyToSleep", "minsSinceReadyToSleep", ["best_eeg", "physical"], [], merged, False, lambda X: X[X['minsSinceReadyToSleep'] <= 0])
 
     return models_and_data
 
