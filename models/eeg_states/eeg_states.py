@@ -1,6 +1,7 @@
 import pandas as pd
 from tqdm import tqdm
 from typing_extensions import Dict
+from datetime import datetime
 
 from models.microwakings_1.microwakings1 import load_model
 from sleep_events import connect_to_firebase
@@ -167,6 +168,7 @@ def process_row_for_pulearn(yasa_row: pd.Series, events: pd.DataFrame, just_type
     return matched_events
 
 def process_row(yasa_row, events, verbose=False):
+    # This can be Timestamp now
     epoch_start = yasa_row['TimestampUK']
     epoch_end = epoch_start + pd.Timedelta(seconds=30)
 
@@ -221,7 +223,8 @@ def add_event_type(yasa_df, events, verbose=False):
 
         if day_and_night_of != current_day:
             current_day = day_and_night_of
-            filtered_events = events[events['dayAndNightOf'].astype(str) == current_day]
+            date_only = datetime.strptime(str(current_day), "%Y-%m-%d %H:%M:%S").strftime("%Y-%m-%d")
+            filtered_events = events[events['dayAndNightOf'].astype(str) == str(date_only)]
             #print(f"Filtered events for {current_day} with {filtered_events.shape[0]} events")
 
         matched_event, matched_event_idx = process_row(yasa_row, filtered_events, verbose)
@@ -243,20 +246,20 @@ def map_settling_events(df):
     df = df[df['version'] != 'v3']
 
     mapping_v1_and_v2 = {
-        'wired': (0, 0),
-        'too alert': (0, 0),
-        'mid': (0, 50),
-        'other': (0, 50),
-        'tired': (100, 75),
-        'sleepy': (100, 100)
+        'wired': (0, 0, True),
+        'too alert': (0, 0, True),
+        'mid': (0, 50, False),
+        'other': (0, 50, False),
+        'tired': (100, 75, False),
+        'sleepy': (100, 100, True)
     }
 
     mapping_v4 = {
-        'wired or alert': (0, 0),
-        'tired but wired': (0, 25),
-        'tired but alert': (0, 25),
-        'tired': (100, 75),
-        'drowsy or sleepy': (100, 100)
+        'wired or alert': (0, 0, True),
+        'tired but wired': (0, 25, False),
+        'tired but alert': (0, 25, False),
+        'tired': (100, 75, False),
+        'drowsy or sleepy': (100, 100, True)
     }
 
     def map_event(row):
@@ -265,15 +268,21 @@ def map_settling_events(df):
         else:
             return mapping_v1_and_v2.get(row['BaseEvent'], row['BaseEvent'])
 
+    # A binary signal abstracting over as many settling event versions as possible
     def map_event1(row):
         return map_event(row)[0]
 
+    # A more nuanced signal
     def map_event2(row):
         return map_event(row)[1]
 
+    def is_extreme(row):
+        return map_event(row)[2]
+
     df['Preserve_SettlingManualScore'] = df.apply(map_event2, axis=1)
     df['Preserve_SettlingV4ManualScore'] = df[df['version'] == 'v4'].apply(map_event2, axis=1)
-    # A very broad signal abstracting over as many settling event versions as possible
     df['Preserve_TiredVsAlertManualScore'] = df.apply(map_event1, axis=1)
+    # Just capturing the signals I'm most confident about
+    df['Preserve_TiredVsAlertExtremesManualScore'] = df[df.apply(is_extreme, axis=1)].apply(map_event1, axis=1)
 
     return df

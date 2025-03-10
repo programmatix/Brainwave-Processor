@@ -185,23 +185,23 @@ async def run_webserver():
                     log(f"Deleting small file (size {file_size}): {file_path}")
                     os.remove(file_path)
 
-        # elif msg['command'] == 'run_models':
-        #     log('Run models command received')
-        #     buffer = lsl_reader.get_buffer()
-        #     log(f'Got buffer of shape {buffer.shape}')
-        #     sfreq = lsl_reader.sampling_rate
-        #     eeg_ch_names = ['Fpz-M1']
-        #     current_time = datetime.now().strftime('%Y%m%d_%H%M%S')
-        #     filename = f"temp-{current_time}.edf"
-        #     save_buffer_to_edf(buffer, eeg_ch_names, sfreq, filename)
-        #     log(f'Buffer saved to {filename} with sfreq {sfreq}')
-        #     log(f"Loading stats from {args.stats_csv}")
-        #     stats_df = pd.read_csv(args.stats_csv)
-        #     results = run_models(buffer, eeg_ch_names, sfreq, stats_df, args.model_dir)
-        #     asyncio.create_task(websocket_handler.broadcast_websocket_message(json.dumps({
-        #         'address': 'run_models',
-        #         'results': results
-        #     })))
+        elif msg['command'] == 'run_models':
+            log('Run models command received')
+            buffer = lsl_reader.get_buffer()
+            log(f'Got buffer of shape {buffer.shape}')
+            sfreq = lsl_reader.sampling_rate
+            eeg_ch_names = ['Fpz-M1']
+            current_time = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f"temp-{current_time}.edf"
+            save_buffer_to_edf(buffer, eeg_ch_names, sfreq, filename)
+            log(f'Buffer saved to {filename} with sfreq {sfreq}')
+            log(f"Loading stats from {args.stats_csv}")
+            stats_df = pd.read_csv(args.stats_csv)
+            results = run_models(buffer, eeg_ch_names, sfreq, stats_df, args.model_dir)
+            asyncio.create_task(websocket_handler.broadcast_websocket_message(json.dumps({
+                'address': 'run_models',
+                'results': results
+            })))
 
         elif msg['command'] == 'save_buffer_to_edf':
             log('Save buffer to EDF command received')

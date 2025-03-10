@@ -111,6 +111,31 @@ class ClipOutliers(BaseEstimator, TransformerMixin):
         print(f"ClipOutliers {X.shape} to {out.shape}, first index {out.index[0]}")
         return out
 
+class ClipAbsOutliers(BaseEstimator, TransformerMixin):
+    def __init__(self, target_col, scale_target=False):
+        self.target_col = target_col
+        self.scale_target = scale_target
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        out = X.copy()
+        exclude_cols = [] # col for col in X if "_norm" in col]
+
+        # Need to clip these aggressively
+        # lower_quantiles = X.quantile(0.25)
+        # upper_quantiles = X.quantile(0.75)
+
+        # Clip the values for all columns except those in exclude_cols
+        # out = out.clip(lower=lower_quantiles, upper=upper_quantiles, axis=1)
+
+        # ... very aggressively.  This is still a very high value for e.g. betaabs.  Maybe need to remove these sections from the data completely.        
+        out = out.clip(lower=-1, upper=1)
+
+        print(f"ClipAbsOutliers {X.shape} to {out.shape}, first index {out.index[0]}")
+        return out
+
 class ScaleColumns(BaseEstimator, TransformerMixin):
     def __init__(self, columns: [str]):
         self.columns = columns

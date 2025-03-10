@@ -369,7 +369,7 @@ def export_with_microwakings(self: PerFile, log, processed_predictions, probabil
     # assert combined_data.shape[0] == len(new_info['ch_names'])
 
     new_raw = mne.io.RawArray(combined_data, new_info)
-    new_raw.resample(100, npad="auto")
+    #new_raw.resample(100, npad="auto")
 
     log(f"Exporting to: {self.input_file_without_ext}.edf")
     mne.export.export_raw(self.input_file_without_ext + ".edf", new_raw, overwrite=True)

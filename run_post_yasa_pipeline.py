@@ -32,12 +32,18 @@ force_if_older_than = datetime(2025, 1, 8, 0, 0, 0)
 
 
 # yasa_df: results from the YASA pipeline - raw.yasa.csv
-def cached_post_yasa_pipeline(log, input_file: str, yasa_df: pd.DataFrame, stats_df: pd.DataFrame, force: bool = False):
+# artifacts_df: results from the artifacts pipeline - raw.artifacts.csv
+def cached_post_yasa_pipeline(log, input_file: str, yasa_df: pd.DataFrame, stats_df: pd.DataFrame, artifacts_df: pd.DataFrame, force: bool = False):
     input_file_without_ext = os.path.splitext(input_file)[0]
     cached = input_file_without_ext + ".post_yasa.csv"
+    yasa_csv_file = input_file_without_ext + ".yasa.csv"
+    artifacts_csv_file = input_file_without_ext + ".artifacts.csv"
+
+    print(f"YASA file: {yasa_csv_file}")
+    print(f"Artifacts file: {artifacts_csv_file}")
 
     def regenerate():
-        out = post_yasa_pipeline(log, input_file, yasa_df, stats_df)
+        out = post_yasa_pipeline(log, input_file, yasa_df, stats_df, artifacts_df)
         log("Saving to: " + cached)
         out.to_csv(cached, index=False)
         return out, False
@@ -48,11 +54,23 @@ def cached_post_yasa_pipeline(log, input_file: str, yasa_df: pd.DataFrame, stats
 
         modification_time = os.path.getmtime(cached)
         modification_date = datetime.fromtimestamp(modification_time)
+
+        yasa_modification_time = os.path.getmtime(yasa_csv_file)
+        yasa_modification_date = datetime.fromtimestamp(yasa_modification_time)
+        artifacts_modification_time = os.path.getmtime(artifacts_csv_file)
+        artifacts_modification_date = datetime.fromtimestamp(artifacts_modification_time)
+
         if force:
             log("Forced rebuild")
             return regenerate()
         if modification_date < force_if_older_than:
             log("Cached file " + cached + f" mod date {modification_date} is < {force_if_older_than}, rebuilding")
+            return regenerate()
+        if yasa_modification_date > modification_date:
+            log("YASA file " + yasa_csv_file + f" mod date {yasa_modification_date} is > {modification_date}, rebuilding")
+            return regenerate()
+        if artifacts_modification_date > modification_date:
+            log("Artifacts file " + artifacts_csv_file + f" mod date {artifacts_modification_date} is > {modification_date}, rebuilding")
             return regenerate()
         if "Main_eeg_sigmaabs" not in out.columns:
             log("Cached file " + cached + " is missing columns, rebuilding")
@@ -65,7 +83,7 @@ def cached_post_yasa_pipeline(log, input_file: str, yasa_df: pd.DataFrame, stats
         return regenerate()
 
 
-def post_yasa_pipeline(log, input_file: str, yasa_df: pd.DataFrame, stats_df: pd.DataFrame):
+def post_yasa_pipeline(log, input_file: str, yasa_df: pd.DataFrame, stats_df: pd.DataFrame, artifacts_df: pd.DataFrame):
     # Load MNE
     mne.use_log_level("warning")
     log("Loading MNE file " + input_file)
@@ -87,7 +105,7 @@ def post_yasa_pipeline(log, input_file: str, yasa_df: pd.DataFrame, stats_df: pd
     # YASA features
     garbage_collect(log)
     log("Extracting YASA features")
-    yasa_feats, channel_feats_dict = yasa_features.extract_yasa_features2(log, channels, mne_filtered)
+    yasa_feats, channel_feats_dict = yasa_features.extract_yasa_features2(log, channels, mne_filtered, artifacts_df)
 
     # # Combine epochs and YASA features
     # garbage_collect(log)

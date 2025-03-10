@@ -113,7 +113,6 @@ from importlib import reload
 
 reload(importances)
 import memory
-from rulefit import RuleFit
 from imodels import get_clean_dataset, HSTreeClassifierCV, HSTreeRegressor
 from imodels import FIGSClassifier, FIGSRegressor
 from interpret.glassbox import ExplainableBoostingClassifier, ExplainableBoostingRegressor

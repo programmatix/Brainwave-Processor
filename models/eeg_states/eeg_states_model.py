@@ -4,7 +4,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder as SklearnOneHotEncoder
 import pandas as pd
 import json
-
+from models.util.pipeline import ScaleColumns
 class RowsWithTargetCol(BaseEstimator, TransformerMixin):
     def __init__(self, target_col):
         self.target_col = target_col
@@ -131,8 +131,9 @@ def predict_only_generic_state_model_pipeline(name: str, input, realtime: bool) 
 def tired_vs_wired_model_pipeline(name: str, input, target_col: str, realtime: bool) -> ModelAndData:
     pipeline = Pipeline([
         ('col_selector', DataFrameSelector(target_col, realtime)),
-        ('row_selector', RowsWithTargetCol(target_col))
-        # ('target_col_mapper', TiredVsWiredTargetColMapper(target_col))
+        ('row_selector', RowsWithTargetCol(target_col)),
+        # Scale for classification
+        ('target_col_mapper', ScaleColumns([target_col]))
     ])
 
     prepared_df = pipeline.fit_transform(input)
@@ -141,6 +142,7 @@ def tired_vs_wired_model_pipeline(name: str, input, target_col: str, realtime: b
     y = prepared_df[target_col]
 
     return ModelAndData(name, target_col, prepared_df, X, y)
+
 
 
 def predict_only_tired_vs_wired_model_pipeline(name: str, input, realtime: bool) -> ModelAndData:

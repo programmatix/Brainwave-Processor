@@ -1,4 +1,3 @@
-
 # BSD 3-Clause License
 #
 # Copyright (c) 2018, Raphael Vallat
@@ -49,7 +48,7 @@ from sklearn.preprocessing import robust_scale
 from mne.time_frequency import psd_array_multitaper
 
 
-def extract_yasa_features(data, sfreq):
+def extract_yasa_features(data, sfreq, artifact_regions=None):
     # Bandpass filter
     freq_broad = (0.4, 30)
     # FFT & bandpower parameters
@@ -78,6 +77,28 @@ def extract_yasa_features(data, sfreq):
         dt_filt = filter_data(data[i, :], sf, l_freq=freq_broad[0], h_freq=freq_broad[1], verbose=False)
         # - Extract epochs. Data is now of shape (n_epochs, n_samples).
         times, epochs = sliding_window(dt_filt, sf=sf, window=30)
+        
+        # Handle artifact regions if provided
+        removed_percentages = np.zeros(len(epochs))
+        if artifact_regions is not None and len(artifact_regions) > 0:
+            # Calculate epoch boundaries in samples
+            epoch_length_samples = epochs.shape[1]
+            epoch_boundaries = [(int(times[i] * sf), int(times[i] * sf) + epoch_length_samples) for i in range(len(times))]
+            
+            # Calculate percentage of each epoch that overlaps with artifact regions
+            for i, (epoch_start, epoch_end) in enumerate(epoch_boundaries):
+                total_removed_samples = 0
+                
+                for start_idx, end_idx in artifact_regions:
+                    # Calculate overlap between artifact region and epoch
+                    overlap_start = max(epoch_start, start_idx)
+                    overlap_end = min(epoch_end, end_idx)
+                    
+                    if overlap_start < overlap_end:  # If there's overlap
+                        total_removed_samples += (overlap_end - overlap_start)
+                
+                # Calculate percentage of epoch that was removed
+                removed_percentages[i] = (total_removed_samples / epoch_length_samples) * 100
 
         # Calculate standard descriptive statistics
         hmob, hcomp = ant.hjorth_params(epochs, axis=1)
@@ -90,6 +111,7 @@ def extract_yasa_features(data, sfreq):
             "nzc": ant.num_zerocross(epochs, axis=1),
             "hmob": hmob,
             "hcomp": hcomp,
+            "removed_percentage": removed_percentages,
         }
 
         # Calculate spectral power features (for EEG + EOG)
@@ -215,7 +237,7 @@ from mne.io import Raw
 from yasa import SleepStaging, sliding_window, bandpower_from_psd_ndarray
 
 
-def extract_yasa_features2(log, channels: list[str], mne_filtered: Raw):
+def extract_yasa_features2(log, channels: list[str], mne_filtered: Raw, artifacts_df: pd.DataFrame):
     channel_feats_dict = {}
     all_feats_list = []
 
@@ -224,7 +246,8 @@ def extract_yasa_features2(log, channels: list[str], mne_filtered: Raw):
         # feats = ss.get_features()
         # See comment in get_filtered_and_scaled_data for why the 1_000_000
         numpy_data = mne_filtered.get_data(picks=channel, units=dict(eeg="uV")) / 1_000_000
-        feats = extract_yasa_features(numpy_data, mne_filtered.info['sfreq'])
+        artifacts_for_channel = artifacts_df[artifacts_df['channel'] == channel][['start', 'end']].values
+        feats = extract_yasa_features(numpy_data, mne_filtered.info['sfreq'], artifacts_for_channel)
         feats.columns = [f"{channel}_{col}" for col in feats.columns]
         channel_feats_dict[channel] = feats
         all_feats_list.append(feats)

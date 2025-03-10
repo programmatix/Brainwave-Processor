@@ -111,17 +111,34 @@ def evaluate_regression_model(model, name: str, X_train, y_train, X_val, y_val):
     # Plot the predictions vs actual values and errors
     fig, axes = plt.subplots(1, 3, figsize=(30, 7))
 
-    axes[0].scatter(y_train, train_predictions, alpha=0.3)
+    # Calculate absolute errors for color coding
+    train_abs_errors = np.abs(train_errors)
+    val_abs_errors = np.abs(val_errors)
+    
+    # Normalize errors for coloring (0=black, 30+=white)
+    train_colors = np.minimum(train_abs_errors / 30.0, 1.0)
+    val_colors = np.minimum(val_abs_errors / 30.0, 1.0)
+    
+    # Create color maps - using a more colorful but still intuitive colormap
+    # 'viridis' goes from dark blue (low error) to bright yellow (high error)
+    train_cmap = plt.cm.viridis
+    val_cmap = plt.cm.viridis
+
+    # First plot with color-coded points based on error
+    scatter0 = axes[0].scatter(y_train, train_predictions, c=train_colors, cmap=train_cmap, alpha=0.5)
     axes[0].plot([y_train.min(), y_train.max()], [y_train.min(), y_train.max()], 'k--', lw=2)
     axes[0].set_xlabel('Actual')
     axes[0].set_ylabel('Predicted')
     axes[0].set_title(f'{name} Predictions vs Actual (training)')
+    fig.colorbar(scatter0, ax=axes[0], label='Absolute Error (0-30+)')
 
-    axes[1].scatter(y_val, val_predictions, alpha=0.3)
+    # Second plot with color-coded points based on error
+    scatter1 = axes[1].scatter(y_val, val_predictions, c=val_colors, cmap=val_cmap, alpha=0.5)
     axes[1].plot([y_val.min(), y_val.max()], [y_val.min(), y_val.max()], 'k--', lw=2)
     axes[1].set_xlabel('Actual')
     axes[1].set_ylabel('Predicted')
     axes[1].set_title(f'{name} Predictions vs Actual (validation)')
+    fig.colorbar(scatter1, ax=axes[1], label='Absolute Error (0-30+)')
 
     axes[2].scatter(y_val, val_errors, alpha=0.3)
     axes[2].errorbar(val_unique_values, val_means, yerr=val_stds, fmt='o', color='r', ecolor='r', elinewidth=2, capsize=4)

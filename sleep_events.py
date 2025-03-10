@@ -6,6 +6,7 @@ import pytz
 import pandas as pd
 from pandas import json_normalize
 import json
+import mongo_client
 
 def connect_to_firebase():
     if not firebase_admin._apps:
@@ -187,15 +188,23 @@ def convert_to_datetime(row, time_column):
         return pd.NaT
 
 def load_days_data(pimp = True):
-    # def load_sleep_events(log, start_date, end_date, waking_start_time_tz, waking_end_time_tz):
-    db = connect_to_firebase()
+    # db = connect_to_firebase()
 
-    docs = db.collection('daysExperimental').stream()
+    # docs = db.collection('daysExperimental').stream()
 
-    # Convert to list of dictionaries
-    records = [doc.to_dict() for doc in docs]
+    docs = mongo_client.find('daysExperimental', None, { "ui": 0 })
 
-    days = pd.DataFrame(records)
+    days = pd.DataFrame(docs)
+
+    rename_dict = {}
+    for col in days.columns:
+        if not (col == 'ml' or col.endswith("_CONVERT_TO_DAY_AND_NIGHT_OF")):
+            days.drop(col, axis=1, inplace=True)
+        if col.endswith("_CONVERT_TO_DAY_AND_NIGHT_OF"):
+            new_key = col[:-len("_CONVERT_TO_DAY_AND_NIGHT_OF")]
+            rename_dict[col] = new_key
+
+    days = days.rename(columns=rename_dict)
 
     df = days
     json_column = 'ml'

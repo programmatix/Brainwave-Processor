@@ -1,4 +1,5 @@
 from sklearn.base import TransformerMixin, BaseEstimator
+from models.util.pipeline import ClipAbsOutliers
 
 
 def allowed_eeg_feature(feature: str) -> bool:
@@ -76,6 +77,16 @@ def allowed_physical_feature(feature: str) -> bool:
 
     return whitelist(feature) and not blacklist(feature)
 
+def allowed_temp_feature(feature: str) -> bool:
+    def whitelist(feature: str) -> bool:
+        # Not position just yet, needs more work
+        return feature.startswith("Temp")
+
+    def blacklist(feature: str) -> bool:
+        return False
+
+    return whitelist(feature) and not blacklist(feature)
+
 # Anything that gives some clue as to current time
 def allowed_time_feature(feature: str) -> bool:
     def whitelist(feature: str) -> bool:
@@ -133,6 +144,9 @@ def allowed_feature(sources: [str], feature: str) -> bool:
     if 'physical' in sources:
         if allowed_physical_feature(feature):
             return True
+    if 'temp' in sources:
+        if allowed_temp_feature(feature):
+            return True
     if 'times' in sources:
         if allowed_time_feature(feature):
             return True
@@ -174,7 +188,16 @@ class EpochLevelFeaturesHandler(BaseEstimator, TransformerMixin):
 
         out = out.replace({True: 1, False: 0})
 
-        print(f"EpochLevelFeaturesHandler {X.shape} to {out.shape}, first index {out.index[0]}")
+
+        # Apply ClipOutliers to columns with "abs" in their name
+        abs_columns = [col for col in out.columns if "abs" in col]
+        if abs_columns:
+            clipper = ClipAbsOutliers(target_col=self.target_col)
+            abs_df = out[abs_columns]
+            clipped_abs_df = clipper.transform(abs_df)
+            out[abs_columns] = clipped_abs_df
+            
+        print(f"EpochLevelFeaturesHandler {X.shape} to {out.shape}, first index {out.index[0]}, applied ClipOutliers to {len(abs_columns)} 'abs' columns")
         return out
 
 

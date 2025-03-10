@@ -144,7 +144,7 @@ def stitch_all_days_optimised(input_dir: str,
 
     dirs = next(os.walk(input_dir))[1]
     for idx, dir_name in enumerate(tqdm(dirs)):
-        # tqdm.write(f"Processing notebook in: {dir_name}")
+        #tqdm.write(f"Processing notebook in: {dir_name}")
 
         out_df = stitch_day_optimised(input_dir,
                                       dir_name,
