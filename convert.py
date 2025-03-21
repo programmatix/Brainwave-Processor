@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import argparse
 import os
@@ -13,6 +13,8 @@ from tqdm import tqdm
 from memory import garbage_collect
 import pyedflib
 
+
+from sample_rates import real_sample_rate
 
 def convert_and_save_brainflow_file(log, input_file: str, output_file: str, channels: list[str]):
     garbage_collect(log)
@@ -112,7 +114,7 @@ def remove_out_of_order_samples(df):
     df = df.iloc[valid_samples].reset_index(drop=True)
     return df
 
-def gap_fill(df, channels):
+def gap_fill(df, channels, sfreq):
     # Identify gaps greater than 500 ms
     # Why 500ms?  Because there are very regular gaps of ~430ms.
     gaps = df['datetime'].diff() > pd.Timedelta('500ms')
@@ -130,7 +132,7 @@ def gap_fill(df, channels):
             print(f"Gap {i} start time: ", start_time)
             print(f"Gap {i} end time: ", end_time)
             while start_time < end_time:
-                start_time += pd.Timedelta((1 / 250), unit='s')
+                start_time += pd.Timedelta((1 / sfreq), unit='s')
                 new_row = {}
                 for c in channels:
                     new_row[c] = 0
@@ -153,7 +155,7 @@ def gap_fill(df, channels):
     return copied
 
 
-def convert_and_save_brainflow_file_with_gap_filling(log, input_file: str, output_file: str, channels: list[str]):
+def convert_and_save_brainflow_file_with_gap_filling(log, input_file: str, output_file: str, channels: list[str], sfreq: float = real_sample_rate):
     garbage_collect(log)
     board_id = BoardIds.CYTON_BOARD.value
 
@@ -182,7 +184,7 @@ def convert_and_save_brainflow_file_with_gap_filling(log, input_file: str, outpu
 
 
     idx_and_eeg_channels_and_timestamp = remove_out_of_order_samples(idx_and_eeg_channels_and_timestamp)
-    idx_and_eeg_channels_and_timestamp = gap_fill(idx_and_eeg_channels_and_timestamp, channels)
+    idx_and_eeg_channels_and_timestamp = gap_fill(idx_and_eeg_channels_and_timestamp, channels, sfreq)
 
 
     eeg_channels_only = idx_and_eeg_channels_and_timestamp[channels]
@@ -196,7 +198,6 @@ def convert_and_save_brainflow_file_with_gap_filling(log, input_file: str, outpu
     initial_timestamp = idx_and_eeg_channels_and_timestamp['datetime'].iloc[0]
     log(f"Initial timestamp: {str(initial_timestamp)} from {idx_and_eeg_channels_and_timestamp['timestamp'].iloc[0]}")
 
-    sfreq = BoardShim.get_sampling_rate(board_id)
     info = mne.create_info(ch_names=channels, sfreq=sfreq, ch_types=ch_types)
     info.set_meas_date(initial_timestamp)
     toSave = mne.io.RawArray(np.transpose(scaled), info)
@@ -230,7 +231,35 @@ def save_mne_as_downsample_edf(log, mne_filtered, input_file_without_ext):
     mne.export.export_raw(input_file_without_ext + ".edf", resampled, overwrite=True)
 
 def save_mne_as_edf(log, mne_filtered, input_file_without_ext):
-    mne.export.export_raw(input_file_without_ext + ".edf", mne_filtered, overwrite=True)
+    # Avoid this problem after fixing sample rate:
+    #  Signal duration of 31863.802168624s is not exactly divisible by data_record_duration of 0.998339s
+
+    # Make a copy of the data to avoid modifying the original
+    raw_copy = mne_filtered.copy()
+    
+    # Calculate the number of samples needed for exact divisibility
+    duration = raw_copy.times[-1]
+    record_duration = 1.0  # Use a standard record duration of 1 second
+    
+    # Calculate how many samples we need for whole seconds
+    needed_duration = np.ceil(duration)
+    current_samples = raw_copy.n_times
+    target_samples = int(needed_duration * raw_copy.info['sfreq'])
+    
+    # Pad with zeros if needed to get an exact number of seconds
+    if target_samples > current_samples:
+        pad_samples = target_samples - current_samples
+        pad_seconds = pad_samples / raw_copy.info['sfreq']
+        log(f"Padding EDF with {pad_samples} samples ({pad_seconds:.4f} seconds)")
+        padding = np.zeros((raw_copy.info['nchan'], pad_samples))
+        raw_copy._data = np.hstack((raw_copy._data, padding))
+    else:
+        log("No padding needed for EDF export")
+    
+    # Export using the fixed data
+    log(f"Saving EDF with standardized record duration of {record_duration}s")
+    mne.export.export_raw(input_file_without_ext + ".edf", raw_copy, 
+                          overwrite=True, data_record_dur=record_duration)
 
 
 def save_buffer_to_edf(buffer, channel_names, sfreq, filename):
@@ -297,3 +326,103 @@ def get_filtered_and_scaled_data(raw: mne.io.Raw) -> (mne.io.Raw, mne.io.Raw):
     filtered._data = data
 
     return filtered
+
+
+import json
+import numpy as np
+import os
+import struct
+
+def save_mne_to_binary_format(mne_filtered, output_base_path):
+    data = mne_filtered.get_data(units=dict(eeg="uV"))
+    channel_names = mne_filtered.info['ch_names']
+    sfreq = mne_filtered.info['sfreq']
+    meas_date = mne_filtered.info['meas_date']
+    save_recording_to_binary_format(data, channel_names, sfreq, output_base_path, meas_date)
+
+
+def save_recording_to_binary_format(data, channel_names, sfreq, output_base_path, meas_date=None):
+    """
+    Save recording data to a binary format with a JSON file for metadata.
+    
+    Parameters:
+    -----------
+    data : numpy.ndarray
+        EEG data with shape (n_channels, n_samples)
+    channel_names : list
+        List of channel names
+    sfreq : float
+        Sampling frequency in Hz
+    output_base_path : str
+        Base path for output files (without extension)
+    meas_date : datetime or None
+        Measurement start date/time
+    """
+    # Create metadata
+    metadata = {
+        "sampling_frequency": float(sfreq),
+        "channels": channel_names,
+        "n_channels": len(channel_names),
+        "n_samples": data.shape[1],
+        "data_format": "int16",
+        "byte_order": "little-endian"
+    }
+    
+    # Add timing information
+    if meas_date is not None:
+        start_time = meas_date.isoformat()
+        end_time = (meas_date + timedelta(seconds=data.shape[1]/sfreq)).isoformat()
+        metadata["start_time"] = start_time
+        metadata["end_time"] = end_time
+    
+    # Save metadata to JSON
+    json_path = f"{output_base_path}.json"
+    with open(json_path, 'w') as f:
+        json.dump(metadata, f, indent=4)
+    
+    # Prepare binary data file
+    bin_path = f"{output_base_path}.bin"
+    
+    # Convert data to int16 (2 bytes per sample) and clip values
+    int16_data = np.clip(data, -32768, 32767).astype(np.int16)
+    
+    # Write binary data (samples are stored channel by channel)
+    with open(bin_path, 'wb') as f:
+        int16_data.tofile(f)
+    
+    print(f"Saved metadata to {json_path}")
+    print(f"Saved recording data to {bin_path}")
+    print(f"File size: {os.path.getsize(bin_path) / (1024*1024):.2f} MB")
+    
+    return json_path, bin_path
+
+def read_binary_recording(metadata_path):
+    """
+    Read recording data from binary format and metadata JSON.
+    
+    Parameters:
+    -----------
+    metadata_path : str
+        Path to the JSON metadata file
+    
+    Returns:
+    --------
+    data : numpy.ndarray
+        EEG data with shape (n_channels, n_samples)
+    metadata : dict
+        Recording metadata
+    """
+    # Load metadata
+    with open(metadata_path, 'r') as f:
+        metadata = json.load(f)
+    
+    # Derive binary data path
+    bin_path = metadata_path.replace('.json', '.bin')
+    
+    # Read binary data
+    data = np.fromfile(bin_path, dtype=np.int16)
+    
+    # Reshape data based on metadata
+    data = data.reshape(metadata["n_channels"], -1)
+    
+    return data, metadata

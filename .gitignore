@@ -5,5 +5,5 @@
 **/__pycache__
 __pycache__
 *.cbm
-*.pyc
+**/*.pyc
 .env

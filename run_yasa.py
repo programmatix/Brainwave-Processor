@@ -101,7 +101,8 @@ def run_yasa_report(log, input_file_without_ext: str, raw: Raw, skip: bool = Fal
         df_pred_ch.drop('EpochTime', axis=1, inplace=True)
         df_pred_ch.to_csv(out, index=False)
         df_pred_ch.drop('Timestamp', axis=1, inplace=True)
-        plot_spectro(input_file_without_ext, filtered.get_data(units='uV'), raw, channels, sfreq, df_pred_ch, channel)
+        # Not working with non-integer sample rate
+        #plot_spectro(input_file_without_ext, filtered.get_data(units='uV'), raw, channels, sfreq, df_pred_ch, channel)
         df_pred_ch.columns = [f"{channel}_{col}" if col not in ['Epoch'] else col for col in df_pred_ch.columns]
         all_dfs.append(df_pred_ch)
 

@@ -117,7 +117,8 @@ def pipeline(log, input_file: str):
     log("Saving as EDF")
     # Not worth any confusion or perceived data bugs to downsample
     #convert.save_mne_as_downsample_edf(log, mne_filtered, input_file_without_ext)
-    convert.save_mne_as_edf(log, mne_filtered, input_file_without_ext)
+    #convert.save_mne_as_edf(log, mne_filtered, input_file_without_ext)
+    convert.save_mne_to_binary_format(mne_filtered, input_file_without_ext)
 
 
     # YASA slow waves

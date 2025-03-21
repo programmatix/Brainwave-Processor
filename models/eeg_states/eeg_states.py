@@ -223,7 +223,8 @@ def add_event_type(yasa_df, events, verbose=False):
 
         if day_and_night_of != current_day:
             current_day = day_and_night_of
-            date_only = datetime.strptime(str(current_day), "%Y-%m-%d %H:%M:%S").strftime("%Y-%m-%d")
+            date_only = day_and_night_of
+            #date_only = datetime.strptime(str(current_day), "%Y-%m-%d %H:%M:%S").strftime("%Y-%m-%d")
             filtered_events = events[events['dayAndNightOf'].astype(str) == str(date_only)]
             #print(f"Filtered events for {current_day} with {filtered_events.shape[0]} events")
 

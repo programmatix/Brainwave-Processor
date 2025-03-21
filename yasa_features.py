@@ -52,6 +52,41 @@ import pstats
 from io import StringIO
 
 
+def sliding_window(data, sf, window, step=None, axis=-1):
+    from numpy.lib.stride_tricks import as_strided
+
+    assert axis <= data.ndim, "Axis value out of range."
+    assert isinstance(sf, (int, float)), "sf must be int or float"
+    assert isinstance(window, (int, float)), "window must be int or float"
+    assert isinstance(step, (int, float, type(None))), "step must be int, float or None."
+    assert isinstance(axis, int), "axis must be int."
+
+    # Convert window and step to samples
+    window_samples = int(window * sf)
+    step_samples = window_samples if step is None else int(step * sf)
+
+    assert step_samples >= 1, "Stepsize may not be zero or negative."
+    assert window_samples < data.shape[axis], "Sliding window size may not exceed size of selected axis"
+
+    # Define output shape
+    shape = list(data.shape)
+    shape[axis] = np.floor(data.shape[axis] / step_samples - window_samples / step_samples + 1).astype(int)
+    shape.append(window_samples)
+
+    # Calculate strides and time vector
+    strides = list(data.strides)
+    strides[axis] *= step_samples
+    strides.append(data.strides[axis])
+    strided = as_strided(data, shape=shape, strides=strides)
+    
+    # Create time vector using the exact sf value
+    t = np.arange(strided.shape[-2]) * (step_samples / sf)
+
+    # Swap axis: n_epochs, ..., n_samples
+    if strided.ndim > 2:
+        strided = np.rollaxis(strided, -2, 0)
+    return t, strided
+
 
 # minimal when need a quick sanity check (e.g. for artifact adjusting)
 def extract_yasa_features(data, sfreq, artifact_regions=None, minimal: bool = False, profile: bool = False):
@@ -343,7 +378,7 @@ def extract_yasa_features(data, sfreq, artifact_regions=None, minimal: bool = Fa
 
 import pandas as pd
 from mne.io import Raw
-from yasa import SleepStaging, sliding_window, bandpower_from_psd_ndarray
+from yasa import SleepStaging, bandpower_from_psd_ndarray
 
 
 def extract_yasa_features2(log, channels: list[str], mne_filtered: Raw, artifacts_df: pd.DataFrame, calc_both: bool = True, minimal: bool = False, profile: bool = False):
