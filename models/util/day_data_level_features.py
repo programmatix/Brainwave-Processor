@@ -236,7 +236,7 @@ def handle_under_my_control(X, target_col):
     return X[cols]
 
 class DayDataFeaturesHandler(BaseEstimator, TransformerMixin):
-    def __init__(self, target_col, whitelist_sources: [str], blacklist_sources: [str]):
+    def __init__(self, target_col, whitelist_sources: [str], blacklist_sources: [str] = []):
         self.target_col = target_col
         self.whitelist_sources = whitelist_sources
         self.blacklist_sources = blacklist_sources
@@ -247,7 +247,8 @@ class DayDataFeaturesHandler(BaseEstimator, TransformerMixin):
     def transform(self, X):
         features = X.columns
 
-        out = X.copy()
+        # These are in day_data now
+        out = X.copy().select_dtypes(exclude=['datetime64', 'timedelta64', 'object', 'datetime64[ns, Europe/London]'])
 
         if "curated_night" in self.whitelist_sources:
             out = handle_best_night(out, self.target_col)
@@ -263,9 +264,9 @@ class DayDataFeaturesHandler(BaseEstimator, TransformerMixin):
                 allowed.append(self.target_col)
 
             # Sorting helps ensure model will line up with data later
-            X = X.reindex(sorted(X.columns), axis=1)
+            out = out.reindex(sorted(X.columns), axis=1)
             allowed = sorted(allowed)
-            out = X[allowed]
+            out = out[allowed]
 
         print(f"DayDataFeaturesHandler {X.shape} to {out.shape}, first index {out.index[0]}")
         return out

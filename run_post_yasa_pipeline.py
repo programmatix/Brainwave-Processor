@@ -25,7 +25,7 @@ warnings.filterwarnings("ignore", message="Channel locations not available. Disa
 warnings.filterwarnings("ignore", message="WARNING - Hypnogram is SHORTER than data")
 mne.set_log_level('ERROR')
 
-force_if_older_than = datetime(2025, 1, 8, 0, 0, 0)
+force_if_older_than = datetime(2025, 3, 11, 0, 0, 0)
 
 # This is the 2nd pipeline, the post-YASA one.  Post-human runs next.
 # This gets YASA features, scales them, chooses main channel.
@@ -105,7 +105,7 @@ def post_yasa_pipeline(log, input_file: str, yasa_df: pd.DataFrame, stats_df: pd
     # YASA features
     garbage_collect(log)
     log("Extracting YASA features")
-    yasa_feats, channel_feats_dict = yasa_features.extract_yasa_features2(log, channels, mne_filtered, artifacts_df)
+    yasa_feats, channel_feats_dict = yasa_features.extract_yasa_features2(log, channels, mne_filtered, artifacts_df, True)
 
     # # Combine epochs and YASA features
     # garbage_collect(log)

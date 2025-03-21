@@ -4,6 +4,10 @@ sns.set(font_scale=1.2)
 import mne
 from mne.filter import filter_data
 import numpy as np
+from dataclasses import dataclass
+from importlib import reload
+import notebooks.EEGArtifacts.eeg_artifacts
+reload(notebooks.EEGArtifacts.eeg_artifacts)
 
 bands = [
     (0.4, 1, "sdelta"),
@@ -13,6 +17,19 @@ bands = [
     (12, 16, "sigma"),
     (16, 30, "beta"),
 ]
+
+@dataclass
+class Epoch:
+    epoch_idx: int
+    data_artifact_removed: np.ndarray
+    data_raw: np.ndarray
+    start_sample: int
+    end_sample: int 
+    has_artifacts: bool
+    removed_samples: int
+
+    def __str__(self):
+        return f"Epoch(epoch_idx={self.epoch_idx}, start_sample={self.start_sample}, end_sample={self.end_sample}, has_artifacts={self.has_artifacts}, data_raw={self.data_raw.shape}, data_artifact_removed={self.data_artifact_removed.shape}, removed_samples={self.removed_samples})"
 
 def get_epoch(eeg_data, epoch_idx, samples_per_epoch = 7500):
     if (type(eeg_data) == np.ndarray):
@@ -24,6 +41,18 @@ def get_epoch(eeg_data, epoch_idx, samples_per_epoch = 7500):
         data = eeg_data.get_data(units=dict(eeg="uV"))[0]
         return data[epoch_idx * samples_per_epoch : (epoch_idx + 1) * samples_per_epoch]
     raise ValueError("Unknown type for eeg_data")
+
+def get_epoch2(eeg_data, epoch_idx, artifacts_df, samples_per_epoch = 7500) -> Epoch:
+    data_raw = get_epoch(eeg_data, epoch_idx, samples_per_epoch)
+    epochs_containing_artifacts = notebooks.EEGArtifacts.eeg_artifacts.epochs_containing_artifacts(artifacts_df, samples_per_epoch)
+    removed_samples = 0
+    # if epoch_idx in epochs_containing_artifacts:
+    data_artifact_removed, removed_samples = notebooks.EEGArtifacts.eeg_artifacts.remove_artifacts(data_raw, artifacts_df, epoch_idx, samples_per_epoch)
+    # else:
+    #     data_artifact_removed = data_raw    
+    start_sample = epoch_idx * samples_per_epoch
+    end_sample = start_sample + samples_per_epoch
+    return Epoch(epoch_idx, data_artifact_removed, data_raw, start_sample, end_sample, epoch_idx in epochs_containing_artifacts, removed_samples)
 
 def plot_eeg_epoch(eeg_data, epoch_idx, samples_per_epoch = 7500):
     plot_eeg_data(get_epoch(eeg_data, epoch_idx, samples_per_epoch))

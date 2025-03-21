@@ -119,6 +119,7 @@ def post_human_pipeline(log, dir_name, input_file, stats_df, days_data, post_yas
 def cached_post_human_pipeline(log, dir_name: str, input_file: str, stats_df: pd.DataFrame, days_data: pd.DataFrame, post_yasa_df: pd.DataFrame, eeg_state_events, force = False):
     input_file_without_ext = os.path.splitext(input_file)[0]
     cached = input_file_without_ext + ".post_human.csv"
+    post_yasa_csv_file = input_file_without_ext + ".post_yasa.csv"
 
     def regenerate():
         out = post_human_pipeline(log, dir_name, input_file, stats_df, days_data, post_yasa_df, eeg_state_events)
@@ -138,6 +139,9 @@ def cached_post_human_pipeline(log, dir_name: str, input_file: str, stats_df: pd
         modification_time = os.path.getmtime(cached)
         modification_date = datetime.fromtimestamp(modification_time)
 
+        post_yasa_modification_time = os.path.getmtime(post_yasa_csv_file)
+        post_yasa_modification_date = datetime.fromtimestamp(post_yasa_modification_time)
+
         if modification_date < force_if_older_than:
             log("Cached file " + cached + f" mod date {modification_date} is < {force_if_older_than}, rebuilding")
             return regenerate()
@@ -149,6 +153,9 @@ def cached_post_human_pipeline(log, dir_name: str, input_file: str, stats_df: pd
             return regenerate()
         if not any(col for col in out.columns if col == 'SettlingV4ScorePrediction'):
             log("Cached file " + cached + " is missing SettlingV4ScorePrediction, rebuilding")
+            return regenerate()
+        if post_yasa_modification_date > modification_date:
+            log("Post-YASA file " + post_yasa_csv_file + f" mod date {post_yasa_modification_date} is > {modification_date}, rebuilding")
             return regenerate()
 
         out['epoch'] = out['Epoch']
