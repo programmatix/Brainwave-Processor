@@ -115,9 +115,11 @@ def post_yasa_pipeline(log, input_file: str, yasa_df: pd.DataFrame, stats_df: pd
     combined_df = yasa_df.join(yasa_feats)
 
     # Scaled
-    scale_by_stats = scaling.scale_by_stats(combined_df, stats_df)
+    # Removing.  Not really using anymore and seeing a bunch of ML key quality issues.
+    # scale_by_stats = scaling.scale_by_stats(combined_df, stats_df)
 
-    yasa_feats = combined_df.join(scale_by_stats.add_suffix('_s'))
+    # yasa_feats = combined_df.join(scale_by_stats.add_suffix('_s'))
+    yasa_feats = combined_df
 
 
     # YASA slow waves

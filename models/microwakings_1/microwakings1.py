@@ -357,19 +357,20 @@ def export_with_microwakings(self: PerFile, log, processed_predictions, probabil
     upsampled_data = upsampled_data / 1_000_000
 
     # Combine the original and new data
-    combined_data = np.vstack([original_channels, upsampled_data])
+    # combined_data = np.vstack([original_channels, upsampled_data])
 
-    new_info = mne.create_info(
-        ch_names=self.mne_filtered.info['ch_names'] + ['MicrowakingModel'], # 'raw', 'binary', 'cleaned1', 'filled', 'cleaned2'],
-        sfreq=original_sfreq,
-        ch_types=['eeg'] * len(self.mne_filtered.info['ch_names']) + ['misc'] * len(new_data)
-    )
-    new_info.set_meas_date(self.mne_filtered.info['meas_date'])
+    # new_info = mne.create_info(
+    #     ch_names=self.mne_filtered.info['ch_names'] + ['MicrowakingModel'], # 'raw', 'binary', 'cleaned1', 'filled', 'cleaned2'],
+    #     sfreq=original_sfreq,
+    #     ch_types=['eeg'] * len(self.mne_filtered.info['ch_names']) + ['misc'] * len(new_data)
+    # )
+    # new_info.set_meas_date(self.mne_filtered.info['meas_date'])
 
     # assert combined_data.shape[0] == len(new_info['ch_names'])
 
-    new_raw = mne.io.RawArray(combined_data, new_info)
+    # new_raw = mne.io.RawArray(combined_data, new_info)
     #new_raw.resample(100, npad="auto")
 
-    log(f"Exporting to: {self.input_file_without_ext}.edf")
-    mne.export.export_raw(self.input_file_without_ext + ".edf", new_raw, overwrite=True)
+
+    # log(f"Exporting to: {self.input_file_without_ext}.edf")
+    # mne.export.export_raw(self.input_file_without_ext + ".edf", new_raw, overwrite=True)
