@@ -30,46 +30,6 @@ def get_data_for_day(day_data, day: str, time1: str = '08:00:00Z', time2: str = 
     return df, dd
 
 
-# Function to create annotation chart for time points that exist in dd DataFrame
-def create_annotation_charts(dd, time_column, label, color):
-    if time_column in dd.columns:
-        valid_times = dd[dd[time_column].notna()]
-        
-        if not valid_times.empty:
-            times = pd.to_datetime(valid_times[time_column])
-            labels = [f"{label} ({t.strftime('%H:%M')})" for t in times]
-            
-            annotation_df = pd.DataFrame({
-                'time': times,
-                'label': labels
-            })
-            
-            rule = alt.Chart(annotation_df).mark_rule(
-                color=color,
-                strokeWidth=2,
-                strokeDash=[4, 2]
-            ).encode(
-                x='time:T'
-            )
-            
-            text = alt.Chart(annotation_df).mark_text(
-                align='left',
-                baseline='top',
-                dx=5,
-                dy=-10,
-                angle=270,
-                fontSize=12,
-                fontWeight='bold'
-            ).encode(
-                x='time:T',
-                text='label',
-                color=alt.value(color)
-            )
-            
-            return (rule + text)
-    return None
-
-
 from scipy.ndimage import gaussian_filter
 import numpy as np
 from scipy.signal import savgol_filter
@@ -150,7 +110,139 @@ def get_peaks_and_valleys(df):
 import altair as alt
 import pandas as pd
 
-def draw_chart(df, dd, merged=None):
+
+
+# Function to create annotation chart for time points that exist in dd DataFrame
+def create_annotation_charts(dd, time_column, label, color):
+    if time_column in dd.columns:
+        valid_times = dd[dd[time_column].notna()]
+        
+        if not valid_times.empty:
+            times = pd.to_datetime(valid_times[time_column])
+            labels = [f"{label} ({t.strftime('%H:%M')})" for t in times]
+            
+            annotation_df = pd.DataFrame({
+                'time': times,
+                'label': labels
+            })
+            
+            rule = alt.Chart(annotation_df).mark_rule(
+                color=color,
+                strokeWidth=2,
+                strokeDash=[4, 2]
+            ).encode(
+                x='time:T'
+            )
+            
+            text = alt.Chart(annotation_df).mark_text(
+                align='left',
+                baseline='top',
+                dx=5,
+                dy=-10,
+                angle=270,
+                fontSize=12,
+                fontWeight='bold'
+            ).encode(
+                x='time:T',
+                text='label',
+                color=alt.value(color)
+            )
+            
+            return (rule + text)
+    return None
+
+
+def create_merged_annotations(merged, day_and_night_of: str):
+    merged_for_day = merged[pd.to_datetime(merged['dayAndNightOf']).dt.strftime('%Y-%m-%d') == day_and_night_of]
+
+    if merged_for_day.empty:
+        return None
+
+    # Get all unique types from merged columns
+    types = set(col.split('_cr_')[0] 
+                for col in merged_for_day.columns 
+                if col.endswith('_cr_datetime'))
+    
+    annotation_data = []
+    prominence_data = []
+    
+    for type_name in types:
+        cr_datetime = f'{type_name}_cr_datetime'
+        cr_temp = f'{type_name}_cr_temp'
+        cr_prominence = f'{type_name}_cr_prominence'
+        
+        det_datetime = f'{type_name}_det_time'
+        det_temp = f'{type_name}_det_temp'
+        
+        for _, row in merged_for_day.iterrows():
+            has_cr = pd.notna(row.get(cr_datetime)) and pd.notna(row.get(cr_temp))
+            has_det = pd.notna(row.get(det_datetime)) and pd.notna(row.get(det_temp))
+            
+            if has_cr and has_det:
+                if (row[cr_datetime] == row[det_datetime] and 
+                    row[cr_temp] == row[det_temp]):
+                    annotation_data.append({
+                        'x': row[cr_datetime],
+                        'y': row[cr_temp],
+                        'text': type_name
+                    })
+                else:
+                    annotation_data.append({
+                        'x': row[cr_datetime],
+                        'y': row[cr_temp],
+                        'text': f'{type_name} (CR)'
+                    })
+                    annotation_data.append({
+                        'x': row[det_datetime],
+                        'y': row[det_temp],
+                        'text': f'{type_name} (DET)'
+                    })
+            elif has_cr:
+                annotation_data.append({
+                    'x': row[cr_datetime],
+                    'y': row[cr_temp],
+                    'text': f'{type_name} (CR)'
+                })
+            elif has_det:
+                annotation_data.append({
+                    'x': row[det_datetime],
+                    'y': row[det_temp],
+                    'text': f'{type_name} (DET)'
+                })
+            
+            if has_cr and pd.notna(row.get(cr_prominence)):
+                prominence_data.append({
+                    'x': row[cr_datetime],
+                    'y': row[cr_temp],
+                    'size': 50 + row[cr_prominence] * 10
+                })
+    
+    if annotation_data:
+        annotations = alt.Chart(pd.DataFrame(annotation_data)).mark_text(
+            align='left',
+            dx=10,
+            dy=10
+        ).encode(
+            x='x:T',
+            y='y:Q',
+            text='text:N'
+        )
+        return annotations
+        # chart = chart + annotations
+    
+    return None
+    # if prominence_data:
+    #     prominence_circles = alt.Chart(pd.DataFrame(prominence_data)).mark_circle(
+    #         opacity=0.3
+    #     ).encode(
+    #         x='x:T',
+    #         y='y:Q',
+    #         size='size:Q'
+    #     )
+    #     chart = chart + prominence_circles
+    
+def draw_chart(df, dd, merged=None, all_processed=None, post_lep_stats=None):
+    day_and_night_of: str = pd.to_datetime(dd['dayAndNightOf']).dt.strftime('%Y-%m-%d').iloc[0]
     df, rise_df, fall_df, peaks_df, peaks_raw_df, valleys_df = get_peaks_and_valleys(df)
 
     # Create a selection that can be used to zoom
@@ -304,9 +396,74 @@ def draw_chart(df, dd, merged=None):
         if wake:
             annotations.append(wake)
 
+    if merged is not None:
+        merged_annotations = create_merged_annotations(merged, day_and_night_of)
+        if merged_annotations:
+            annotations.append(merged_annotations)
+
+    # Create a DataFrame to store all resampled data
+    all_data = pd.DataFrame()
+    
+
     # Combine the temperature chart with all annotations
     detail_charts = [temp_chart, savgol, rising_regions, falling_regions, peaks_labels, peaks_labels_raw, valleys_labels]
     detail_charts.extend([a for a in annotations if a is not None])
+
+    # If we have post_lep_stats data and a valid LEP time in merged data
+    if post_lep_stats is not None and merged is not None and not merged.empty:
+        day_and_night_of = pd.to_datetime(dd['dayAndNightOf']).dt.strftime('%Y-%m-%d').iloc[0]
+        day_lep = merged[merged['dayAndNightOf'] == day_and_night_of]
+        
+        if not day_lep.empty and pd.notna(day_lep['LEP_merge_datetime'].iloc[0]):
+            lep_time = day_lep['LEP_merge_datetime'].iloc[0]
+            
+            # Create a DataFrame with timestamps for each minute after LEP
+            stats_with_time = post_lep_stats.copy()
+            stats_with_time['time'] = lep_time + pd.to_timedelta(stats_with_time['minute'], unit='minutes')
+            
+            # Create mean line
+            mean_line = alt.Chart(stats_with_time).mark_line(
+                color='pink',
+                strokeWidth=2
+            ).encode(
+                x='time:T',
+                y='mean:Q'
+            )
+            
+            # Create std deviation bands
+            bands_data = pd.DataFrame({
+                'time': pd.concat([stats_with_time['time'], stats_with_time['time'][::-1]]),
+                'Temp': pd.concat([stats_with_time['std1_lower'], stats_with_time['std1_upper'][::-1]])
+            })
+            
+            std_band = alt.Chart(bands_data).mark_area(
+                color='red',
+                opacity=0.2
+            ).encode(
+                x='time:T',
+                y='Temp:Q'
+            )
+
+            std1_lower = alt.Chart(stats_with_time).mark_line(
+                color='red',
+                opacity=0.2
+            ).encode(
+                x='time:T',
+                y='std1_lower:Q'
+            )
+
+            std1_upper = alt.Chart(stats_with_time).mark_line(
+                color='red',
+                opacity=0.2
+            ).encode(
+                x='time:T',
+                y='std1_upper:Q'
+            )
+
+            # Add these to your existing charts list
+            detail_charts.extend([mean_line, std1_lower, std1_upper])
+            # detail_charts.extend([mean_line])
+
     detail = alt.layer(*detail_charts).properties(
         width=800,
         height=400,
@@ -336,13 +493,14 @@ def draw_chart(df, dd, merged=None):
         gridColor='#DCDCDC'
     )
 
+
     return chart
 
 
 
-def do_it_all(day_data, day: str, start_time: str = '08:00:00Z', end_time: str = '08:00:00Z', merged=None):
+def do_it_all(day_data, day: str, start_time: str = '08:00:00Z', end_time: str = '08:00:00Z', merged=None, all_processed=None, post_lep_stats=None):
     df, dd = get_data_for_day(day_data, day, start_time, end_time)
-    chart = draw_chart(df, dd, merged)
+    chart = draw_chart(df, dd, merged, all_processed, post_lep_stats)
     return chart
 
 
@@ -353,7 +511,8 @@ def fetch_raw_data(day_data, all_days):
             df, dd = get_data_for_day(day_data, day)
             days_data[day] = {
                 'df': df,
-                'dd': dd
+                'dd': dd,
+                'dayAndNightOf': day
             }
         except Exception as e:
             days_data[day] = {
@@ -782,3 +941,216 @@ def display_stats(df, days_with_cr, prefix):
     """
 
     return HTML(stats_html)
+
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+def plot_post_lep_periods_matplotlib(all_processed, merged_df, minutes=120):
+    
+    fig, ax = plt.subplots(figsize=(12, 6))
+    
+    # Create a DataFrame to store all resampled data
+    all_data = pd.DataFrame()
+    
+    # First pass: collect all temperature data
+    for day, data in all_processed.items():
+        if 'error' in data:
+            continue
+            
+        day_lep = merged_df[merged_df['dayAndNightOf'] == day]
+        if day_lep.empty or pd.isna(day_lep['LEP_merge_datetime'].iloc[0]):
+            continue
+            
+        lep_time = day_lep['LEP_merge_datetime'].iloc[0]
+        
+        df = data['df']
+        period_end = lep_time + pd.Timedelta(minutes=minutes)
+        period_data = df[(df['time'] >= lep_time) & (df['time'] <= period_end)].copy()
+        
+        if period_data.empty:
+            continue
+        
+        # Calculate minutes after LEP
+        period_data['minutes_after_lep'] = (period_data['time'] - lep_time).dt.total_seconds() / 60
+        
+        # Plot individual day's data
+        ax.plot(period_data['minutes_after_lep'], 
+                period_data['Temp'],
+                alpha=0.3,
+                color='gray',
+                linewidth=1)
+        
+        # Add this day's data to the all_data DataFrame
+        all_data = pd.concat([all_data, period_data[['minutes_after_lep', 'Temp']]])
+    
+    # Calculate statistics for each minute
+    if not all_data.empty:
+        # Round to nearest minute and group
+        all_data['minute'] = all_data['minutes_after_lep'].round()
+        stats = all_data.groupby('minute')['Temp'].agg(['mean', 'std']).reset_index()
+        stats = stats[stats['minute'] <= minutes]  # Ensure we don't go beyond 120 minutes
+        
+        # Plot mean
+        ax.plot(stats['minute'], stats['mean'], 
+                color='red', 
+                linewidth=2, 
+                label='Mean')
+        
+        # Plot standard deviation bands
+        ax.fill_between(stats['minute'], 
+                       stats['mean'] - stats['std'],
+                       stats['mean'] + stats['std'],
+                       color='red', alpha=0.2, label='±1σ')
+        ax.fill_between(stats['minute'],
+                       stats['mean'] - 2*stats['std'],
+                       stats['mean'] + 2*stats['std'],
+                       color='red', alpha=0.1, label='±2σ')
+    
+    ax.set_xlabel('Minutes after LEP', fontsize=12)
+    ax.set_ylabel('Temperature (°C)', fontsize=12)
+    ax.set_title(f'Temperature Patterns in the {minutes} Minutes Following LEP', fontsize=14, pad=20)
+    
+    ax.set_xlim(0, minutes)
+    ax.grid(True, linestyle='--', alpha=0.7)
+    ax.legend()
+    
+    plt.tight_layout()
+    
+    return fig
+
+
+def calc_avg_mins_after_lep(all_processed, merged, minutes=120):
+    all_data = pd.DataFrame()
+
+    for day, data in all_processed.items():
+        if 'error' in data:
+            continue
+            
+        day_lep = merged[merged['dayAndNightOf'] == day]
+        if day_lep.empty or pd.isna(day_lep['LEP_merge_datetime'].iloc[0]):
+            continue
+            
+        lep_time = day_lep['LEP_merge_datetime'].iloc[0]
+        
+        day_df = data['df']
+        period_end = lep_time + pd.Timedelta(minutes=minutes)
+        period_data = day_df[(day_df['time'] >= lep_time) & (day_df['time'] <= period_end)].copy()
+        
+        if period_data.empty:
+            continue
+        
+        # Calculate minutes after LEP
+        period_data['minutes_after_lep'] = (period_data['time'] - lep_time).dt.total_seconds() / 60
+        
+        # Add this day's data to the all_data DataFrame
+        all_data = pd.concat([all_data, period_data[['minutes_after_lep', 'Temp']]])
+
+    # Calculate statistics for each minute
+    if not all_data.empty:
+        # Round to nearest minute and group
+        all_data['minute'] = all_data['minutes_after_lep'].round()
+        stats = all_data.groupby('minute')['Temp'].agg(['mean', 'std']).reset_index()
+        stats = stats[stats['minute'] <= minutes]
+        
+        # Create DataFrame with mean and both standard deviations
+        stats_with_bands = pd.DataFrame({
+            'minute': stats['minute'],
+            'mean': stats['mean'],
+            'std1_lower': stats['mean'] - stats['std'],
+            'std1_upper': stats['mean'] + stats['std'],
+            'std2_lower': stats['mean'] - 2*stats['std'],
+            'std2_upper': stats['mean'] + 2*stats['std']
+        })        
+        return stats_with_bands
+    return None
+
+
+def analyze_post_lep_period(night_data: pd.DataFrame, stats_with_bands: pd.DataFrame, minutes: int = 120) -> dict:
+    """
+    Analyze how a specific night's temperature pattern compares to historical averages
+    in the post-LEP period.
+    
+    Args:
+        night_data: DataFrame with columns ['minutes_after_lep', 'Temp'] for specific night
+        stats_with_bands: DataFrame with historical stats (mean, std bands) per minute
+        minutes: Analysis period length in minutes
+    """
+    # Ensure data is properly aligned by minute
+    night_data = night_data.copy()
+    night_data['minute'] = night_data['minutes_after_lep'].round()
+    
+    # Merge night data with historical stats
+    analysis = pd.merge(
+        night_data,
+        stats_with_bands,
+        on='minute',
+        how='inner'
+    )
+    
+    # Calculate deviations from mean
+    analysis['deviation'] = analysis['Temp'] - analysis['mean']
+    
+    metrics = {
+        # Overall metrics
+        'mean_deviation': analysis['deviation'].mean(),
+        'max_deviation': analysis['deviation'].max(),
+        'min_deviation': analysis['deviation'].min(),
+        
+        # Time spent in different bands
+        'minutes_above_1std': len(analysis[analysis['Temp'] > analysis['std1_upper']]),
+        'minutes_below_1std': len(analysis[analysis['Temp'] < analysis['std1_lower']]),
+        'minutes_within_1std': len(analysis[
+            (analysis['Temp'] >= analysis['std1_lower']) & 
+            (analysis['Temp'] <= analysis['std1_upper'])
+        ]),
+        
+        # Longest continuous periods
+        'longest_above_mean': get_longest_streak(analysis['Temp'] > analysis['mean']),
+        'longest_below_mean': get_longest_streak(analysis['Temp'] < analysis['mean']),
+        
+        # Area metrics
+        'area_above_mean': np.trapz(
+            analysis[analysis['deviation'] > 0]['deviation']
+        ),
+        'area_below_mean': abs(np.trapz(
+            analysis[analysis['deviation'] < 0]['deviation']
+        ))
+    }
+    
+    return metrics
+
+def get_longest_streak(bool_series: pd.Series) -> int:
+    """Calculate the longest continuous streak of True values"""
+    if not len(bool_series):
+        return 0
+    streaks = (bool_series != bool_series.shift()).cumsum()
+    return bool_series.groupby(streaks).size().max() if any(bool_series) else 0
+
+def compare_night_to_average(all_processed: dict, merged_df: pd.DataFrame, 
+                           stats_with_bands: pd.DataFrame, day: str) -> dict:
+    """Compare a specific night to historical averages"""
+    if day not in all_processed or 'error' in all_processed[day]:
+        return None
+        
+    day_lep = merged_df[merged_df['dayAndNightOf'] == day]
+    if day_lep.empty or pd.isna(day_lep['LEP_merge_datetime'].iloc[0]):
+        return None
+        
+    lep_time = day_lep['LEP_merge_datetime'].iloc[0]
+    df = all_processed[day]['df']
+    
+    # Get post-LEP period data
+    period_end = lep_time + pd.Timedelta(minutes=120)
+    period_data = df[(df['time'] >= lep_time) & (df['time'] <= period_end)].copy()
+    
+    if period_data.empty:
+        return None
+        
+    # Calculate minutes after LEP
+    period_data['minutes_after_lep'] = (
+        period_data['time'] - lep_time
+    ).dt.total_seconds() / 60
+    
+    return analyze_post_lep_period(period_data, stats_with_bands)
