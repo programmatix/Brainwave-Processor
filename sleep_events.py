@@ -11,7 +11,7 @@ import mongo_client
 def connect_to_firebase():
     if not firebase_admin._apps:
         home_dir = os.path.expanduser("~")
-        firebase_credentials_path = os.path.join(home_dir, "examined-life-dd234-firebase-adminsdk-f515f-09f1331d09.json")
+        firebase_credentials_path = os.path.join(home_dir, "examined-life-dd234-firebase-adminsdk-f515f-f30d76e25d.json")
 
         cred = credentials.Certificate(firebase_credentials_path)
         firebase_admin.initialize_app(cred)

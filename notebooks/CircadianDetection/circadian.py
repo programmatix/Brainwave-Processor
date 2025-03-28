@@ -13,7 +13,7 @@ username = os.getenv('INFLUXDB_USERNAME')
 password = os.getenv('INFLUXDB_PASSWORD')
 database = os.getenv('INFLUXDB_DATABASE')
 
-def get_data_for_day(day_data, day: str, time1: str = '08:00:00Z', time2: str = '08:00:00Z'):
+def get_data_for_day(day_data, day: str, time1: str = '00:00:00Z', time2: str = '12:00:00Z'):
     day = day
     day_plus_one = (pd.to_datetime(day) + pd.Timedelta(days=1)).strftime('%Y-%m-%d')
     dd = day_data[day_data['dayAndNightOf'] == day]
@@ -99,7 +99,7 @@ def get_peaks_and_valleys(df):
     
     # The real peaks we will use
     peaks_raw_df = df.iloc[nearest_peaks].copy()
-    peaks_raw_df['feature'] = peaks_raw_df.apply(lambda x: f'PeakRl ({x.time.strftime("%H:%M")}, {x.Temp:.2f}°C)', axis=1)
+    peaks_raw_df['feature'] = peaks_raw_df.apply(lambda x: f'Peak ({x.time.strftime("%H:%M")}, {x.Temp:.2f}°C)', axis=1)
 
     valleys_df = df.iloc[nearest_valleys].copy()    
     valleys_df['feature'] = valleys_df.apply(lambda x: f'Valley ({x.time.strftime("%H:%M")}, {x.Temp:.2f}°C)', axis=1)
@@ -190,24 +190,24 @@ def create_merged_annotations(merged, day_and_night_of: str):
                     annotation_data.append({
                         'x': row[cr_datetime],
                         'y': row[cr_temp],
-                        'text': f'{type_name} (CR)'
+                        'text': f'{type_name} (CR) {row[cr_datetime].strftime("%H:%M")} {row[cr_temp]:.2f}'
                     })
                     annotation_data.append({
                         'x': row[det_datetime],
                         'y': row[det_temp],
-                        'text': f'{type_name} (DET)'
+                        'text': f'{type_name} (DET) {row[det_datetime].strftime("%H:%M")} {row[det_temp]:.2f}'
                     })
             elif has_cr:
                 annotation_data.append({
                     'x': row[cr_datetime],
                     'y': row[cr_temp],
-                    'text': f'{type_name} (CR)'
+                    'text': f'{type_name} (CR) {row[cr_datetime].strftime("%H:%M")} {row[cr_temp]:.2f}'
                 })
             elif has_det:
                 annotation_data.append({
                     'x': row[det_datetime],
                     'y': row[det_temp],
-                    'text': f'{type_name} (DET)'
+                    'text': f'{type_name} (DET) {row[det_datetime].strftime("%H:%M")} {row[det_temp]:.2f}'
                 })
             
             if has_cr and pd.notna(row.get(cr_prominence)):
@@ -219,9 +219,10 @@ def create_merged_annotations(merged, day_and_night_of: str):
     
     if annotation_data:
         annotations = alt.Chart(pd.DataFrame(annotation_data)).mark_text(
-            align='left',
-            dx=10,
-            dy=10
+                    align='center',
+# align='left',
+            # dx=10,
+            dy=-3
         ).encode(
             x='x:T',
             y='y:Q',
@@ -332,18 +333,18 @@ def draw_chart(df, dd, merged=None, all_processed=None, post_lep_stats=None):
     # )
 
     # 7. Add text labels for peaks
-    peaks_labels = alt.Chart(peaks_df).mark_text(
-        align='center',
-        baseline='bottom',
-        dy=-25,
-        fontSize=10,
-        fontWeight='bold'
-    ).encode(
-        x='time:T',
-        y='Temp_Smoothed_Savgol:Q',
-        text='feature:N',
-        color=alt.value('red')
-    )
+    # peaks_labels = alt.Chart(peaks_df).mark_text(
+    #     align='center',
+    #     baseline='bottom',
+    #     dy=-25,
+    #     fontSize=10,
+    #     fontWeight='bold'
+    # ).encode(
+    #     x='time:T',
+    #     y='Temp_Smoothed_Savgol:Q',
+    #     text='feature:N',
+    #     color=alt.value('red')
+    # )
     peaks_labels_raw = alt.Chart(peaks_raw_df).mark_text(
         align='center',
         baseline='bottom',
@@ -401,12 +402,9 @@ def draw_chart(df, dd, merged=None, all_processed=None, post_lep_stats=None):
         if merged_annotations:
             annotations.append(merged_annotations)
 
-    # Create a DataFrame to store all resampled data
-    all_data = pd.DataFrame()
-    
 
     # Combine the temperature chart with all annotations
-    detail_charts = [temp_chart, savgol, rising_regions, falling_regions, peaks_labels, peaks_labels_raw, valleys_labels]
+    detail_charts = [temp_chart, savgol, rising_regions, falling_regions, peaks_labels_raw, valleys_labels]
     detail_charts.extend([a for a in annotations if a is not None])
 
     # If we have post_lep_stats data and a valid LEP time in merged data
@@ -414,8 +412,8 @@ def draw_chart(df, dd, merged=None, all_processed=None, post_lep_stats=None):
         day_and_night_of = pd.to_datetime(dd['dayAndNightOf']).dt.strftime('%Y-%m-%d').iloc[0]
         day_lep = merged[merged['dayAndNightOf'] == day_and_night_of]
         
-        if not day_lep.empty and pd.notna(day_lep['LEP_merge_datetime'].iloc[0]):
-            lep_time = day_lep['LEP_merge_datetime'].iloc[0]
+        if not day_lep.empty and pd.notna(day_lep['LEP_cr_datetime'].iloc[0]):
+            lep_time = day_lep['LEP_cr_datetime'].iloc[0]
             
             # Create a DataFrame with timestamps for each minute after LEP
             stats_with_time = post_lep_stats.copy()
@@ -569,7 +567,9 @@ def process_circadian_reviews(peaks_troughs_series, cr_df):
 
 def get_circadian_reviews():
     db = connect_to_firebase()
+    print("Getting circadian rhythm reviews")
     docs = db.collection('circadianRhythmReviewsExperimental').stream()
+    print("Starting to process circadian rhythm reviews")
     records = [doc.to_dict() for doc in docs]
     cr = pd.DataFrame(records)
     cr['timestampWritten'] = pd.to_datetime(cr['timestampWritten']).dt.tz_convert('Europe/London')
@@ -768,6 +768,8 @@ def cr_known(cr_df, type: str):
     return cr_known_lep
 
 
+# Goal is to look for a valley that doesn't have a better valley soon after it, but doesn't necessarily have to be the lowest.
+# Basically want the 'end of the run'.
 def find_first_stable_valley(valleys_df):
     if len(valleys_df) == 0:
         return None
@@ -781,6 +783,20 @@ def find_first_stable_valley(valleys_df):
             break
     
     return current_valley
+
+def find_first_stable_peak(peaks_df):
+    if len(peaks_df) == 0:
+        return None
+    
+    current_peak = peaks_df.iloc[0]
+    
+    for _, peak in peaks_df.iloc[1:].iterrows():
+        if peak['Temp_Smoothed_Savgol'] > (current_peak['Temp_Smoothed_Savgol'] + 0.1):
+            current_peak = peak
+        # else:
+        #     break
+    
+    return current_peak
 
 def extract_lt1(days_data, merged=None, verbose=False):
     detections: List[DetectionResult] = []
@@ -818,10 +834,10 @@ def extract_lt1(days_data, merged=None, verbose=False):
 
         # Filter valleys after LEP if available
         lep_time = None
-        if merged is not None and 'LEP_merge_datetime' in merged.columns:
+        if merged is not None and 'LEP_cr_datetime' in merged.columns:
             lep_row = merged[merged['dayAndNightOf'] == dayAndNightOf]
-            if not lep_row.empty and pd.notna(lep_row['LEP_merge_datetime'].iloc[0]):
-                lep_time = lep_row['LEP_merge_datetime'].iloc[0]
+            if not lep_row.empty and pd.notna(lep_row['LEP_cr_datetime'].iloc[0]):
+                lep_time = lep_row['LEP_cr_datetime'].iloc[0]
                 useful_valleys = useful_valleys[useful_valleys['time'] >= lep_time]
 
         if verbose:
@@ -896,6 +912,117 @@ def detect_lt1(all_processed, cr_known_lt1, merged):
     return joined_lt1_df, does_not_match_cr
 
 
+def get_date_str(timestamp):
+    return timestamp.strftime('%Y-%m-%d')
+
+def extract_mp1(days_data, merged=None, verbose=False):
+    detections: List[DetectionResult] = []
+    historical_mp1s: List[pd.Timestamp] = []
+    typ = 'MP'
+    
+    for dayAndNightOf, data in days_data.items():
+        if 'error' in data:
+            detections.append(DetectionResult(
+                dayAndNightOf=dayAndNightOf,
+                type=typ,
+                status='Error',
+                reason=data['error']
+            ))
+            continue
+            
+        peaks_df = data['peaks_raw_df']
+
+        if verbose:
+            display("Peaks:")
+            display(peaks_df)
+        
+        if 'time' not in peaks_df.columns:
+            detections.append(DetectionResult(
+                dayAndNightOf=dayAndNightOf,
+                type=typ,
+                status='Error',
+                reason='No time column in peaks data'
+            ))
+            continue
+
+        # print(dayAndNightOf)
+        # print(str(dayAndNightOf))
+
+        useful_peaks = peaks_df[
+            # Time between 6 and 11
+            peaks_df['time'].apply(lambda x: 6 <= x.hour < 11 if hasattr(x, 'hour') else False) &
+            # Date matches dayAndNightOf
+            (peaks_df['time'].dt.strftime('%Y-%m-%d') == dayAndNightOf)
+        ]
+
+        if verbose:
+            display("Useful Peaks:")
+            display(useful_peaks)
+
+        # # Should always come after wakeup
+        # dd = data['dd']
+        # if 'wakeupTime' in dd and dd['wakeupTime'].notna().any():
+        #     wakeup_time = dd.loc[dd['wakeupTime'].notna(), 'wakeupTime'].iloc[0]
+        #     useful_valleys = useful_valleys[useful_valleys['time'] >= asleep_time]
+
+        #     if verbose:
+        #         display("Asleep at:")
+        #         display(asleep_time)
+        #         display("Useful Valleys after asleep:")
+        #         display(useful_valleys)
+
+        if not useful_peaks.empty:    
+            useful_peaks = useful_peaks.sort_values('time')
+
+        if useful_peaks.empty:
+            reason = 'No relevant peaks found'
+            detections.append(DetectionResult(
+                dayAndNightOf=dayAndNightOf,
+                type=typ,
+                status='Not found',
+                reason=reason
+            ))
+            continue
+
+        first_stable_peak = find_first_stable_peak(useful_peaks)        
+        reasoning = f"Selected first stable peak at {first_stable_peak['time'].strftime('%H:%M')} from {[ep.strftime('%H:%M') for ep in useful_peaks['time']]}"
+        lt1_row = first_stable_peak.copy()
+
+        # Create data entry
+        lt1_data = DetectionResult(
+            dayAndNightOf=dayAndNightOf,
+            type=typ,
+            status='Detected',
+            time=lt1_row['time'],
+            temp=lt1_row['Temp'],
+            reason=reasoning,
+        )
+        
+        # Update historical data
+        historical_mp1s.append(lt1_row['time'])
+        if len(historical_mp1s) > 3:
+            historical_mp1s.pop(0)
+            
+        detections.append(lt1_data)
+    
+    df = pd.DataFrame(detections)
+    df.drop(columns=['type'], inplace=True)
+    rename_cols = {col: f"MP_det_{col}" for col in df.columns if col != 'dayAndNightOf'}
+    df = df.rename(columns=rename_cols)
+    
+    return df
+
+
+def detect_mp1(all_processed, cr_known_mp1, merged):
+    detected_mp1_df = extract_mp1(all_processed, merged)
+    joined_mp1_df = pd.merge(cr_known_mp1, detected_mp1_df, on='dayAndNightOf', how='outer')
+    joined_mp1_df['MP_diff'] = (joined_mp1_df['MP_det_time'] - joined_mp1_df['MP_cr_datetime']).abs()
+    
+    does_not_match_cr = joined_mp1_df[joined_mp1_df['MP_diff'] > pd.Timedelta(minutes=5)].sort_values('MP_diff', ascending=False)
+
+    return joined_mp1_df, does_not_match_cr
+
+
 from IPython.display import HTML
 
 def display_stats(df, days_with_cr, prefix):
@@ -908,6 +1035,7 @@ def display_stats(df, days_with_cr, prefix):
 
     median_formatted = format_timedelta(df[prefix + '_diff'].median())
     mean_formatted = format_timedelta(df[prefix + '_diff'].mean())
+    ninety_formatted = format_timedelta(df[prefix + '_diff'].quantile(0.9))
     mismatch_count = len(days_with_cr)
     total_days = len(df[~df[prefix + '_diff'].isna()])
     pct_mismatch = round(mismatch_count / total_days * 100, 1)
@@ -919,6 +1047,10 @@ def display_stats(df, days_with_cr, prefix):
             <div style="background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);">
                 <div style="color: #666; font-size: 18px;">Median Diff vs CR</div>
                 <div style="font-size: 48px; font-family: monospace; margin: 10px 0; color: #2c3e50;">{median_formatted}</div>
+            </div>
+            <div style="background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);">
+                <div style="color: #666; font-size: 18px;">90th %ile Diff vs CR</div>
+                <div style="font-size: 48px; font-family: monospace; margin: 10px 0; color: #2c3e50;">{ninety_formatted}</div>
             </div>
             <div style="background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);">
                 <div style="color: #666; font-size: 18px;">Mean Diff vs CR</div>
@@ -960,10 +1092,10 @@ def plot_post_lep_periods_matplotlib(all_processed, merged_df, minutes=120):
             continue
             
         day_lep = merged_df[merged_df['dayAndNightOf'] == day]
-        if day_lep.empty or pd.isna(day_lep['LEP_merge_datetime'].iloc[0]):
+        if day_lep.empty or pd.isna(day_lep['LEP_cr_datetime'].iloc[0]):
             continue
             
-        lep_time = day_lep['LEP_merge_datetime'].iloc[0]
+        lep_time = day_lep['LEP_cr_datetime'].iloc[0]
         
         df = data['df']
         period_end = lep_time + pd.Timedelta(minutes=minutes)
@@ -1022,6 +1154,10 @@ def plot_post_lep_periods_matplotlib(all_processed, merged_df, minutes=120):
 
 
 def calc_avg_mins_after_lep(all_processed, merged, minutes=120):
+    if merged is None:
+        return None
+
+    # Calculate the average minutes after LEP for each day
     all_data = pd.DataFrame()
 
     for day, data in all_processed.items():
@@ -1029,10 +1165,10 @@ def calc_avg_mins_after_lep(all_processed, merged, minutes=120):
             continue
             
         day_lep = merged[merged['dayAndNightOf'] == day]
-        if day_lep.empty or pd.isna(day_lep['LEP_merge_datetime'].iloc[0]):
+        if day_lep.empty or pd.isna(day_lep['LEP_cr_datetime'].iloc[0]):
             continue
             
-        lep_time = day_lep['LEP_merge_datetime'].iloc[0]
+        lep_time = day_lep['LEP_cr_datetime'].iloc[0]
         
         day_df = data['df']
         period_end = lep_time + pd.Timedelta(minutes=minutes)
@@ -1094,29 +1230,32 @@ def analyze_post_lep_period(night_data: pd.DataFrame, stats_with_bands: pd.DataF
     
     metrics = {
         # Overall metrics
-        'mean_deviation': analysis['deviation'].mean(),
-        'max_deviation': analysis['deviation'].max(),
-        'min_deviation': analysis['deviation'].min(),
+        # 'mean_deviation': analysis['deviation'].mean(),
+        # 'max_deviation': analysis['deviation'].max(),
+        # 'min_deviation': analysis['deviation'].min(),
         
         # Time spent in different bands
-        'minutes_above_1std': len(analysis[analysis['Temp'] > analysis['std1_upper']]),
-        'minutes_below_1std': len(analysis[analysis['Temp'] < analysis['std1_lower']]),
-        'minutes_within_1std': len(analysis[
-            (analysis['Temp'] >= analysis['std1_lower']) & 
-            (analysis['Temp'] <= analysis['std1_upper'])
-        ]),
-        
+        # 'minutes_above_1std': len(analysis[analysis['Temp'] > analysis['std1_upper']]),
+        # 'minutes_below_1std': len(analysis[analysis['Temp'] < analysis['std1_lower']]),
+        # 'minutes_within_1std': len(analysis[
+        #     (analysis['Temp'] >= analysis['std1_lower']) & 
+        #     (analysis['Temp'] <= analysis['std1_upper'])
+        # ]),
+
+        'minutes_above_mean': len(analysis[analysis['Temp'] > analysis['mean']]),
+        'minutes_below_mean': len(analysis[analysis['Temp'] < analysis['mean']]),
+
         # Longest continuous periods
-        'longest_above_mean': get_longest_streak(analysis['Temp'] > analysis['mean']),
-        'longest_below_mean': get_longest_streak(analysis['Temp'] < analysis['mean']),
+        # 'longest_above_mean': get_longest_streak(analysis['Temp'] > analysis['mean']),
+        # 'longest_below_mean': get_longest_streak(analysis['Temp'] < analysis['mean']),
         
         # Area metrics
-        'area_above_mean': np.trapz(
-            analysis[analysis['deviation'] > 0]['deviation']
-        ),
-        'area_below_mean': abs(np.trapz(
-            analysis[analysis['deviation'] < 0]['deviation']
-        ))
+        # 'area_above_mean': np.trapz(
+        #     analysis[analysis['deviation'] > 0]['deviation']
+        # ),
+        # 'area_below_mean': abs(np.trapz(
+        #     analysis[analysis['deviation'] < 0]['deviation']
+        # ))
     }
     
     return metrics
@@ -1135,10 +1274,10 @@ def compare_night_to_average(all_processed: dict, merged_df: pd.DataFrame,
         return None
         
     day_lep = merged_df[merged_df['dayAndNightOf'] == day]
-    if day_lep.empty or pd.isna(day_lep['LEP_merge_datetime'].iloc[0]):
+    if day_lep.empty or pd.isna(day_lep['LEP_cr_datetime'].iloc[0]):
         return None
         
-    lep_time = day_lep['LEP_merge_datetime'].iloc[0]
+    lep_time = day_lep['LEP_cr_datetime'].iloc[0]
     df = all_processed[day]['df']
     
     # Get post-LEP period data
