@@ -1080,13 +1080,13 @@ import numpy as np
 import pandas as pd
 
 def plot_post_lep_periods_matplotlib(all_processed, merged_df, minutes=120):
-    
     fig, ax = plt.subplots(figsize=(12, 6))
     
-    # Create a DataFrame to store all resampled data
+    # Create a DataFrame to store all resampled data and sleep times
     all_data = pd.DataFrame()
+    sleep_times = []
     
-    # First pass: collect all temperature data
+    # First pass: collect all temperature data and sleep times
     for day, data in all_processed.items():
         if 'error' in data:
             continue
@@ -1097,6 +1097,14 @@ def plot_post_lep_periods_matplotlib(all_processed, merged_df, minutes=120):
             
         lep_time = day_lep['LEP_cr_datetime'].iloc[0]
         
+        # Get sleep time if available
+        if 'dd' in data and 'asleepTime' in data['dd'].columns:
+            sleep_time = data['dd']['asleepTime'].iloc[0]
+            if pd.notna(sleep_time):
+                mins_until_sleep = (sleep_time - lep_time).total_seconds() / 60
+                if 0 <= mins_until_sleep <= minutes:
+                    sleep_times.append(mins_until_sleep)
+        
         df = data['df']
         period_end = lep_time + pd.Timedelta(minutes=minutes)
         period_data = df[(df['time'] >= lep_time) & (df['time'] <= period_end)].copy()
@@ -1104,41 +1112,51 @@ def plot_post_lep_periods_matplotlib(all_processed, merged_df, minutes=120):
         if period_data.empty:
             continue
         
-        # Calculate minutes after LEP
         period_data['minutes_after_lep'] = (period_data['time'] - lep_time).dt.total_seconds() / 60
         
-        # Plot individual day's data
         ax.plot(period_data['minutes_after_lep'], 
                 period_data['Temp'],
                 alpha=0.3,
                 color='gray',
                 linewidth=1)
         
-        # Add this day's data to the all_data DataFrame
         all_data = pd.concat([all_data, period_data[['minutes_after_lep', 'Temp']]])
     
-    # Calculate statistics for each minute
+    # Calculate and plot temperature statistics
     if not all_data.empty:
-        # Round to nearest minute and group
         all_data['minute'] = all_data['minutes_after_lep'].round()
         stats = all_data.groupby('minute')['Temp'].agg(['mean', 'std']).reset_index()
-        stats = stats[stats['minute'] <= minutes]  # Ensure we don't go beyond 120 minutes
+        stats = stats[stats['minute'] <= minutes]
         
-        # Plot mean
         ax.plot(stats['minute'], stats['mean'], 
                 color='red', 
                 linewidth=2, 
-                label='Mean')
+                label='Mean Temp')
         
-        # Plot standard deviation bands
         ax.fill_between(stats['minute'], 
                        stats['mean'] - stats['std'],
                        stats['mean'] + stats['std'],
-                       color='red', alpha=0.2, label='±1σ')
+                       color='red', alpha=0.2, label='±1σ Temp')
         ax.fill_between(stats['minute'],
                        stats['mean'] - 2*stats['std'],
                        stats['mean'] + 2*stats['std'],
-                       color='red', alpha=0.1, label='±2σ')
+                       color='red', alpha=0.1, label='±2σ Temp')
+    
+    # Plot sleep time statistics if we have data
+    if sleep_times:
+        sleep_mean = np.mean(sleep_times)
+        sleep_std = np.std(sleep_times)
+        
+        # Plot mean sleep time
+        ax.axvline(x=sleep_mean, color='blue', linestyle='--', label='Mean Sleep Time')
+        
+        # Plot 1 std dev band
+        ax.axvspan(sleep_mean - sleep_std, sleep_mean + sleep_std, 
+                  color='blue', alpha=0.2, label='±1σ Sleep Time')
+        
+        # Plot 2 std dev band
+        ax.axvspan(sleep_mean - 2*sleep_std, sleep_mean + 2*sleep_std, 
+                  color='blue', alpha=0.1, label='±2σ Sleep Time')
     
     ax.set_xlabel('Minutes after LEP', fontsize=12)
     ax.set_ylabel('Temperature (°C)', fontsize=12)
@@ -1293,3 +1311,351 @@ def compare_night_to_average(all_processed: dict, merged_df: pd.DataFrame,
     ).dt.total_seconds() / 60
     
     return analyze_post_lep_period(period_data, stats_with_bands)
+
+def plot_pre_mp_periods_matplotlib(all_processed, merged_df, minutes=120):
+    fig, ax = plt.subplots(figsize=(12, 6))
+    
+    # Create a DataFrame to store all resampled data and wake times
+    all_data = pd.DataFrame()
+    wake_times = []
+    
+    # First pass: collect all temperature data and wake times
+    for day, data in all_processed.items():
+        if 'error' in data:
+            continue
+            
+        day_mp = merged_df[merged_df['dayAndNightOf'] == day]
+        if day_mp.empty or pd.isna(day_mp['MP_cr_datetime'].iloc[0]):
+            continue
+            
+        mp_time = day_mp['MP_cr_datetime'].iloc[0]
+        
+        # Get wake time from previous day
+        prev_day = (pd.to_datetime(day) - pd.Timedelta(days=1)).strftime('%Y-%m-%d')
+        if prev_day in all_processed and 'dd' in all_processed[prev_day]:
+            prev_dd = all_processed[prev_day]['dd']
+            if 'wakeTime' in prev_dd.columns and not prev_dd['wakeTime'].empty:
+                wake_time = prev_dd['wakeTime'].iloc[0]
+                if pd.notna(wake_time):
+                    mins_before_mp = (mp_time - wake_time).total_seconds() / 60
+                    if 0 <= mins_before_mp <= minutes:
+                        wake_times.append(mins_before_mp)
+        
+        df = data['df']
+        period_start = mp_time - pd.Timedelta(minutes=minutes)
+        period_data = df[(df['time'] >= period_start) & (df['time'] <= mp_time)].copy()
+        
+        if period_data.empty:
+            continue
+        
+        period_data['minutes_before_mp'] = (mp_time - period_data['time']).dt.total_seconds() / 60
+        
+        ax.plot(period_data['minutes_before_mp'], 
+                period_data['Temp'],
+                alpha=0.3,
+                color='gray',
+                linewidth=1)
+        
+        all_data = pd.concat([all_data, period_data[['minutes_before_mp', 'Temp']]])
+    
+    # Calculate and plot temperature statistics
+    if not all_data.empty:
+        all_data['minute'] = all_data['minutes_before_mp'].round()
+        stats = all_data.groupby('minute')['Temp'].agg(['mean', 'std']).reset_index()
+        stats = stats[stats['minute'] <= minutes]
+        
+        ax.plot(stats['minute'], stats['mean'], 
+                color='red', 
+                linewidth=2, 
+                label='Mean Temp')
+        
+        ax.fill_between(stats['minute'], 
+                       stats['mean'] - stats['std'],
+                       stats['mean'] + stats['std'],
+                       color='red', alpha=0.2, label='±1σ Temp')
+        ax.fill_between(stats['minute'],
+                       stats['mean'] - 2*stats['std'],
+                       stats['mean'] + 2*stats['std'],
+                       color='red', alpha=0.1, label='±2σ Temp')
+        
+        # Set y-axis limits to mean ± 2*std
+        y_min = (stats['mean'] - 2*stats['std']).min()
+        y_max = (stats['mean'] + 2*stats['std']).max()
+        ax.set_ylim(y_min, y_max)
+    
+    # Plot wake time statistics if we have data
+    if wake_times:
+        wake_mean = np.mean(wake_times)
+        wake_std = np.std(wake_times)
+        
+        # Plot mean wake time
+        ax.axvline(x=wake_mean, color='purple', linestyle='--', label='Mean Wake Time')
+        
+        # Plot 1 std dev band
+        ax.axvspan(wake_mean - wake_std, wake_mean + wake_std, 
+                  color='purple', alpha=0.2, label='±1σ Wake Time')
+        
+        # Plot 2 std dev band
+        ax.axvspan(wake_mean - 2*wake_std, wake_mean + 2*wake_std, 
+                  color='purple', alpha=0.1, label='±2σ Wake Time')
+    
+    ax.set_xlabel('Minutes before MP', fontsize=12)
+    ax.set_ylabel('Temperature (°C)', fontsize=12)
+    ax.set_title(f'Temperature Patterns in the {minutes} Minutes Before MP', fontsize=14, pad=20)
+    
+    # Reverse x-axis so time flows left to right
+    ax.set_xlim(minutes, 0)
+    ax.grid(True, linestyle='--', alpha=0.7)
+    ax.legend()
+    
+    plt.tight_layout()
+    
+    return fig
+
+def prepare_lep_to_mp_data(all_processed, merged_df, highlight_days=None):
+    # Create a DataFrame to store all resampled data and sleep/wake times
+    all_data = pd.DataFrame()
+    sleep_times = []
+    wake_times = []
+    highlighted_data = []
+    
+    # First pass: collect all temperature data and sleep/wake times
+    for day, data in all_processed.items():
+        if 'error' in data:
+            continue
+            
+        # Get LEP time for current day
+        day_lep = merged_df[merged_df['dayAndNightOf'] == day]
+        if day_lep.empty or pd.isna(day_lep['LEP_cr_datetime'].iloc[0]):
+            continue
+            
+        lep_time = day_lep['LEP_cr_datetime'].iloc[0]
+        
+        # Get MP time for next day
+        next_day = (pd.to_datetime(day) + pd.Timedelta(days=1)).strftime('%Y-%m-%d')
+        next_day_mp = merged_df[merged_df['dayAndNightOf'] == next_day]
+        if next_day_mp.empty or pd.isna(next_day_mp['MP_cr_datetime'].iloc[0]):
+            continue
+            
+        mp_time = next_day_mp['MP_cr_datetime'].iloc[0]
+        
+        # Get sleep and wake times if available
+        if 'dd' in data and 'asleepTime' in data['dd'].columns:
+            sleep_time = data['dd']['asleepTime'].iloc[0]
+            if pd.notna(sleep_time):
+                mins_after_lep = (sleep_time - lep_time).total_seconds() / 60
+                sleep_times.append((day, mins_after_lep))
+        
+        if next_day in all_processed and 'dd' in all_processed[day]:
+            next_dd = all_processed[day]['dd']
+            if 'wakeTime' in next_dd.columns and not next_dd['wakeTime'].empty:
+                wake_time = next_dd['wakeTime'].iloc[0]
+                if pd.notna(wake_time):
+                    mins_after_lep = (wake_time - lep_time).total_seconds() / 60
+                    wake_times.append((day, mins_after_lep))
+        
+        # Get temperature data
+        df = data['df']
+        period_data = df[(df['time'] >= lep_time) & (df['time'] <= mp_time)].copy()
+        
+        if period_data.empty:
+            continue
+        
+        period_data['minutes_after_lep'] = (period_data['time'] - lep_time).dt.total_seconds() / 60
+        period_data['day'] = day  # Add the day to the period data
+        
+        # Store data differently based on whether it's a highlighted day
+        if highlight_days and day in highlight_days:
+            highlighted_data.append({
+                'day': day,
+                'data': period_data,
+                'sleep_time': next((st[1] for st in sleep_times if st[0] == day), None),
+                'wake_time': next((wt[1] for wt in wake_times if wt[0] == day), None)
+            })
+        
+        all_data = pd.concat([all_data, period_data[['day', 'minutes_after_lep', 'Temp']]])
+    
+    # Calculate statistics
+    stats = None
+    if not all_data.empty:
+        all_data['minute'] = all_data['minutes_after_lep'].round()
+        stats = all_data.groupby('minute')['Temp'].agg(['mean', 'std']).reset_index()
+    
+    return {
+        'all_data': all_data,
+        'stats': stats,
+        'highlighted_data': highlighted_data,
+        'sleep_times': sleep_times,
+        'wake_times': wake_times
+    }
+
+def plot_lep_to_mp_period(all_processed, merged_df, highlight_days=None):
+    # Prepare the data
+    data = prepare_lep_to_mp_data(all_processed, merged_df, highlight_days)
+    
+    fig, ax = plt.subplots(figsize=(15, 7))
+    
+    # Plot non-highlighted data from all_data
+    if not data['all_data'].empty:
+        for day, group in data['all_data'].groupby('day'):
+            if not highlight_days or day not in highlight_days:
+                ax.plot(group['minutes_after_lep'], 
+                       group['Temp'],
+                       alpha=0.3,
+                       color='gray',
+                       linewidth=1)
+    
+    # Plot highlighted data
+    for day_data in data['highlighted_data']:
+        ax.plot(day_data['data']['minutes_after_lep'], 
+               day_data['data']['Temp'],
+               alpha=0.8,
+               color='blue',
+               linewidth=2)
+        
+        # Plot sleep and wake times
+        if day_data['sleep_time'] is not None:
+            temp_at_sleep = day_data['data'][
+                day_data['data']['minutes_after_lep'].round() == round(day_data['sleep_time'])
+            ]['Temp'].iloc[0]
+            ax.plot(day_data['sleep_time'], temp_at_sleep,
+                   'bo', markersize=10, label='Sleep Time')
+        
+        if day_data['wake_time'] is not None:
+            temp_at_wake = day_data['data'][
+                day_data['data']['minutes_after_lep'].round() == round(day_data['wake_time'])
+            ]['Temp'].iloc[0]
+            ax.plot(day_data['wake_time'], temp_at_wake,
+                   'bo', markersize=10, label='Wake Time')
+    
+    # Plot statistics
+    if data['stats'] is not None:
+        ax.plot(data['stats']['minute'], data['stats']['mean'], 
+                color='red', 
+                linewidth=2, 
+                label='Mean Temp')
+        
+        ax.fill_between(data['stats']['minute'], 
+                       data['stats']['mean'] - data['stats']['std'],
+                       data['stats']['mean'] + data['stats']['std'],
+                       color='red', alpha=0.2, label='±1σ Temp')
+        ax.fill_between(data['stats']['minute'],
+                       data['stats']['mean'] - 2*data['stats']['std'],
+                       data['stats']['mean'] + 2*data['stats']['std'],
+                       color='red', alpha=0.1, label='±2σ Temp')
+    
+    # Plot sleep time statistics if we have data
+    if data['sleep_times']:
+        sleep_times = [st[1] for st in data['sleep_times']]
+        sleep_mean = np.mean(sleep_times)
+        sleep_std = np.std(sleep_times)
+        
+        # Plot mean sleep time
+        ax.axvline(x=sleep_mean, color='blue', linestyle='--', label='Mean Sleep Time')
+        
+        # Plot 1 std dev band
+        ax.axvspan(sleep_mean - sleep_std, sleep_mean + sleep_std, 
+                  color='blue', alpha=0.2, label='±1σ Sleep Time')
+        
+        # Plot 2 std dev band
+        ax.axvspan(sleep_mean - 2*sleep_std, sleep_mean + 2*sleep_std, 
+                  color='blue', alpha=0.1, label='±2σ Sleep Time')
+
+    # Plot wake time statistics if we have data
+    if data['wake_times']:
+        wake_times = [wt[1] for wt in data['wake_times']]
+        wake_mean = np.mean(wake_times)
+        wake_std = np.std(wake_times)
+        
+        # Plot mean wake time
+        ax.axvline(x=wake_mean, color='purple', linestyle='--', label='Mean Wake Time')
+        
+        # Plot 1 std dev band
+        ax.axvspan(wake_mean - wake_std, wake_mean + wake_std, 
+                  color='purple', alpha=0.2, label='±1σ Wake Time')
+        
+        # Plot 2 std dev band
+        ax.axvspan(wake_mean - 2*wake_std, wake_mean + 2*wake_std, 
+                  color='purple', alpha=0.1, label='±2σ Wake Time')
+    
+    ax.set_xlabel('Minutes after LEP', fontsize=12)
+    ax.set_ylabel('Temperature (°C)', fontsize=12)
+    ax.set_title('Temperature Patterns from LEP to MP', fontsize=14, pad=20)
+    
+    ax.grid(True, linestyle='--', alpha=0.7)
+    ax.legend()
+    
+    #plt.tight_layout()
+    
+    return fig
+
+def analyze_sleep_wake_timing_for_day(all_processed, merged_df, data, day, verbose=False):
+    if 'error' in data:
+        if verbose:
+            print(f"Error in data for day {day}")
+        return None
+        
+    # Get LEP time for current day
+    day_lep = merged_df[merged_df['dayAndNightOf'] == day]
+    if day_lep.empty or pd.isna(day_lep['LEP_cr_datetime'].iloc[0]):
+        if verbose:
+            print(f"No LEP time found for day {day}")
+        return None
+        
+    lep_time = day_lep['LEP_cr_datetime'].iloc[0]
+    
+    # Get sleep time
+    sleep_time = None
+    if 'dd' in data and 'asleepTime' in data['dd'].columns:
+        if not data['dd']['asleepTime'].empty and pd.notna(data['dd']['asleepTime'].iloc[0]):
+            sleep_time = data['dd']['asleepTime'].iloc[0]
+            mins_after_lep = (sleep_time - lep_time).total_seconds() / 60
+            
+            # Get wake time from next day's data
+            #next_day = (pd.to_datetime(day) + pd.Timedelta(days=1)).strftime('%Y-%m-%d')
+            # wake_time = None
+            # if next_day in all_processed and 'dd' in all_processed[next_day]:
+            #     next_dd = all_processed[next_day]['dd']
+            if 'wakeTime' in data['dd'].columns and not data['dd']['wakeTime'].empty:
+                wake_time = data['dd']['wakeTime'].iloc[0]
+                if pd.notna(wake_time):
+                    mins_after_lep_wake = (wake_time - lep_time).total_seconds() / 60
+                    
+                    return {
+                        'date': day,
+                        'sleep_mins_after_lep': mins_after_lep,
+                        'wake_mins_after_lep': mins_after_lep_wake,
+                        'sleep_time': sleep_time.strftime('%H:%M'),
+                        'wake_time': wake_time.strftime('%H:%M'),
+                        'lep_time': lep_time.strftime('%H:%M')
+                    }
+                        
+    if verbose:
+        print(f"No sleep time found for day {day}")
+    return None
+
+def analyze_sleep_wake_timing(all_processed, merged_df):
+    sleep_data = []
+    
+    for day, data in all_processed.items():
+        sd = analyze_sleep_wake_timing_for_day(all_processed, merged_df, data, day)
+        if sd is not None:
+            sleep_data.append(sd)
+    
+    # Create DataFrame and calculate means
+    df = pd.DataFrame(sleep_data)
+    if not df.empty:
+        sleep_mean = df['sleep_mins_after_lep'].mean()
+        wake_mean = df['wake_mins_after_lep'].mean()
+        
+        df['sleep_vs_mean'] = df['sleep_mins_after_lep'] - sleep_mean
+        df['wake_vs_mean'] = df['wake_mins_after_lep'] - wake_mean
+        
+        # Sort by date
+        df = df.sort_values('date')
+        
+        # Round numeric columns to 1 decimal place
+        numeric_cols = ['sleep_mins_after_lep', 'wake_mins_after_lep', 'sleep_vs_mean', 'wake_vs_mean']
+        df[numeric_cols] = df[numeric_cols].round(1)
+    
+    return df
