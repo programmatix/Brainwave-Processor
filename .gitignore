@@ -10,3 +10,4 @@ __pycache__
 **.h5
 **.edf
 **.pyc
+__pycache__/sleep_events.cpython-310.pyc

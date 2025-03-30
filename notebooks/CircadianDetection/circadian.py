@@ -4,7 +4,7 @@ import dotenv
 import os
 import pandas as pd
 from dataclasses import dataclass
-
+import traceback
 dotenv.load_dotenv()
 
 host = os.getenv('INFLUXDB_HOST')
@@ -1147,6 +1147,8 @@ def plot_post_lep_periods_matplotlib(all_processed, merged_df, minutes=120):
         sleep_mean = np.mean(sleep_times)
         sleep_std = np.std(sleep_times)
         
+        print(f"Sleep mean as mins past LEP: {sleep_mean:.1f} minutes +/- {sleep_std:.1f} minutes (= 68% of values are between {sleep_mean - sleep_std:.1f} and {sleep_mean + sleep_std:.1f} minutes after LEP)") 
+
         # Plot mean sleep time
         ax.axvline(x=sleep_mean, color='blue', linestyle='--', label='Mean Sleep Time')
         
@@ -1157,6 +1159,7 @@ def plot_post_lep_periods_matplotlib(all_processed, merged_df, minutes=120):
         # Plot 2 std dev band
         ax.axvspan(sleep_mean - 2*sleep_std, sleep_mean + 2*sleep_std, 
                   color='blue', alpha=0.1, label='±2σ Sleep Time')
+                  
     
     ax.set_xlabel('Minutes after LEP', fontsize=12)
     ax.set_ylabel('Temperature (°C)', fontsize=12)
@@ -1387,6 +1390,8 @@ def plot_pre_mp_periods_matplotlib(all_processed, merged_df, minutes=120):
     if wake_times:
         wake_mean = np.mean(wake_times)
         wake_std = np.std(wake_times)
+
+        print(f"Wake mean as mins before MP: {wake_mean:.1f} minutes +/- {wake_std:.1f} minutes (= 68% of values are between {wake_mean - wake_std:.1f} and {wake_mean + wake_std:.1f} minutes before MP)") 
         
         # Plot mean wake time
         ax.axvline(x=wake_mean, color='purple', linestyle='--', label='Mean Wake Time')
@@ -1412,6 +1417,65 @@ def plot_pre_mp_periods_matplotlib(all_processed, merged_df, minutes=120):
     
     return fig
 
+
+def prepare_pre_mp_data(all_processed, merged_df, data, day, verbose=False):
+    if 'error' in data:
+        if verbose:
+            print(f"Error in data for day {day}")
+        return None
+        
+    # Get LEP time for current day
+    day_lep = merged_df[merged_df['dayAndNightOf'] == day]
+    if day_lep.empty or pd.isna(day_lep['LEP_cr_datetime'].iloc[0]):
+        if verbose:
+            print(f"No LEP time found for day {day}")
+        return None
+        
+    lep_time = day_lep['LEP_cr_datetime'].iloc[0]
+    
+    # Get MP time for next day
+    next_day = (pd.to_datetime(day) + pd.Timedelta(days=1)).strftime('%Y-%m-%d')
+    next_day_mp = merged_df[merged_df['dayAndNightOf'] == next_day]
+    mp_time = None
+    if next_day_mp.empty or pd.isna(next_day_mp['MP_cr_datetime'].iloc[0]):
+        if verbose:
+            print(f"No MP time found for day {next_day}")
+    else:
+        mp_time = next_day_mp['MP_cr_datetime'].iloc[0]
+    
+    # Get sleep and wake times if available
+    sleep_mins_after_lep = None
+    wake_mins_after_lep = None
+    if 'dd' in data and 'asleepTime' in data['dd'].columns:
+        sleep_time = data['dd']['asleepTime'].iloc[0]
+        if pd.notna(sleep_time):
+            sleep_mins_after_lep = (sleep_time - lep_time).total_seconds() / 60
+    
+    if next_day in all_processed and 'dd' in all_processed[day]:
+        next_dd = all_processed[day]['dd']
+        if 'wakeTime' in next_dd.columns and not next_dd['wakeTime'].empty:
+            wake_time = next_dd['wakeTime'].iloc[0]
+            if pd.notna(wake_time):
+                wake_mins_after_lep = (wake_time - lep_time).total_seconds() / 60
+    
+    # Get temperature data
+    df = data['df']
+    if mp_time is not None:
+        period_data = df[(df['time'] >= lep_time) & (df['time'] <= mp_time)].copy()
+    else:
+        period_data = df[(df['time'] >= lep_time) & (df['time'] <= lep_time + pd.Timedelta(minutes=120))].copy()
+    
+    if period_data.empty:
+        if verbose:
+            print(f"No data found for day {day}")
+        return None
+    
+    period_data['minutes_after_lep'] = (period_data['time'] - lep_time).dt.total_seconds() / 60
+    period_data['day'] = day  # Add the day to the period data
+    
+    
+    return period_data[['day', 'minutes_after_lep', 'Temp']], sleep_mins_after_lep, wake_mins_after_lep
+
 def prepare_lep_to_mp_data(all_processed, merged_df, highlight_days=None):
     # Create a DataFrame to store all resampled data and sleep/wake times
     all_data = pd.DataFrame()
@@ -1421,49 +1485,20 @@ def prepare_lep_to_mp_data(all_processed, merged_df, highlight_days=None):
     
     # First pass: collect all temperature data and sleep/wake times
     for day, data in all_processed.items():
-        if 'error' in data:
+        result = prepare_pre_mp_data(all_processed, merged_df, data, day)
+        if result is None:
             continue
-            
-        # Get LEP time for current day
-        day_lep = merged_df[merged_df['dayAndNightOf'] == day]
-        if day_lep.empty or pd.isna(day_lep['LEP_cr_datetime'].iloc[0]):
-            continue
-            
-        lep_time = day_lep['LEP_cr_datetime'].iloc[0]
-        
-        # Get MP time for next day
-        next_day = (pd.to_datetime(day) + pd.Timedelta(days=1)).strftime('%Y-%m-%d')
-        next_day_mp = merged_df[merged_df['dayAndNightOf'] == next_day]
-        if next_day_mp.empty or pd.isna(next_day_mp['MP_cr_datetime'].iloc[0]):
-            continue
-            
-        mp_time = next_day_mp['MP_cr_datetime'].iloc[0]
-        
-        # Get sleep and wake times if available
-        if 'dd' in data and 'asleepTime' in data['dd'].columns:
-            sleep_time = data['dd']['asleepTime'].iloc[0]
-            if pd.notna(sleep_time):
-                mins_after_lep = (sleep_time - lep_time).total_seconds() / 60
-                sleep_times.append((day, mins_after_lep))
-        
-        if next_day in all_processed and 'dd' in all_processed[day]:
-            next_dd = all_processed[day]['dd']
-            if 'wakeTime' in next_dd.columns and not next_dd['wakeTime'].empty:
-                wake_time = next_dd['wakeTime'].iloc[0]
-                if pd.notna(wake_time):
-                    mins_after_lep = (wake_time - lep_time).total_seconds() / 60
-                    wake_times.append((day, mins_after_lep))
-        
-        # Get temperature data
-        df = data['df']
-        period_data = df[(df['time'] >= lep_time) & (df['time'] <= mp_time)].copy()
-        
-        if period_data.empty:
-            continue
-        
-        period_data['minutes_after_lep'] = (period_data['time'] - lep_time).dt.total_seconds() / 60
-        period_data['day'] = day  # Add the day to the period data
-        
+
+        period_data, sleep_mins_after_lep, wake_mins_after_lep = result
+
+        if period_data is not None:
+            all_data = pd.concat([all_data, period_data])
+
+        if sleep_mins_after_lep is not None:
+            sleep_times.append((day, sleep_mins_after_lep))
+        if wake_mins_after_lep is not None:
+            wake_times.append((day, wake_mins_after_lep))
+
         # Store data differently based on whether it's a highlighted day
         if highlight_days and day in highlight_days:
             highlighted_data.append({
@@ -1472,8 +1507,8 @@ def prepare_lep_to_mp_data(all_processed, merged_df, highlight_days=None):
                 'sleep_time': next((st[1] for st in sleep_times if st[0] == day), None),
                 'wake_time': next((wt[1] for wt in wake_times if wt[0] == day), None)
             })
-        
-        all_data = pd.concat([all_data, period_data[['day', 'minutes_after_lep', 'Temp']]])
+            
+
     
     # Calculate statistics
     stats = None
@@ -1507,26 +1542,30 @@ def plot_lep_to_mp_period(all_processed, merged_df, highlight_days=None):
     
     # Plot highlighted data
     for day_data in data['highlighted_data']:
-        ax.plot(day_data['data']['minutes_after_lep'], 
-               day_data['data']['Temp'],
-               alpha=0.8,
-               color='blue',
-               linewidth=2)
-        
-        # Plot sleep and wake times
-        if day_data['sleep_time'] is not None:
-            temp_at_sleep = day_data['data'][
-                day_data['data']['minutes_after_lep'].round() == round(day_data['sleep_time'])
-            ]['Temp'].iloc[0]
-            ax.plot(day_data['sleep_time'], temp_at_sleep,
-                   'bo', markersize=10, label='Sleep Time')
-        
-        if day_data['wake_time'] is not None:
-            temp_at_wake = day_data['data'][
-                day_data['data']['minutes_after_lep'].round() == round(day_data['wake_time'])
-            ]['Temp'].iloc[0]
-            ax.plot(day_data['wake_time'], temp_at_wake,
-                   'bo', markersize=10, label='Wake Time')
+        try:
+            ax.plot(day_data['data']['minutes_after_lep'], 
+                day_data['data']['Temp'],
+                alpha=0.8,
+                color='blue',
+                linewidth=2)
+            
+            # Plot sleep and wake times
+            if day_data['sleep_time'] is not None:
+                temp_at_sleep = day_data['data'][
+                    day_data['data']['minutes_after_lep'].round() == round(day_data['sleep_time'])
+                ]['Temp'].iloc[0]
+                ax.plot(day_data['sleep_time'], temp_at_sleep,
+                    'bo', markersize=10, label='Sleep Time')
+            
+            if day_data['wake_time'] is not None:
+                temp_at_wake = day_data['data'][
+                    day_data['data']['minutes_after_lep'].round() == round(day_data['wake_time'])
+                ]['Temp'].iloc[0]
+                ax.plot(day_data['wake_time'], temp_at_wake,
+                    'bo', markersize=10, label='Wake Time')
+        except Exception as e:
+            traceback.print_exc()
+            print(f"Error plotting highlighted day {day_data['day']}: {e}")
     
     # Plot statistics
     if data['stats'] is not None:
@@ -1550,6 +1589,8 @@ def plot_lep_to_mp_period(all_processed, merged_df, highlight_days=None):
         sleep_mean = np.mean(sleep_times)
         sleep_std = np.std(sleep_times)
         
+        print(f"Sleep mean as mins past LEP: {sleep_mean:.1f} minutes +/- {sleep_std:.1f} minutes (= 68% of values are between {sleep_mean - sleep_std:.1f} and {sleep_mean + sleep_std:.1f} minutes after LEP)") 
+
         # Plot mean sleep time
         ax.axvline(x=sleep_mean, color='blue', linestyle='--', label='Mean Sleep Time')
         
@@ -1566,7 +1607,9 @@ def plot_lep_to_mp_period(all_processed, merged_df, highlight_days=None):
         wake_times = [wt[1] for wt in data['wake_times']]
         wake_mean = np.mean(wake_times)
         wake_std = np.std(wake_times)
-        
+
+        print(f"Wake mean as mins past LEP: {wake_mean:.1f} minutes +/- {wake_std:.1f} minutes (= 68% of values are between {wake_mean - wake_std:.1f} and {wake_mean + wake_std:.1f} minutes after LEP)") 
+
         # Plot mean wake time
         ax.axvline(x=wake_mean, color='purple', linestyle='--', label='Mean Wake Time')
         
@@ -1620,15 +1663,16 @@ def analyze_sleep_wake_timing_for_day(all_processed, merged_df, data, day, verbo
                 wake_time = data['dd']['wakeTime'].iloc[0]
                 if pd.notna(wake_time):
                     mins_after_lep_wake = (wake_time - lep_time).total_seconds() / 60
-                    
-                    return {
-                        'date': day,
-                        'sleep_mins_after_lep': mins_after_lep,
-                        'wake_mins_after_lep': mins_after_lep_wake,
-                        'sleep_time': sleep_time.strftime('%H:%M'),
-                        'wake_time': wake_time.strftime('%H:%M'),
-                        'lep_time': lep_time.strftime('%H:%M')
-                    }
+                    #print(f"Wake time: {wake_time}, LEP time: {lep_time}, Minutes after LEP: {mins_after_lep_wake}")
+
+            return {
+                'date': day,
+                'sleep_mins_after_lep': mins_after_lep,
+                'wake_mins_after_lep': mins_after_lep_wake,
+                'sleep_time': sleep_time,
+                'wake_time': wake_time,
+                'lep_time': lep_time
+            }
                         
     if verbose:
         print(f"No sleep time found for day {day}")
@@ -1648,14 +1692,538 @@ def analyze_sleep_wake_timing(all_processed, merged_df):
         sleep_mean = df['sleep_mins_after_lep'].mean()
         wake_mean = df['wake_mins_after_lep'].mean()
         
-        df['sleep_vs_mean'] = df['sleep_mins_after_lep'] - sleep_mean
-        df['wake_vs_mean'] = df['wake_mins_after_lep'] - wake_mean
-        
+        df['sleep_mins_after_lep_vs_mean'] = df['sleep_mins_after_lep'] - sleep_mean
+        df['wake_mins_after_lep_vs_mean'] = df['wake_mins_after_lep'] - wake_mean
+
+        df['time_would_expect_to_sleep'] = (df['lep_time'] + pd.Timedelta(minutes=sleep_mean)).dt.strftime('%H:%M')
+        df['time_would_expect_to_wake'] = (df['lep_time'] + pd.Timedelta(minutes=wake_mean)).dt.strftime('%H:%M')
+        df['sleep_time'] = df['sleep_time'].dt.strftime('%H:%M')
+        df['wake_time'] = df['wake_time'].dt.strftime('%H:%M')
+        df['lep_time'] = df['lep_time'].dt.strftime('%H:%M')
+
         # Sort by date
         df = df.sort_values('date')
         
         # Round numeric columns to 1 decimal place
-        numeric_cols = ['sleep_mins_after_lep', 'wake_mins_after_lep', 'sleep_vs_mean', 'wake_vs_mean']
+        numeric_cols = ['sleep_mins_after_lep', 'wake_mins_after_lep', 'sleep_mins_after_lep_vs_mean', 'wake_mins_after_lep_vs_mean']
         df[numeric_cols] = df[numeric_cols].round(1)
     
     return df
+
+def draw_mp_to_lep(merged_df):
+    # Create base dataframe with rolling average
+    chart_data = pd.DataFrame({
+        'dayAndNightOf': merged_df['dayAndNightOf'],
+        'Hours': merged_df['MP_To_LEP'].dt.total_seconds() / 3600
+    })
+
+    # Sort and set index
+    chart_data = chart_data.sort_values('dayAndNightOf')
+    chart_data = chart_data.set_index('dayAndNightOf')
+
+    # Interpolate missing values (limit interpolation to 3 days)
+    chart_data['Hours_Interpolated'] = chart_data['Hours'].interpolate(
+        method='linear',
+        limit=3,
+        limit_direction='both'
+    )
+
+    # Add 7-day rolling average using interpolated data
+    chart_data['Rolling_Avg'] = chart_data['Hours_Interpolated'].rolling(
+        window=14,
+        center=True,
+        min_periods=3
+    ).mean()
+
+    # Reset index for Altair
+    chart_data = chart_data.reset_index()
+
+    # Calculate mean and standard deviation (excluding NaN values)
+    mean_hours = chart_data['Hours'].mean()
+    std_hours = chart_data['Hours'].std()
+
+    # Create the scatter plot (only for actual data points)
+    points = alt.Chart(chart_data[chart_data['Hours'].notna()]).mark_point().encode(
+        x=alt.X('dayAndNightOf:T', 
+                title='Date',
+                axis=alt.Axis(labelAngle=45)),
+        y=alt.Y('Hours:Q',
+                title='Hours from MP to LEP',
+                scale=alt.Scale(zero=False)),
+        tooltip=[
+            alt.Tooltip('dayAndNightOf:T', title='Date', format='%Y-%m-%d'),
+            alt.Tooltip('Hours:Q', title='Hours', format='.1f'),
+            alt.Tooltip('Rolling_Avg:Q', title='7-day Average', format='.1f')
+        ]
+    )
+
+    # Add rolling average line
+    rolling_line = alt.Chart(chart_data).mark_line(
+        color='blue',
+        strokeWidth=2
+    ).encode(
+        x='dayAndNightOf:T',
+        y='Rolling_Avg:Q'
+    )
+
+    # Add a horizontal line for the mean
+    mean_line = alt.Chart(pd.DataFrame([{'mean': mean_hours}])).mark_rule(
+        color='red', 
+        strokeDash=[4, 4]
+    ).encode(
+        y='mean:Q'
+    )
+
+    # Add the standard deviation band
+    band = alt.Chart(pd.DataFrame([{
+        'lower': mean_hours - std_hours,
+        'upper': mean_hours + std_hours
+    }])).mark_rect(
+        color='red', 
+        opacity=0.2
+    ).encode(
+        y='lower:Q',
+        y2='upper:Q'
+    )
+
+    # Print the calculated values
+    print(f"Mean time from MP to LEP: {mean_hours:.2f} hours")
+    print(f"Standard deviation: {std_hours:.2f} hours")
+
+    # Combine all elements
+    chart = (mean_line + band + points + rolling_line).properties(
+        width=800,
+        height=400,
+        title=f'Time Difference between MP and LEP (Mean: {mean_hours:.1f}h ± {std_hours:.1f}h)'
+    )
+
+    return chart
+
+def draw_mp_to_lep_2(merged_df):
+    # Create a data frame for visualization
+    times_data = pd.DataFrame({
+        'dayAndNightOf': merged_df['dayAndNightOf'],
+        'MP_Time': merged_df['MP_cr_datetime'],
+        'LEP_Time': merged_df['LEP_cr_datetime']
+    })
+
+    # Extract hour of day for better visualization
+    times_data['MP_Hour'] = times_data['MP_Time'].dt.hour + times_data['MP_Time'].dt.minute/60
+    times_data['LEP_Hour'] = times_data['LEP_Time'].dt.hour + times_data['LEP_Time'].dt.minute/60
+    times_data['LEP_Hour_Adj'] = times_data['LEP_Hour']
+
+    # Calculate standard deviations
+    mp_std = times_data['MP_Hour'].std()
+    lep_std = times_data['LEP_Hour_Adj'].std()
+    avg_mp = times_data['MP_Hour'].mean()
+    avg_lep = times_data['LEP_Hour_Adj'].mean()
+
+    # Create bands data
+    mp_bands = pd.DataFrame({
+        'lower': [avg_mp - mp_std],
+        'upper': [avg_mp + mp_std],
+        'type': ['MP']
+    })
+
+    lep_bands = pd.DataFrame({
+        'lower': [avg_lep - lep_std],
+        'upper': [avg_lep + lep_std],
+        'type': ['LEP']
+    })
+
+    # Create a long format dataset for points
+    points_data = pd.concat([
+        pd.DataFrame({
+            'dayAndNightOf': times_data['dayAndNightOf'],
+            'Hour': times_data['MP_Hour'],
+            'Type': 'Morning Peak'
+        }),
+        pd.DataFrame({
+            'dayAndNightOf': times_data['dayAndNightOf'],
+            'Hour': times_data['LEP_Hour_Adj'],
+            'Type': 'Late Evening Peak'
+        })
+    ])
+
+    # Create the base chart
+    base = alt.Chart(times_data).encode(
+        x=alt.X('dayAndNightOf:T', 
+                title='Date',
+                axis=alt.Axis(labelAngle=45))
+    )
+
+    # Create lines connecting MP and LEP times
+    lines = base.mark_rule(color='gray').encode(
+        y=alt.Y('MP_Hour:Q', title='Hour of Day'),
+        y2=alt.Y2('LEP_Hour_Adj:Q')
+    )
+
+    # Create points for MP and LEP times
+    points = alt.Chart(points_data).mark_point(size=100, filled=True).encode(
+        x=alt.X('dayAndNightOf:T'),
+        y=alt.Y('Hour:Q'),
+        color=alt.Color('Type:N', 
+                    scale=alt.Scale(
+                        domain=['Morning Peak', 'Late Evening Peak'],
+                        range=['blue', 'red']
+                    )),
+        tooltip=[
+            alt.Tooltip('dayAndNightOf:T', title='Date', format='%Y-%m-%d'),
+            alt.Tooltip('Hour:Q', title='Time', format='.2f'),
+            alt.Tooltip('Type:N')
+        ]
+    )
+
+    # Add reference lines for averages
+    mp_avg_line = alt.Chart(pd.DataFrame({'avg': [avg_mp]})).mark_rule(
+        color='blue', 
+        strokeDash=[4, 4],
+        opacity=0.7
+    ).encode(y='avg:Q')
+
+    lep_avg_line = alt.Chart(pd.DataFrame({'avg': [avg_lep]})).mark_rule(
+        color='red', 
+        strokeDash=[4, 4],
+        opacity=0.7
+    ).encode(y='avg:Q')
+
+    # Create standard deviation bands
+    mp_band = alt.Chart(mp_bands).mark_rect(
+        color='blue',
+        opacity=0.2
+    ).encode(
+        y='lower:Q',
+        y2='upper:Q'
+    )
+
+    lep_band = alt.Chart(lep_bands).mark_rect(
+        color='red',
+        opacity=0.2
+    ).encode(
+        y='lower:Q',
+        y2='upper:Q'
+    )
+
+    # Combine all elements
+    chart = (lines + points + mp_avg_line + lep_avg_line + mp_band + lep_band).properties(
+        width=800,
+        height=500,
+        title='Morning Peak and Late Evening Peak Times'
+    ).configure_axis(
+        grid=True
+    )
+
+    # Print the calculated average times and standard deviations
+    print(f"Average Morning Peak: {int(avg_mp)}:{int((avg_mp % 1) * 60):02d} ± {mp_std:.2f}h")
+    print(f"Average Late Evening Peak: {int(avg_lep)}:{int((avg_lep % 1) * 60):02d} ± {lep_std:.2f}h")
+    print(f"Average time difference: {avg_lep - avg_mp:.2f} hours")
+
+    return chart    
+
+
+def draw_lep_stability(merged_df):
+    # Create a data frame for visualization
+    times_data = pd.DataFrame({
+        'dayAndNightOf': merged_df['dayAndNightOf'],
+        'LEP_Time': merged_df['LEP_cr_datetime']
+    })
+
+    # Extract hour for LEP
+    times_data['LEP_Hour'] = times_data['LEP_Time'].dt.hour + times_data['LEP_Time'].dt.minute/60
+    
+    # Interpolate missing values (limit interpolation to 3 days)
+    times_data['LEP_Hour_Interpolated'] = times_data['LEP_Hour'].interpolate(
+        method='linear',
+        limit=3,
+        limit_direction='both'
+    )
+    
+    # Calculate rolling statistics with more relaxed requirements
+    times_data['Rolling_Mean'] = times_data['LEP_Hour_Interpolated'].rolling(
+        window=7,
+        center=True,
+        min_periods=3
+    ).mean()
+    times_data['Rolling_Std'] = times_data['LEP_Hour_Interpolated'].rolling(
+        window=7,
+        center=True,
+        min_periods=3
+    ).std()
+    
+    # Create bands data for rolling std
+    bands_data = pd.DataFrame({
+        'dayAndNightOf': times_data['dayAndNightOf'],
+        'lower': times_data['Rolling_Mean'] - times_data['Rolling_Std'],
+        'upper': times_data['Rolling_Mean'] + times_data['Rolling_Std']
+    })
+
+    # Base chart
+    base = alt.Chart(times_data).encode(
+        x=alt.X('dayAndNightOf:T', 
+                title='Date',
+                axis=alt.Axis(labelAngle=45))
+    )
+
+    # Points for LEP times
+    points = base.mark_point(size=100, color='red', filled=True).encode(
+        y=alt.Y('LEP_Hour:Q', 
+                title='Hour of Day',
+                scale=alt.Scale(zero=False)),
+        tooltip=[
+            alt.Tooltip('dayAndNightOf:T', title='Date', format='%Y-%m-%d'),
+            alt.Tooltip('LEP_Hour:Q', title='Time', format='.2f')
+        ]
+    )
+
+    # Rolling mean line
+    rolling_mean = base.mark_line(color='blue', size=2).encode(
+        y='Rolling_Mean:Q'
+    )
+
+    # Standard deviation bands
+    bands = alt.Chart(bands_data).mark_area(
+        opacity=0.2,
+        color='blue'
+    ).encode(
+        x='dayAndNightOf:T',
+        y='lower:Q',
+        y2='upper:Q'
+    )
+
+    # Combine all elements
+    chart = (bands + points + rolling_mean).properties(
+        width=800,
+        height=500,
+        title='Late Evening Peak Times with Rolling Statistics (7-day window)'
+    ).configure_axis(
+        grid=True
+    )
+
+    # Print the overall statistics
+    print(f"Average LEP: {int(times_data['LEP_Hour'].mean())}:{int((times_data['LEP_Hour'].mean() % 1) * 60):02d}")
+    print(f"Overall Standard Deviation: {times_data['LEP_Hour'].std():.2f}h")
+
+    return chart
+
+
+def draw_mp_stability(merged_df):
+    # Create a data frame for visualization
+    times_data = pd.DataFrame({
+        'dayAndNightOf': merged_df['dayAndNightOf'],
+        'MP_Time': merged_df['MP_cr_datetime']
+    })
+
+    # Extract hour for LEP
+    times_data['MP_Hour'] = times_data['MP_Time'].dt.hour + times_data['MP_Time'].dt.minute/60
+    
+    # Interpolate missing values (limit interpolation to 3 days)
+    times_data['MP_Hour_Interpolated'] = times_data['MP_Hour'].interpolate(
+        method='linear',
+        limit=3,
+        limit_direction='both'
+    )
+    
+    # Calculate rolling statistics with more relaxed requirements
+    times_data['Rolling_Mean'] = times_data['MP_Hour_Interpolated'].rolling(
+        window=7,
+        center=True,
+        min_periods=3
+    ).mean()
+    times_data['Rolling_Std'] = times_data['MP_Hour_Interpolated'].rolling(
+        window=7,
+        center=True,
+        min_periods=3
+    ).std()
+    
+    # Create bands data for rolling std
+    bands_data = pd.DataFrame({
+        'dayAndNightOf': times_data['dayAndNightOf'],
+        'lower': times_data['Rolling_Mean'] - times_data['Rolling_Std'],
+        'upper': times_data['Rolling_Mean'] + times_data['Rolling_Std']
+    })
+
+    # Base chart
+    base = alt.Chart(times_data).encode(
+        x=alt.X('dayAndNightOf:T', 
+                title='Date',
+                axis=alt.Axis(labelAngle=45))
+    )
+
+    # Points for LEP times
+    points = base.mark_point(size=100, color='red', filled=True).encode(
+        y=alt.Y('MP_Hour:Q', 
+                title='Hour of Day',
+                scale=alt.Scale(zero=False)),
+        tooltip=[
+            alt.Tooltip('dayAndNightOf:T', title='Date', format='%Y-%m-%d'),
+            alt.Tooltip('MP_Hour:Q', title='Time', format='.2f')
+        ]
+    )
+
+    # Rolling mean line
+    rolling_mean = base.mark_line(color='blue', size=2).encode(
+        y='Rolling_Mean:Q'
+    )
+
+    # Standard deviation bands
+    bands = alt.Chart(bands_data).mark_area(
+        opacity=0.2,
+        color='blue'
+    ).encode(
+        x='dayAndNightOf:T',
+        y='lower:Q',
+        y2='upper:Q'
+    )
+
+    # Combine all elements
+    chart = (bands + points + rolling_mean).properties(
+        width=800,
+        height=500,
+        title='Morning Peak Times with Rolling Statistics (7-day window)'
+    ).configure_axis(
+        grid=True
+    )
+
+    # Print the overall statistics
+    print(f"Average MP: {int(times_data['MP_Hour'].mean())}:{int((times_data['MP_Hour'].mean() % 1) * 60):02d}")
+    print(f"Overall Standard Deviation: {times_data['MP_Hour'].std():.2f}h")
+
+    return chart
+
+# Enable VegaFusion transformer for handling larger datasets
+
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+def analyze_day_data_pca(day_data, verbose=True):
+    """
+    Perform PCA analysis on day_data to identify main patterns in sleep/temperature data.
+    
+    Args:
+        day_data: DataFrame containing daily sleep/temperature metrics
+        verbose: If True, print diagnostic information about the data
+        
+    Returns:
+        dict containing PCA results, explained variance, and transformed data
+    """
+    # First, select only numeric columns
+    numeric_cols = day_data.select_dtypes(include=[np.number]).columns
+    
+    # Remove any datetime columns that might have been cast as numbers
+    numeric_cols = [col for col in numeric_cols if not any(x in col.lower() for x in ['time', 'date', 'day'])]
+    
+    # Create feature matrix
+    X = day_data[numeric_cols].copy()
+    
+    if verbose:
+        print("Initial shape:", X.shape)
+        print("\nColumns with missing values:")
+        print(X.isnull().sum()[X.isnull().sum() > 0])
+        print("\nSample of first few rows:")
+        print(X.head())
+    
+    # Remove columns with too many missing values (e.g., more than 50%)
+    missing_thresh = 0.5
+    cols_to_keep = X.columns[X.isnull().mean() < missing_thresh]
+    X = X[cols_to_keep]
+    
+    if verbose:
+        print(f"\nShape after removing columns with >{missing_thresh*100}% missing values:", X.shape)
+    
+    # Remove rows with any missing values
+    X = X.dropna()
+    
+    if verbose:
+        print("Final shape after dropping missing values:", X.shape)
+        print("\nRemaining columns:", list(X.columns))
+    
+    if X.shape[0] < 2 or X.shape[1] < 2:
+        raise ValueError("Not enough data points or features remaining after handling missing values")
+    
+    # Standardize the features
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    
+    # Perform PCA
+    pca = PCA()
+    X_pca = pca.fit_transform(X_scaled)
+    
+    # Calculate explained variance ratio
+    explained_variance_ratio = pca.explained_variance_ratio_
+    cumulative_variance_ratio = np.cumsum(explained_variance_ratio)
+    
+    # Get component loadings
+    loadings = pd.DataFrame(
+        pca.components_.T,
+        columns=[f'PC{i+1}' for i in range(len(pca.components_))],
+        index=X.columns
+    )
+    
+    # Create results dictionary
+    results = {
+        'pca': pca,
+        'transformed_data': pd.DataFrame(
+            X_pca,
+            columns=[f'PC{i+1}' for i in range(X_pca.shape[1])],
+            index=X.index
+        ),
+        'explained_variance_ratio': explained_variance_ratio,
+        'cumulative_variance_ratio': cumulative_variance_ratio,
+        'loadings': loadings,
+        'features': list(X.columns),
+        'original_data': X
+    }
+    
+    if verbose:
+        print("\nVariance explained by first 3 components:")
+        for i in range(min(3, len(explained_variance_ratio))):
+            print(f"PC{i+1}: {explained_variance_ratio[i]:.2%}")
+    
+    return results
+
+def plot_pca_results(pca_results):
+    """
+    Create visualization of PCA results using matplotlib.
+    
+    Args:
+        pca_results: dict containing PCA analysis results
+    """
+    fig = plt.figure(figsize=(15, 10))
+    
+    # Create scree plot
+    ax1 = plt.subplot(211)
+    components = range(1, len(pca_results['explained_variance_ratio']) + 1)
+    
+    # Plot individual explained variance
+    ax1.bar(components, pca_results['explained_variance_ratio'], alpha=0.5)
+    
+    # Plot cumulative explained variance
+    ax1.plot(components, pca_results['cumulative_variance_ratio'], 'r-', marker='o')
+    
+    ax1.set_xlabel('Principal Component')
+    ax1.set_ylabel('Explained Variance Ratio')
+    ax1.set_title('Scree Plot')
+    ax1.grid(True, alpha=0.3)
+    
+    # Add percentage labels on y-axis
+    ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: '{:.0%}'.format(y)))
+    
+    # Create heatmap of loadings
+    ax2 = plt.subplot(212)
+    sns.heatmap(pca_results['loadings'], 
+                cmap='RdBu',
+                center=0,
+                vmin=-1, vmax=1,
+                annot=True, 
+                fmt='.2f',
+                cbar_kws={'label': 'Loading'})
+    
+    ax2.set_title('Feature Loadings')
+    ax2.set_xlabel('Principal Component')
+    ax2.set_ylabel('Feature')
+    
+    plt.tight_layout()
+    return fig
