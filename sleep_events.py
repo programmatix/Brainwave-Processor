@@ -11,7 +11,7 @@ import mongo_client
 def connect_to_firebase():
     if not firebase_admin._apps:
         home_dir = os.path.expanduser("~")
-        firebase_credentials_path = os.path.join(home_dir, "examined-life-dd234-firebase-adminsdk-f515f-f30d76e25d.json")
+        firebase_credentials_path = os.path.join(home_dir, "examined-life-dd234-firebase-adminsdk-f515f-f30d76e25d")
 
         cred = credentials.Certificate(firebase_credentials_path)
         firebase_admin.initialize_app(cred)
@@ -145,15 +145,13 @@ def convert_timestamps_to_uk_optimised(df_series: pd.Series, debug = False) -> p
         #return pd.to_datetime(out, errors='coerce').dt.tz_localize('Europe/London')
         return pd.to_datetime(out).dt.tz_localize('Europe/London')
     elif dtype == 'str' or dtype == 'object':
-        # try:
         # Handle strings with Z info
         if debug:
             print("Trying to handle string as though it has timezone info")
         # Mixed as have seen microwakings file with mixed formats e.g. '2024-09-30 21:03:51.300000+00:00,2024-09-30 21:03:58+00:00' (2024-09-30)
-        return pd.to_datetime(out, format='mixed').dt.tz_convert('Europe/London')
-        # except TypeError as e:
-        #     # Handle TypeError: Cannot convert tz-naive timestamps, use tz_localize to localize
-        #     return pd.to_datetime(out, errors='coerce').dt.tz_localize('UTC').dt.tz_convert('Europe/London')
+        # Also have issues when crossing DST.  2025-03-29 has both +00:00 and +01:00.  Adding utc=True to deal with this:
+        #  timezone-naive inputs are localized as UTC, while timezone-aware inputs are converted to UTC.
+        return pd.to_datetime(out, format='mixed', utc=True).dt.tz_convert('Europe/London')
     else:
         raise ValueError(f"Unsupported dtype for convert_timestamps_to_uk_optimised: {dtype}")
 

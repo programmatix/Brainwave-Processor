@@ -205,19 +205,20 @@ def stitch_day_optimised(input_dir: str,
 
     out_df = yasa_df.copy()
 
+    # Left joins as don't want any missing Timestamps
     if post_yasa_df is not None:
-        out_df = pd.merge(out_df, post_yasa_df, left_index=True, right_index=True, how='outer', suffixes=('', '_duplicate_from_post_yasa'))
+        out_df = pd.merge(out_df, post_yasa_df, left_index=True, right_index=True, how='left', suffixes=('', '_duplicate_from_post_yasa'))
 
     if post_human_df is not None:
-        out_df = pd.merge(out_df, post_human_df, left_index=True, right_index=True, how='outer',
+        out_df = pd.merge(out_df, post_human_df, left_index=True, right_index=True, how='left',
                           suffixes=('', '_duplicate_from_post_human'))
 
     if physical_features_df is not None:
-        out_df = pd.merge(out_df, physical_features_df, left_index=True, right_index=True, how='outer',
+        out_df = pd.merge(out_df, physical_features_df, left_index=True, right_index=True, how='left',
                           suffixes=('', '_duplicate_from_physical_features'))
 
     if final_wake_df is not None:
-        out_df = pd.merge(out_df, final_wake_df, left_index=True, right_index=True, how='outer',
+        out_df = pd.merge(out_df, final_wake_df, left_index=True, right_index=True, how='left',
                           suffixes=('', '_duplicate_from_final_wake'))
 
     duplicate_columns = [col for col in out_df.columns if 'duplicate' in col]

@@ -3,7 +3,6 @@ from tqdm import tqdm
 from typing_extensions import Dict
 from datetime import datetime
 
-from models.microwakings_1.microwakings1 import load_model
 from sleep_events import connect_to_firebase
 from sleep_events import convert_timestamps_to_uk
 

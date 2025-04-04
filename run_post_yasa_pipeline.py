@@ -5,14 +5,9 @@ from datetime import timedelta, datetime
 import pandas as pd
 
 import convert
-import run_yasa
 import scaling
-import sleep
 import yasa_features
-from models.microwakings_1 import microwakings1
-import tensorflow as tf
 from memory import garbage_collect
-import traceback
 import warnings
 import logging
 import mne
