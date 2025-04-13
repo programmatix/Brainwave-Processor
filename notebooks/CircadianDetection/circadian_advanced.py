@@ -591,7 +591,7 @@ def extract_rules_from_models(df_lep):
     if 'dayAndNightOf' in df_lep.columns:
         df_lep = df_lep.sort_values('dayAndNightOf')
     
-    y = df_lep['LEP:datetime'].diff() / 60  # Convert seconds to minutes
+    y = df_lep['LEP:datetime']  #.diff() / 60  # Convert seconds to minutes
     y = y.fillna(0)  # Fill first day's diff
     
     # Remove the target from features if it exists
@@ -636,7 +636,7 @@ def extract_rules_from_models(df_lep):
         'Importance': rf.feature_importances_
     }).sort_values('Importance', ascending=False)
     
-    print("Feature Importances for LEP Shift Prediction:")
+    print("Feature Importances for LEP Prediction:")
     print(importance_df)
     
     # Build a simple decision tree for rule extraction
@@ -649,26 +649,8 @@ def extract_rules_from_models(df_lep):
     # Extract rules as text
     tree_rules = export_text(dt, feature_names=top_features)
     
-    print("\nDecision Tree Rules for LEP Shift Prediction:")
+    print("\nDecision Tree Rules for LEP Prediction:")
     print(tree_rules)
-    
-    # Create human-readable rules by applying thresholds to the most important features
-    print("\nSimplified Human-Readable Rules:")
-    
-    if 'morning_sunlight' in top_features:
-        threshold = np.percentile(X_train['morning_sunlight'], 75)
-        effect = y_train[X_train['morning_sunlight'] > threshold].mean() - y_train.mean()
-        print(f"- If morning sunlight > {threshold/60:.1f} minutes: LEP shifts by {effect:.1f} minutes")
-    
-    if 'luminette_duration' in top_features:
-        threshold = 900  # 15 minutes
-        effect = y_train[X_train['luminette_duration'] > threshold].mean() - y_train.mean()
-        print(f"- If Luminette duration > {threshold/60:.1f} minutes: LEP shifts by {effect:.1f} minutes")
-    
-    if 'shower_time' in top_features:
-        early_threshold = 32400  # 9 AM in seconds since midnight
-        effect = y_train[X_train['shower_time'] < early_threshold].mean() - y_train.mean()
-        print(f"- If shower before {early_threshold/3600:.1f} AM: LEP shifts by {effect:.1f} minutes")
     
     return importance_df, tree_rules
 
@@ -835,7 +817,7 @@ def analyze_circadian_with_glm(df_lep, target='LEP:datetimeSSM'):
     # Create binary indicators for key interventions using sanitized feature names
     formula_df['used_luminette'] = (formula_df[col_mapping['luminette:duration']] > 0).astype(int)
     formula_df['had_shower'] = (formula_df[col_mapping['shower:count']] > 0).astype(int)
-    formula_df['had_morning_shower'] = (formula_df[col_mapping['shower:count']] > 0) & (formula_df[col_mapping['shower:first']] < 12).astype(int)
+    formula_df['had_morning_shower'] = (formula_df[col_mapping['shower:count']] > 0) & (formula_df[col_mapping['shower:last']] < 12).astype(int)
     formula_df['had_evening_shower'] = (formula_df[col_mapping['shower:count']] > 0) & (formula_df[col_mapping['shower:last']] > 18).astype(int)
     formula_df['had_morning_sun'] = (formula_df[col_mapping['sunlightBeforeMidday']] > 0.1666).astype(int)  # >10 mins threshold
     
@@ -1405,19 +1387,35 @@ def create_event_stream(df_lep, time_cols=None, debug=False):
                 
                 # Convert to hours and minutes with validation
                 try:
-                    hours = int(time_val)
-                    minutes = int((time_val - hours) * 60)
+                    # Extract hours and minutes (handle values > 24 hours)
+                    total_hours = time_val
+
+
+                    hours = int(total_hours) 
+                    if hours == 0:
+                        continue
+                    minutes = int((total_hours - int(total_hours)) * 60)
                     
-                    # Validate hours and minutes are in range
+                    # Adjust date and hour if hour value is >= 24
+                    extra_days = 0
+                    if hours >= 24:
+                        extra_days = hours // 24
+                        hours = hours % 24
+                        
+                        if debug:
+                            print(f"Note: Value {time_val} (row {idx}, column {col}) interpreted as {hours}:{minutes} on day +{extra_days}")
+                    
+                    # Validate hours and minutes are in range after adjustment
                     if hours < 0 or hours > 23:
-                        error_key = f"{col}_hour_out_of_range"
+                        error_key = f"{col}_hour_out_of_range_after_adjustment"
                         if error_key not in error_report:
                             error_report[error_key] = []
                         error_report[error_key].append({
                             'row_index': idx,
                             'value': time_val,
                             'hours': hours,
-                            'minutes': minutes
+                            'minutes': minutes,
+                            'extra_days': extra_days
                         })
                         # Skip this invalid event
                         continue
@@ -1426,8 +1424,13 @@ def create_event_stream(df_lep, time_cols=None, debug=False):
                         # Just clamp minutes to valid range
                         minutes = min(max(0, minutes), 59)
                     
+                    # Apply the date adjustment if needed
+                    adjusted_date = day_date
+                    if extra_days > 0:
+                        adjusted_date = day_date + timedelta(days=extra_days)
+                    
                     # Create timestamp
-                    event_time = day_date.replace(hour=hours, minute=minutes)
+                    event_time = adjusted_date.replace(hour=hours, minute=minutes)
                     
                     # Get event name (remove :datetime or :first, etc.)
                     event_name = col.split(':')[0] if ':' in col else col
@@ -1459,7 +1462,8 @@ def create_event_stream(df_lep, time_cols=None, debug=False):
             # Show first 5 errors
             for i, error in enumerate(errors[:5]):
                 if 'hours' in error:
-                    print(f"  {i+1}. Row {error['row_index']}: value {error['value']} converts to {error['hours']}:{error['minutes']}")
+                    extra_days_info = f", shifted {error.get('extra_days', 0)} days forward" if 'extra_days' in error and error['extra_days'] > 0 else ""
+                    print(f"  {i+1}. Row {error['row_index']}: value {error['value']} converts to {error['hours']}:{error['minutes']}{extra_days_info}")
                 else:
                     print(f"  {i+1}. Row {error['row_index']}: value {error['value']} - {error['error']}")
             
@@ -1570,18 +1574,22 @@ def temporal_association_mining(df_lep, time_cols=None, window_size=30, min_supp
     event_stream = create_event_stream(df_lep, time_cols)
     
     # Create time windows
+    print("Creating time windows...")
     windows = create_time_windows(event_stream, window_size, use_time_buckets)
     
     # Apply association rule mining
     if windows:
         te = TransactionEncoder()
+        print("Transforming windows...")
         te_ary = te.fit_transform(windows)
         df = pd.DataFrame(te_ary, columns=te.columns_)
         
         # Find frequent itemsets
+        print("Finding frequent itemsets...")
         frequent_itemsets = apriori(df, min_support=min_support, use_colnames=True)
         
         # Generate rules
+        print("Generating rules...")
         rules = association_rules(frequent_itemsets, metric="confidence", min_threshold=min_confidence)
         
         return event_stream, windows, frequent_itemsets, rules
@@ -1735,3 +1743,958 @@ def analyze_temporal_rules(rules, top_n=20):
         print(f"   Support: {rule['support']:.3f}, Confidence: {rule['confidence']:.3f}, Lift: {rule['lift']:.3f}")
     
     return sorted_rules
+
+def winepi_algorithm(event_stream, window_size_mins=60, min_support=0.01, verbose=False):
+    """
+    Implementation of the WINEPI algorithm for discovering temporal patterns.
+    
+    WINEPI is a window-based method that finds frequent episodes (ordered sequences 
+    of events) in temporal data.
+    
+    Parameters:
+        event_stream (list): List of (timestamp, event_name) tuples
+        window_size (int): Size of the sliding window in minutes
+        min_support (float): Minimum frequency threshold (0-1)
+        verbose (bool): Whether to print detailed information
+        
+    Returns:
+        tuple: (sorted_episodes, windows)
+            - sorted_episodes: Dictionary of frequent episodes with their support
+            - windows: List of event sequences found in time windows
+    """
+    if not event_stream:
+        return {}, []
+    
+    if verbose:
+        print(f"Running WINEPI with window size of {window_size_mins} minutes")
+        print(f"Minimum support threshold: {min_support}")
+        print(f"Processing {len(event_stream)} events\n")
+    
+    # Sort events by time
+    event_stream.sort(key=lambda x: x[0])
+    
+    # Create sliding windows
+    windows = []
+    start_time = event_stream[0][0]
+    end_time = event_stream[-1][0]
+    window_delta = timedelta(minutes=window_size_mins)
+    
+    # Generate sliding windows with fixed step size
+    step_size = window_size_mins / 4  # 75% overlap
+    step_delta = timedelta(minutes=step_size)
+    
+    current_time = start_time
+    total_windows = 0
+    
+    # Store window event times for later analysis
+    window_event_times = []
+    
+    while current_time < end_time:
+        window_end = current_time + window_delta
+        
+        # Extract events in this window
+        window_events = []
+        window_times = {}  # To store timestamps for events in this window
+        
+        for event_time, event_name in event_stream:
+            if current_time <= event_time < window_end:
+                window_events.append((event_time, event_name))
+                
+                # Store timestamp for each event
+                if event_name not in window_times:
+                    window_times[event_name] = []
+                window_times[event_name].append(event_time)
+        
+        # Sort events within window by time
+        window_events.sort(key=lambda x: x[0])
+        
+        # Extract event names only (in order)
+        if window_events:
+            event_sequence = [event[1] for event in window_events]
+            windows.append(event_sequence)
+            window_event_times.append(window_times)
+            total_windows += 1
+        
+        # Move window forward
+        current_time += step_delta
+    
+    if verbose:
+        print(f"Created {total_windows} sliding windows")
+    
+    # Count episode occurrences
+    episode_counts = {}
+    
+    # Store time gaps for each episode type
+    episode_time_gaps = {}
+    
+    # Generate episodes of different lengths (1, 2, and 3)
+    for window_idx, window in enumerate(windows):
+        # Single events
+        # for i in range(len(window)):
+        #     episode = (window[i],)
+        #     episode_counts[episode] = episode_counts.get(episode, 0) + 1
+        
+        # Pairs of events (order matters)
+        for i in range(len(window)-1):
+            for j in range(i+1, min(i+4, len(window))):  # Limit distance between events
+                first_event = window[i]
+                second_event = window[j]
+                episode = (first_event, second_event)
+                episode_counts[episode] = episode_counts.get(episode, 0) + 1
+                
+                # Calculate time gaps
+                if episode not in episode_time_gaps:
+                    episode_time_gaps[episode] = []
+                
+                # Get all possible time differences between these events in this window
+                window_times = window_event_times[window_idx]
+                if first_event in window_times and second_event in window_times:
+                    for t1 in window_times[first_event]:
+                        for t2 in window_times[second_event]:
+                            if t1 < t2:  # Ensure correct order
+                                time_diff_minutes = (t2 - t1).total_seconds() / 60
+                                if time_diff_minutes <= window_size_mins:  # Only count if within window
+                                    episode_time_gaps[episode].append(time_diff_minutes)
+        
+        # Triplets of events (order matters)
+        for i in range(len(window)-2):
+            for j in range(i+1, min(i+4, len(window)-1)):
+                for k in range(j+1, min(j+4, len(window))):
+                    first_event = window[i]
+                    second_event = window[j]
+                    third_event = window[k]
+                    episode = (first_event, second_event, third_event)
+                    episode_counts[episode] = episode_counts.get(episode, 0) + 1
+                    
+                    # Calculate time gaps
+                    if episode not in episode_time_gaps:
+                        episode_time_gaps[episode] = []
+                    
+                    # Get all possible time differences between these events in this window
+                    window_times = window_event_times[window_idx]
+                    if all(e in window_times for e in episode):
+                        for t1 in window_times[first_event]:
+                            for t2 in window_times[second_event]:
+                                for t3 in window_times[third_event]:
+                                    if t1 < t2 < t3:  # Ensure correct order
+                                        time_diff_1_2 = (t2 - t1).total_seconds() / 60
+                                        time_diff_2_3 = (t3 - t2).total_seconds() / 60
+                                        if time_diff_1_2 + time_diff_2_3 <= window_size_mins:
+                                            episode_time_gaps[episode].append((time_diff_1_2, time_diff_2_3))
+    
+    # Calculate support (frequency)
+    episode_support = {}
+    
+    # Calculate statistics for each episode
+    episode_stats = {}
+    
+    for episode, count in episode_counts.items():
+        support = count / total_windows if total_windows > 0 else 0
+        if support >= min_support:
+            episode_support[episode] = support
+            
+            # Add statistics if available
+            if len(episode) > 1 and episode in episode_time_gaps and episode_time_gaps[episode]:
+                if len(episode) == 2:
+                    time_gaps = episode_time_gaps[episode]
+                    if time_gaps:
+                        avg_gap = sum(time_gaps) / len(time_gaps)
+                        min_gap = min(time_gaps)
+                        max_gap = max(time_gaps)
+                        std_gap = (sum((g - avg_gap) ** 2 for g in time_gaps) / len(time_gaps)) ** 0.5 if len(time_gaps) > 1 else 0
+                        
+                        episode_stats[episode] = {
+                            'avg_gap_minutes': avg_gap,
+                            'min_gap_minutes': min_gap,
+                            'max_gap_minutes': max_gap,
+                            'std_gap_minutes': std_gap,
+                            'window_size': window_size_mins,
+                            'count': count,
+                            'support': support
+                        }
+    
+    # Sort by support
+    sorted_episodes = dict(sorted(episode_support.items(), key=lambda x: x[1], reverse=True))
+    
+    if verbose:
+        print(f"\nFound {len(sorted_episodes)} frequent episodes with support >= {min_support}")
+        print("\nTop episodes by support:")
+        
+        for i, (episode, support) in enumerate(list(sorted_episodes.items())[:20]):
+            episode_str = " → ".join(episode)
+            support_pct = support * 100
+            
+            # Display time gap information if available
+            gap_info = ""
+            if episode in episode_stats:
+                stats = episode_stats[episode]
+                gap_info = f", avg gap: {stats['avg_gap_minutes']:.1f}min (range: {stats['min_gap_minutes']:.1f}-{stats['max_gap_minutes']:.1f}min)"
+            
+            print(f"{i+1}. {episode_str}: {support_pct:.1f}% support{gap_info}")
+    
+    return sorted_episodes, windows, episode_stats
+
+def explain_winepi_results(sorted_episodes, window_size, episode_stats=None, top_n=10):
+    """
+    Explain WINEPI results in detail with a focus on interpretation.
+    
+    Parameters:
+        sorted_episodes (dict): Dictionary of episodes with their support values
+        window_size (int): Size of the sliding window in minutes used in WINEPI
+        episode_stats (dict): Dictionary of episode statistics (optional)
+        top_n (int): Number of top episodes to explain
+        
+    Returns:
+        None (prints explanation)
+    """
+    print("\n=== WINEPI RESULTS EXPLANATION ===\n")
+    print(f"Window size used: {window_size} minutes")
+    print("Support value meaning: The fraction of time windows containing this episode")
+    print("Example: A support of 0.25 means this sequence appeared in 25% of all time windows\n")
+    
+    print("Top episodes by frequency:")
+    
+    for i, (episode, support) in enumerate(list(sorted_episodes.items())[:top_n]):
+        if i >= top_n:
+            break
+            
+        episode_str = " → ".join(episode)
+        support_pct = support * 100
+        
+        print(f"{i+1}. {episode_str}: {support_pct:.1f}% support")
+        
+        # Interpret the results
+        if len(episode) == 1:
+            print(f"   Interpretation: The event '{episode[0]}' occurs in {support_pct:.1f}% of all time windows.")
+        elif len(episode) >= 2:
+            print(f"   Interpretation: The sequence '{episode_str}' occurs in {support_pct:.1f}% of all time windows.")
+            
+            # Add time gap information if available
+            if episode_stats and episode in episode_stats:
+                stats = episode_stats[episode]
+                print(f"   Time relationship: On average, {episode[1]} occurs {stats['avg_gap_minutes']:.1f} minutes after {episode[0]}")
+                print(f"   Gap range: {stats['min_gap_minutes']:.1f}-{stats['max_gap_minutes']:.1f} minutes")
+                
+                consistency = 1 - (stats['std_gap_minutes'] / stats['avg_gap_minutes']) if stats['avg_gap_minutes'] > 0 else 0
+                consistency_desc = "very consistent" if consistency > 0.8 else "somewhat consistent" if consistency > 0.5 else "variable"
+                print(f"   Consistency: {consistency_desc} ({consistency:.2f})")
+            else:
+                print(f"   Note: These events occur in the same {window_size}-minute window, but the exact time gap varies.")
+        
+        print()
+    
+    print("\nUnderstanding the numbers:")
+    print(f"1. WINEPI uses overlapping time windows of {window_size} minutes.")
+    print("2. The support value shows how frequently a pattern occurs across all windows.")
+    print("3. Higher support = more frequent/reliable pattern.")
+    print("4. Events in a sequence occur in order, but may have variable time gaps.")
+    print("5. A → B doesn't necessarily imply causation, just temporal sequence.")
+
+def minepi_algorithm(event_stream, max_time_gap=60, min_support=2, verbose=False):
+    """
+    Implementation of the MINEPI algorithm for discovering minimal occurrences of episodes.
+    
+    MINEPI focuses on minimal occurrences of episodes where an episode occurs 
+    within a time window without being part of a larger occurrence.
+    
+    Parameters:
+        event_stream (list): List of (timestamp, event_name) tuples
+        max_time_gap (int): Maximum time between events in an episode (minutes)
+        min_support (int): Minimum number of occurrences required
+        verbose (bool): Whether to print detailed information
+        
+    Returns:
+        tuple: (sorted_episodes, episode_details)
+            - sorted_episodes: Dictionary of minimal episodes with their occurrence counts
+            - episode_details: Dictionary with detailed information about each episode
+    """
+    if not event_stream:
+        return {}, {}
+    
+    if verbose:
+        print(f"Running MINEPI with maximum time gap of {max_time_gap} minutes")
+        print(f"Minimum support threshold: {min_support} occurrences")
+        print(f"Processing {len(event_stream)} events\n")
+    
+    # Sort events by time
+    event_stream.sort(key=lambda x: x[0])
+    
+    # Create a more efficient data structure for lookup
+    # Group events by type
+    events_by_type = {}
+    for event_time, event_name in event_stream:
+        if event_name not in events_by_type:
+            events_by_type[event_name] = []
+        events_by_type[event_name].append(event_time)
+    
+    if verbose:
+        print(f"Found {len(events_by_type)} unique event types")
+        for event_type, occurrences in events_by_type.items():
+            print(f"  - {event_type}: {len(occurrences)} occurrences")
+        print()
+    
+    # Find minimal occurrences of episodes
+    episode_occurrences = {}
+    
+    # Single event episodes
+    for event_type, timestamps in events_by_type.items():
+        episode = (event_type,)
+        episode_occurrences[episode] = [[(timestamp, timestamp)] for timestamp in timestamps]
+    
+    # Filter episodes by support
+    frequent_episodes = {}
+    for episode, occurrences in episode_occurrences.items():
+        if len(occurrences) >= min_support:
+            frequent_episodes[episode] = occurrences
+    
+    if verbose:
+        print(f"Found {len(frequent_episodes)} frequent 1-event episodes")
+    
+    # Candidate generation for 2-event episodes
+    candidates_2 = []
+    for event1 in events_by_type.keys():
+        for event2 in events_by_type.keys():
+            if event1 != event2:
+                candidates_2.append((event1, event2))
+    
+    if verbose:
+        print(f"Generated {len(candidates_2)} candidate 2-event episodes")
+    
+    # Store detailed information about each episode
+    episode_details = {}
+    
+    # Find minimal occurrences of 2-event episodes
+    for candidate in candidates_2:
+        event1, event2 = candidate
+        occurrences = []
+        time_gaps = []
+        
+        for t1 in events_by_type[event1]:
+            for t2 in events_by_type[event2]:
+                time_diff = (t2 - t1).total_seconds() / 60  # Convert to minutes
+                if 0 < time_diff <= max_time_gap:
+                    # This is a minimal occurrence
+                    occurrences.append([(t1, t1), (t2, t2)])
+                    time_gaps.append(time_diff)
+        
+        if len(occurrences) >= min_support:
+            episode_occurrences[candidate] = occurrences
+            frequent_episodes[candidate] = occurrences
+            
+            # Calculate statistics for time gaps
+            if time_gaps:
+                avg_gap = sum(time_gaps) / len(time_gaps)
+                min_gap = min(time_gaps)
+                max_gap = max(time_gaps)
+                std_gap = (sum((g - avg_gap) ** 2 for g in time_gaps) / len(time_gaps)) ** 0.5 if len(time_gaps) > 1 else 0
+                
+                # Store detailed information
+                episode_details[candidate] = {
+                    'avg_gap_minutes': avg_gap,
+                    'min_gap_minutes': min_gap,
+                    'max_gap_minutes': max_gap,
+                    'std_gap_minutes': std_gap,
+                    'count': len(occurrences),
+                    'max_time_gap': max_time_gap,
+                    'time_gaps': time_gaps,
+                    'consecutive_days': count_consecutive_days(occurrences)
+                }
+    
+    if verbose:
+        print(f"Found {sum(1 for ep in frequent_episodes if len(ep) == 2)} frequent 2-event episodes")
+    
+    # Candidate generation for 3-event episodes
+    candidates_3 = []
+    for e1, e2 in candidates_2:
+        for e3 in events_by_type.keys():
+            if e3 != e1 and e3 != e2 and (e2, e3) in frequent_episodes.keys():
+                candidates_3.append((e1, e2, e3))
+    
+    if verbose:
+        print(f"Generated {len(candidates_3)} candidate 3-event episodes")
+    
+    # Find minimal occurrences of 3-event episodes
+    for candidate in candidates_3:
+        event1, event2, event3 = candidate
+        occurrences = []
+        time_gaps = []
+        
+        for occ_12 in episode_occurrences.get((event1, event2), []):
+            _, t2 = occ_12[1]  # End time of the second event
+            
+            for t3 in events_by_type[event3]:
+                time_diff_2_3 = (t3 - t2).total_seconds() / 60  # Convert to minutes
+                if 0 < time_diff_2_3 <= max_time_gap:
+                    # This is a minimal occurrence
+                    occurrences.append([occ_12[0], occ_12[1], (t3, t3)])
+                    
+                    # Calculate total time from event1 to event3
+                    t1 = occ_12[0][0]  # Start time of first event
+                    total_time = (t3 - t1).total_seconds() / 60
+                    time_diff_1_2 = (t2 - t1).total_seconds() / 60
+                    
+                    time_gaps.append((time_diff_1_2, time_diff_2_3, total_time))
+        
+        if len(occurrences) >= min_support:
+            episode_occurrences[candidate] = occurrences
+            frequent_episodes[candidate] = occurrences
+            
+            # Calculate statistics for time gaps
+            if time_gaps:
+                # For 3-event episodes, we store the total time and individual gaps
+                avg_total = sum(g[2] for g in time_gaps) / len(time_gaps)
+                min_total = min(g[2] for g in time_gaps)
+                max_total = max(g[2] for g in time_gaps)
+                
+                # Store detailed information
+                episode_details[candidate] = {
+                    'avg_total_minutes': avg_total,
+                    'min_total_minutes': min_total,
+                    'max_total_minutes': max_total,
+                    'count': len(occurrences),
+                    'max_time_gap': max_time_gap,
+                    'time_gaps': time_gaps,
+                    'consecutive_days': count_consecutive_days(occurrences)
+                }
+    
+    if verbose:
+        print(f"Found {sum(1 for ep in frequent_episodes if len(ep) == 3)} frequent 3-event episodes")
+    
+    # Count occurrences for each frequent episode
+    result = {}
+    for episode, occurrences in frequent_episodes.items():
+        result[episode] = len(occurrences)
+    
+    # Sort by count
+    sorted_episodes = dict(sorted(result.items(), key=lambda x: x[1], reverse=True))
+    
+    if verbose:
+        print("\nTop episodes by occurrence count:")
+        for i, (episode, count) in enumerate(list(sorted_episodes.items())[:20]):
+            if i >= 20:
+                break
+                
+            episode_str = " → ".join(episode)
+            
+            # Display time gap information if available
+            gap_info = ""
+            if episode in episode_details and len(episode) == 2:
+                stats = episode_details[episode]
+                gap_info = f", avg gap: {stats['avg_gap_minutes']:.1f}min (range: {stats['min_gap_minutes']:.1f}-{stats['max_gap_minutes']:.1f}min)"
+            elif episode in episode_details and len(episode) == 3:
+                stats = episode_details[episode]
+                gap_info = f", avg total time: {stats['avg_total_minutes']:.1f}min"
+            
+            print(f"{i+1}. {episode_str}: {count} occurrences{gap_info}")
+    
+    return sorted_episodes, episode_details
+
+def detect_episodic_patterns(event_stream, min_minutes=10, max_minutes=120, min_occurrences=2, verbose=False):
+    """
+    Detect episodic patterns of events that frequently occur together within a specific time range.
+    
+    This is a custom implementation that focuses on finding pairs of events that have
+    a consistent time gap between them.
+    
+    Parameters:
+        event_stream (list): List of (timestamp, event_name) tuples
+        min_minutes (int): Minimum time gap between events to consider
+        max_minutes (int): Maximum time gap between events to consider
+        min_occurrences (int): Minimum number of occurrences required
+        verbose (bool): Whether to print detailed information
+        
+    Returns:
+        list: List of dictionaries containing episodic patterns
+    """
+    if not event_stream:
+        return []
+    
+    if verbose:
+        print(f"Detecting episodic patterns with time gap range of {min_minutes}-{max_minutes} minutes")
+        print(f"Minimum occurrences threshold: {min_occurrences}")
+        print(f"Processing {len(event_stream)} events\n")
+    
+    # Sort events by time
+    event_stream.sort(key=lambda x: x[0])
+    
+    # Create a dictionary to store event pairs and their time gaps
+    pattern_gaps = {}
+    
+    # Group events by day
+    events_by_day = {}
+    for event_time, event_name in event_stream:
+        day = event_time.date()
+        if day not in events_by_day:
+            events_by_day[day] = []
+        events_by_day[day].append((event_time, event_name))
+    
+    if verbose:
+        print(f"Found events on {len(events_by_day)} different days")
+    
+    # For each day, find patterns
+    for day, day_events in events_by_day.items():
+        day_events.sort(key=lambda x: x[0])
+        
+        if verbose and day_events:
+            print(f"Day {day}: {len(day_events)} events")
+        
+        # Check pairs of events
+        for i, (time_i, event_i) in enumerate(day_events):
+            for j in range(i+1, len(day_events)):
+                time_j, event_j = day_events[j]
+                
+                # Calculate time difference in minutes
+                time_diff = (time_j - time_i).total_seconds() / 60
+                
+                # Check if within desired range
+                if min_minutes <= time_diff <= max_minutes:
+                    pattern_key = (event_i, event_j)
+                    if pattern_key not in pattern_gaps:
+                        pattern_gaps[pattern_key] = []
+                    
+                    pattern_gaps[pattern_key].append({
+                        'day': day,
+                        'first_time': time_i,
+                        'second_time': time_j,
+                        'gap_minutes': time_diff
+                    })
+    
+    if verbose:
+        print(f"\nFound {len(pattern_gaps)} potential episode patterns")
+    
+    # Filter patterns by minimum occurrences
+    frequent_patterns = []
+    
+    for pattern, occurrences in pattern_gaps.items():
+        if len(occurrences) >= min_occurrences:
+            # Calculate statistics
+            gaps = [occ['gap_minutes'] for occ in occurrences]
+            avg_gap = sum(gaps) / len(gaps)
+            gap_std = (sum((g - avg_gap) ** 2 for g in gaps) / len(gaps)) ** 0.5 if len(gaps) > 1 else 0
+            
+            # Calculate consistency measure
+            consistency = 1 - (gap_std / avg_gap) if avg_gap > 0 else 0
+            
+            # Count consecutive days
+            consecutive_days = count_consecutive_days_from_occurrences(occurrences)
+            
+            # Create pattern object
+            pattern_obj = {
+                'first_event': pattern[0],
+                'second_event': pattern[1],
+                'occurrences': len(occurrences),
+                'avg_gap_minutes': avg_gap,
+                'gap_std_minutes': gap_std,
+                'min_gap_minutes': min(gaps),
+                'max_gap_minutes': max(gaps),
+                'consistency': consistency,
+                'consecutive_days': consecutive_days,
+                'instances': occurrences
+            }
+            
+            frequent_patterns.append(pattern_obj)
+    
+    # Sort by consistency and occurrences
+    sorted_patterns = sorted(frequent_patterns, 
+                             key=lambda x: (x['occurrences'], x['consistency']), 
+                             reverse=True)
+    
+    if verbose:
+        print(f"\nFound {len(sorted_patterns)} frequent episodic patterns")
+        
+        for i, pattern in enumerate(sorted_patterns[:20]):
+            if i >= 20:
+                break
+                
+            consistency_desc = "very consistent" if pattern['consistency'] > 0.8 else \
+                               "somewhat consistent" if pattern['consistency'] > 0.5 else "variable"
+            
+            print(f"{i+1}. {pattern['first_event']} → {pattern['second_event']}: "
+                  f"{pattern['occurrences']} occurrences, "
+                  f"avg gap: {pattern['avg_gap_minutes']:.1f}min (range: {pattern['min_gap_minutes']:.1f}-{pattern['max_gap_minutes']:.1f}min), "
+                  f"consistency: {consistency_desc} ({pattern['consistency']:.2f})")
+    
+    return sorted_patterns
+
+def count_consecutive_days(occurrences):
+    """Count the maximum number of consecutive days where this pattern appears"""
+    if not occurrences or not occurrences[0]:
+        return 0
+    
+    # Extract dates from occurrences
+    dates = []
+    for occ in occurrences:
+        if occ and occ[0] and len(occ[0]) > 0:
+            # Get the first timestamp from the first event
+            dates.append(occ[0][0].date())
+    
+    return count_consecutive_days_from_dates(dates)
+
+def count_consecutive_days_from_occurrences(occurrences):
+    """Count the maximum number of consecutive days from occurrence objects"""
+    if not occurrences:
+        return 0
+    
+    # Extract dates from occurrences
+    dates = [occ['day'] for occ in occurrences]
+    
+    return count_consecutive_days_from_dates(dates)
+
+def count_consecutive_days_from_dates(dates):
+    """Count the maximum number of consecutive days from a list of dates"""
+    if not dates:
+        return 0
+    
+    # Remove duplicates and sort
+    unique_dates = sorted(set(dates))
+    
+    if len(unique_dates) == 1:
+        return 1
+    
+    # Find longest streak
+    max_streak = current_streak = 1
+    for i in range(1, len(unique_dates)):
+        # Check if consecutive
+        if (unique_dates[i] - unique_dates[i-1]).days == 1:
+            current_streak += 1
+            max_streak = max(max_streak, current_streak)
+        else:
+            current_streak = 1
+    
+    return max_streak
+
+def explain_minepi_results(sorted_episodes, episode_details, max_time_gap, top_n=10):
+    """
+    Explain MINEPI results in detail with a focus on interpretation.
+    
+    Parameters:
+        sorted_episodes (dict): Dictionary of episodes with their occurrence counts
+        episode_details (dict): Dictionary with detailed information about each episode
+        max_time_gap (int): Maximum time gap used in MINEPI (minutes)
+        top_n (int): Number of top episodes to explain
+        
+    Returns:
+        None (prints explanation)
+    """
+    print("\n=== MINEPI RESULTS EXPLANATION ===\n")
+    print(f"Maximum time gap used: {max_time_gap} minutes")
+    print("Occurrence count meaning: The number of times this sequence appears with events within the max time gap")
+    print("Note: MINEPI looks for minimal occurrences - each occurrence is counted exactly once\n")
+    
+    print("Top episodes by occurrence count:")
+    
+    for i, (episode, count) in enumerate(list(sorted_episodes.items())[:top_n]):
+        if i >= top_n:
+            break
+            
+        episode_str = " → ".join(episode)
+        
+        print(f"{i+1}. {episode_str}: {count} occurrences")
+        
+        # Interpret the results
+        if len(episode) == 1:
+            print(f"   Interpretation: The event '{episode[0]}' occurs {count} times.")
+        elif len(episode) >= 2:
+            print(f"   Interpretation: The sequence '{episode_str}' occurs {count} times with events within {max_time_gap} minutes of each other.")
+            
+            # Add time gap information if available
+            if episode in episode_details and len(episode) == 2:
+                stats = episode_details[episode]
+                print(f"   Time relationship: On average, {episode[1]} occurs {stats['avg_gap_minutes']:.1f} minutes after {episode[0]}")
+                print(f"   Gap range: {stats['min_gap_minutes']:.1f}-{stats['max_gap_minutes']:.1f} minutes")
+                
+                if 'consecutive_days' in stats and stats['consecutive_days'] > 1:
+                    print(f"   Consistency: This pattern appears on up to {stats['consecutive_days']} consecutive days")
+                
+                consistency = 1 - (stats['std_gap_minutes'] / stats['avg_gap_minutes']) if stats['avg_gap_minutes'] > 0 else 0
+                consistency_desc = "very consistent" if consistency > 0.8 else "somewhat consistent" if consistency > 0.5 else "variable"
+                print(f"   Timing consistency: {consistency_desc} ({consistency:.2f})")
+            elif episode in episode_details and len(episode) == 3:
+                stats = episode_details[episode]
+                print(f"   Time relationship: The entire sequence takes {stats['avg_total_minutes']:.1f} minutes on average")
+                print(f"   Total time range: {stats['min_total_minutes']:.1f}-{stats['max_total_minutes']:.1f} minutes")
+                
+                if 'consecutive_days' in stats and stats['consecutive_days'] > 1:
+                    print(f"   Consistency: This pattern appears on up to {stats['consecutive_days']} consecutive days")
+        
+        print()
+    
+    print("\nUnderstanding the numbers:")
+    print(f"1. MINEPI finds sequences where events occur within {max_time_gap} minutes of each other.")
+    print("2. Each occurrence is counted exactly once (minimal occurrences).")
+    print("3. Higher occurrence count = more frequent pattern.")
+    print("4. The time gap statistics show how consistently the pattern appears.")
+    print("5. Consecutive days indicates how regularly the pattern occurs day after day.")
+
+def explain_episodic_patterns(patterns, min_minutes, max_minutes, top_n=10):
+    """
+    Explain episodic pattern mining results in detail with a focus on interpretation.
+    
+    Parameters:
+        patterns (list): List of episodic pattern dictionaries
+        min_minutes (int): Minimum time gap used in pattern detection
+        max_minutes (int): Maximum time gap used in pattern detection
+        top_n (int): Number of top patterns to explain
+        
+    Returns:
+        None (prints explanation)
+    """
+    print("\n=== EPISODIC PATTERN MINING RESULTS EXPLANATION ===\n")
+    print(f"Time gap range used: {min_minutes}-{max_minutes} minutes")
+    print("Pattern focus: This method finds pairs of events that consistently occur with similar time gaps")
+    print("Consistency score: Higher values (closer to 1.0) indicate more stable time relationships\n")
+    
+    print("Top patterns by occurrence count and consistency:")
+    
+    for i, pattern in enumerate(patterns[:top_n]):
+        if i >= top_n:
+            break
+            
+        consistency_desc = "very consistent" if pattern['consistency'] > 0.8 else \
+                           "somewhat consistent" if pattern['consistency'] > 0.5 else "variable"
+        
+        print(f"{i+1}. {pattern['first_event']} → {pattern['second_event']}: {pattern['occurrences']} occurrences")
+        print(f"   Time relationship: {pattern['second_event']} occurs {pattern['avg_gap_minutes']:.1f} minutes after {pattern['first_event']}")
+        print(f"   Gap range: {pattern['min_gap_minutes']:.1f}-{pattern['max_gap_minutes']:.1f} minutes")
+        print(f"   Consistency: {consistency_desc} ({pattern['consistency']:.2f})")
+        
+        if 'consecutive_days' in pattern and pattern['consecutive_days'] > 1:
+            print(f"   Regularity: This pattern appears on up to {pattern['consecutive_days']} consecutive days")
+        
+        # If multiple days, mention most common times
+        if pattern['occurrences'] > 1:
+            # Calculate histogram of times
+            morning_count = sum(1 for inst in pattern['instances'] 
+                              if inst['first_time'].hour < 12)
+            afternoon_count = sum(1 for inst in pattern['instances'] 
+                                if 12 <= inst['first_time'].hour < 18)
+            evening_count = sum(1 for inst in pattern['instances'] 
+                              if inst['first_time'].hour >= 18)
+            
+            time_of_day = "morning" if morning_count >= max(afternoon_count, evening_count) else \
+                          "afternoon" if afternoon_count >= max(morning_count, evening_count) else "evening"
+            
+            print(f"   Most common time: Pattern usually occurs in the {time_of_day}")
+        
+        print()
+    
+    print("\nUnderstanding the numbers:")
+    print(f"1. This method focuses on pairs of events that occur {min_minutes}-{max_minutes} minutes apart.")
+    print("2. The consistency score measures how stable the time gap is across occurrences.")
+    print("3. Higher occurrence count = more frequent pattern.")
+    print("4. Consecutive days indicates how regularly the pattern occurs day after day.")
+    print("5. These patterns reveal the most reliable temporal relationships in your data.")
+
+def apply_sequential_mining(event_stream, method='all', **kwargs):
+    """
+    Apply various sequential pattern mining algorithms to discover temporal patterns.
+    
+    Parameters:
+        event_stream (list): List of (timestamp, event_name) tuples
+        method (str): Mining method to use ('winepi', 'minepi', 'episodic', or 'all')
+        **kwargs: Additional parameters for specific algorithms
+            - window_size_mins: for WINEPI (default: 60 minutes)
+            - min_support: for WINEPI (default: 0.01)
+            - max_time_gap: for MINEPI (default: 60 minutes)
+            - min_support_count: for MINEPI (default: 2 occurrences)
+            - min_minutes: for episodic (default: 10)
+            - max_minutes: for episodic (default: 120)
+            - min_occurrences: for episodic (default: 2)
+            - verbose: Whether to print detailed information (default: True)
+            - explain: Whether to print detailed explanations (default: True)
+        
+    Returns:
+        dict: Results from the selected methods
+    """
+    results = {}
+    
+    # Get parameters with defaults
+    window_size_mins = kwargs.get('window_size_mins', 60)
+    min_support = kwargs.get('min_support', 0.01)
+    max_time_gap = kwargs.get('max_time_gap', 60)
+    min_support_count = kwargs.get('min_support_count', 2)
+    min_minutes = kwargs.get('min_minutes', 10)
+    max_minutes = kwargs.get('max_minutes', 120)
+    min_occurrences = kwargs.get('min_occurrences', 2)
+    verbose = kwargs.get('verbose', True)
+    explain = kwargs.get('explain', True)
+    
+    # Apply WINEPI algorithm
+    if method.lower() in ['winepi', 'all']:
+        print("Applying WINEPI algorithm...")
+        winepi_results, windows, episode_stats = winepi_algorithm(
+            event_stream, 
+            window_size_mins=window_size_mins, 
+            min_support=min_support,
+            verbose=verbose
+        )
+        results['winepi'] = {
+            'episodes': winepi_results,
+            'windows': windows,
+            'stats': episode_stats
+        }
+        
+        # Display explanation if requested
+        if explain and winepi_results:
+            explain_winepi_results(winepi_results, window_size_mins, episode_stats)
+    
+    # Apply MINEPI algorithm
+    if method.lower() in ['minepi', 'all']:
+        print("\nApplying MINEPI algorithm...")
+        minepi_results, episode_details = minepi_algorithm(
+            event_stream, 
+            max_time_gap=max_time_gap, 
+            min_support=min_support_count,
+            verbose=verbose
+        )
+        results['minepi'] = {
+            'episodes': minepi_results,
+            'details': episode_details
+        }
+        
+        # Display explanation if requested
+        if explain and minepi_results:
+            explain_minepi_results(minepi_results, episode_details, max_time_gap)
+    
+    # Apply Episodic Pattern Detection
+    if method.lower() in ['episodic', 'all']:
+        print("\nDetecting Episodic Patterns...")
+        episodic_results = detect_episodic_patterns(
+            event_stream, 
+            min_minutes=min_minutes, 
+            max_minutes=max_minutes, 
+            min_occurrences=min_occurrences,
+            verbose=verbose
+        )
+        results['episodic'] = episodic_results
+        
+        # Display explanation if requested
+        if explain and episodic_results:
+            explain_episodic_patterns(episodic_results, min_minutes, max_minutes)
+    
+    # Visualize patterns if enough data is available and visualization is requested
+    if kwargs.get('visualize', True) and 'episodic' in results and results['episodic'] and 'winepi' in results:
+        print("\nVisualizing temporal patterns...")
+        visualize_temporal_patterns_advanced(
+            event_stream, 
+            episodic_patterns=results['episodic'][:5], 
+            winepi_patterns=list(results['winepi']['episodes'].keys())[:5]
+        )
+    
+    return results
+
+def visualize_temporal_patterns_advanced(event_stream, episodic_patterns=None, winepi_patterns=None):
+    """
+    Advanced visualization of temporal patterns discovered in the event stream.
+    
+    Parameters:
+        event_stream (list): List of (timestamp, event_name) tuples
+        episodic_patterns (list): List of episodic patterns to highlight
+        winepi_patterns (list): List of WINEPI episodes to highlight
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as patches
+    import matplotlib.dates as mdates
+    
+    if not event_stream:
+        print("No events to visualize")
+        return
+    
+    # Sort events by time
+    event_stream.sort(key=lambda x: x[0])
+    
+    # Extract unique event types
+    event_types = list(set(event[1] for event in event_stream))
+    
+    # Create a color map
+    colors = plt.cm.tab10(np.linspace(0, 1, len(event_types)))
+    color_map = dict(zip(event_types, colors))
+    
+    # Get unique days
+    days = list(set(event[0].date() for event in event_stream))
+    days.sort()
+    
+    # Create a multi-panel figure
+    fig = plt.figure(figsize=(15, 12))
+    
+    # Panel 1: Event timeline
+    ax1 = plt.subplot2grid((3, 1), (0, 0), rowspan=2)
+    
+    # Plot events on timeline
+    for day_idx, day in enumerate(days):
+        day_events = [event for event in event_stream if event[0].date() == day]
+        
+        for event_time, event_name in day_events:
+            # Plot point
+            time_in_day = event_time.hour + event_time.minute / 60
+            ax1.scatter(time_in_day, day_idx, color=color_map[event_name], s=100)
+            
+            # Add label
+            ax1.text(time_in_day, day_idx+0.1, event_name, fontsize=8, ha='center')
+    
+    # Add episodic pattern highlights if provided
+    if episodic_patterns:
+        for i, pattern in enumerate(episodic_patterns):
+            for instance in pattern['instances']:
+                day_idx = days.index(instance['day'])
+                first_time = instance['first_time'].hour + instance['first_time'].minute / 60
+                second_time = instance['second_time'].hour + instance['second_time'].minute / 60
+                
+                # Draw connection
+                ax1.plot([first_time, second_time], [day_idx, day_idx], 
+                        color='red', alpha=0.5, linestyle='-', linewidth=2)
+                
+                # Add gap label
+                mid_time = (first_time + second_time) / 2
+                ax1.text(mid_time, day_idx+0.2, f"{pattern['avg_gap_minutes']:.0f}m", 
+                        fontsize=7, ha='center', color='red')
+    
+    # Set labels and title for timeline
+    ax1.set_yticks(range(len(days)))
+    ax1.set_yticklabels([day.strftime('%Y-%m-%d') for day in days])
+    ax1.set_xlabel('Time of Day (hours)')
+    ax1.set_ylabel('Date')
+    ax1.set_xlim(0, 24)
+    ax1.set_title('Temporal Event Patterns')
+    ax1.grid(True, linestyle='--', alpha=0.7)
+    
+    # Add legend
+    handles, labels = [], []
+    for event_type in event_types:
+        handles.append(plt.Line2D([0], [0], marker='o', color='w', 
+                                  markerfacecolor=color_map[event_type], markersize=10))
+        labels.append(event_type)
+    
+    ax1.legend(handles, labels, loc='upper right', bbox_to_anchor=(1.1, 1))
+    
+    # Panel 2: Pattern summary
+    ax2 = plt.subplot2grid((3, 1), (2, 0))
+    
+    # Display discovered patterns
+    pattern_text = "Discovered Patterns:\n\n"
+    
+    if episodic_patterns:
+        pattern_text += "Episodic Patterns:\n"
+        for i, pattern in enumerate(episodic_patterns[:3]):
+            pattern_text += f"{i+1}. {pattern['first_event']} → {pattern['second_event']}: " \
+                           f"{pattern['occurrences']} occurrences, " \
+                           f"avg gap: {pattern['avg_gap_minutes']:.1f}min\n"
+    
+    if winepi_patterns:
+        pattern_text += "\nWINEPI Episodes:\n"
+        for i, episode in enumerate(winepi_patterns[:3]):
+            pattern_text += f"{i+1}. {' → '.join(episode)}\n"
+    
+    ax2.text(0.05, 0.95, pattern_text, transform=ax2.transAxes, 
+             fontsize=12, verticalalignment='top')
+    
+    ax2.axis('off')
+    
+    plt.tight_layout()
+    plt.show()
+
+# Example usage:
+# results = apply_sequential_mining(event_stream, method='all',
+#                                window_size=60, min_support=0.01,
+#                                max_time_gap=60, min_support_count=2,
+#                                min_minutes=10, max_minutes=120, min_occurrences=2)
