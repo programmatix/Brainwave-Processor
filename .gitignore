@@ -11,3 +11,5 @@
 **.edf
 **.pyc
 __pycache__/sleep_events.cpython-310.pyc
+**/outputs
+**/x.csv

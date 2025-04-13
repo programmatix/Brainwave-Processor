@@ -4,6 +4,9 @@ from sklearn.preprocessing import KBinsDiscretizer
 import wittgenstein as wt
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
+from mlxtend.preprocessing import TransactionEncoder
+from mlxtend.frequent_patterns import apriori, association_rules
+from datetime import datetime, timedelta
 
 def apply_ripper_to_circadian(df_lep):
     """
@@ -15,20 +18,20 @@ def apply_ripper_to_circadian(df_lep):
         df_lep = df_lep.sort_values('dayAndNightOf')
     
     # Create target variable - LEP shift in minutes
-    df_lep['LEP_shift'] = df_lep['circadian:basic:entries:LEP:datetime'].diff() / 60
+    df_lep['LEP_shift'] = df_lep['LEP:datetime'].diff() / 60
     
     # Drop first row with NaN shift and any other NaNs
     df_clean = df_lep.dropna(subset=['LEP_shift'])
     
     # Prepare features - select numeric features and rename for clarity
     feature_mapping = {
-        'sunExposureCombined:sunlightBeforeMidday': 'morning_sun_secs',
-        'events:luminette:duration': 'luminette_secs',
-        'events:shower:last': 'shower_time_ssm',
-        'events:luminette:first': 'luminette_time_ssm',
-        'sunExposureCombined:sunlightWithin2HoursOfWake': 'early_sun_secs',
-        'sunExposureCombined:totalTimeAnySun': 'total_sun_secs',
-        'events:shower:count': 'shower_count'
+        'sunlightBeforeMidday': 'morning_sun_secs',
+        'luminette:duration': 'luminette_secs',
+        'shower:last': 'shower_time_ssm',
+        'luminette:first': 'luminette_time_ssm',
+        'sunlightWithin2HoursOfWake': 'early_sun_secs',
+        'totalTimeAnySun': 'total_sun_secs',
+        'shower:count': 'shower_count'
     }
     
     # Create simplified feature set with renamed columns
@@ -475,27 +478,27 @@ def apply_rulefit_to_circadian(df_lep):
         df_lep = df_lep.sort_values('dayAndNightOf')
     
     # Create target variable - LEP shift in minutes
-    df_lep['LEP_shift'] = df_lep['circadian:basic:entries:LEP:datetime'].diff() / 60
+    df_lep['LEP_shift'] = df_lep['LEP:datetime'].diff() / 60
     
     # Drop first row with NaN shift and any other NaNs
     df_clean = df_lep.dropna(subset=['LEP_shift'])
     
     # Prepare features - select numeric features and rename for clarity
     feature_mapping = {
-        'sunExposureCombined:sunlightBeforeMidday': 'morning_sunlight',
-        'events:luminette:duration': 'luminette_duration',
-        'events:shower:last': 'shower_time',
-        'events:luminette:first': 'luminette_time',
-        'sunExposureCombined:sunlightWithin2HoursOfWake': 'early_sunlight',
-        'sunExposureCombined:totalTimeAnySun': 'total_sunlight',
-        'events:shower:count': 'shower_count'
+        'sunlightBeforeMidday': 'morning_sunlight',
+        'luminette:duration': 'luminette_duration',
+        'shower:last': 'shower_time',
+        'luminette:first': 'luminette_time',
+        'sunlightWithin2HoursOfWake': 'early_sunlight',
+        'totalTimeAnySun': 'total_sunlight',
+        'shower:count': 'shower_count'
     }
     
     # Create simplified feature set
     X = df_clean.select_dtypes(include=['float64', 'int64']).copy()
     
     # Remove target from features if present
-    features_to_drop = ['circadian:basic:entries:LEP:datetime', 'LEP_shift']
+    features_to_drop = ['LEP:datetime', 'LEP_shift']
     for col in features_to_drop:
         if col in X.columns:
             X = X.drop(columns=[col])
@@ -588,20 +591,20 @@ def extract_rules_from_models(df_lep):
     if 'dayAndNightOf' in df_lep.columns:
         df_lep = df_lep.sort_values('dayAndNightOf')
     
-    y = df_lep['circadian:basic:entries:LEP:datetime'].diff() / 60  # Convert seconds to minutes
+    y = df_lep['LEP:datetime'].diff() / 60  # Convert seconds to minutes
     y = y.fillna(0)  # Fill first day's diff
     
     # Remove the target from features if it exists
-    if 'circadian:basic:entries:LEP:datetime' in X.columns:
-        X = X.drop(columns=['circadian:basic:entries:LEP:datetime'])
+    if 'LEP:datetime' in X.columns:
+        X = X.drop(columns=['LEP:datetime'])
     
     # Create meaningful feature names by simplifying the long column names
     feature_names = {
-        'sunExposureCombined:sunlightBeforeMidday': 'morning_sunlight',
-        'events:luminette:duration': 'luminette_duration',
-        'events:shower:last': 'shower_time',
-        'sunExposureCombined:sunlightWithin2HoursOfWake': 'early_sunlight',
-        'events:luminette:first': 'luminette_time'
+        'sunlightBeforeMidday': 'morning_sunlight',
+        'luminette:duration': 'luminette_duration',
+        'shower:last': 'shower_time',
+        'sunlightWithin2HoursOfWake': 'early_sunlight',
+        'luminette:first': 'luminette_time'
     }
     
     # Create a copy with simplified names for the features we care most about
@@ -680,7 +683,7 @@ def prepare_for_rule_mining(df):
     
     # Discretize your target variable (LEP shift)
     # First create a shift variable (today's LEP compared to yesterday)
-    df_discrete['LEP_shift'] = df_discrete['circadian:basic:entries:LEP:datetime'].diff()
+    df_discrete['LEP_shift'] = df_discrete['LEP:datetime'].diff()
     
     # Convert to minutes and categorize
     df_discrete['LEP_shift_mins'] = df_discrete['LEP_shift'] / 60
@@ -693,21 +696,21 @@ def prepare_for_rule_mining(df):
     # Discretize intervention variables
     # Light exposure
     df_discrete['morning_sunlight'] = pd.cut(
-        df_discrete['sunExposureCombined:sunlightBeforeMidday'], 
+        df_discrete['sunlightBeforeMidday'], 
         bins=[0, 600, 1800, np.inf],  # 0, 10min, 30min, more
         labels=['none', 'moderate', 'substantial']
     )
     
     # Luminette usage
     df_discrete['luminette_usage'] = pd.cut(
-        df_discrete['events:luminette:duration'], 
+        df_discrete['luminette:duration'], 
         bins=[0, 1, 900, 1800, np.inf],  # none, 0-15min, 15-30min, more
         labels=['none', 'short', 'standard', 'extended']
     )
     
     # Shower timing relative to wake
     df_discrete['shower_timing'] = pd.cut(
-        df_discrete['events:shower:last'], 
+        df_discrete['shower:last'], 
         bins=[-np.inf, 7200, 10800, 14400, np.inf],  # <2h, 2-3h, 3-4h, >4h after midnight
         labels=['very_early', 'early', 'mid_morning', 'late']
     )
@@ -792,7 +795,7 @@ import statsmodels.formula.api as smf
 from statsmodels.graphics.factorplots import interaction_plot
 from scipy import stats
 
-def analyze_circadian_with_glm(df_lep, target='circadian:basic:entries:LEP:datetimeSSM'):
+def analyze_circadian_with_glm(df_lep, target='LEP:datetimeSSM'):
     """
     Apply Generalized Linear Models to analyze circadian rhythm data.
     Predicts the target column directly instead of shifts.
@@ -830,25 +833,25 @@ def analyze_circadian_with_glm(df_lep, target='circadian:basic:entries:LEP:datet
     print(f"{target} stats: min={analysis_df[target].min():.1f}, max={analysis_df[target].max():.1f}, mean={analysis_df[target].mean():.1f}")
     
     # Create binary indicators for key interventions using sanitized feature names
-    formula_df['used_luminette'] = (formula_df[col_mapping['events:luminette:duration']] > 0).astype(int)
-    formula_df['had_shower'] = (formula_df[col_mapping['events:shower:count']] > 0).astype(int)
-    formula_df['had_morning_shower'] = (formula_df[col_mapping['events:shower:count']] > 0) & (formula_df[col_mapping['events:shower:first']] < 12).astype(int)
-    formula_df['had_evening_shower'] = (formula_df[col_mapping['events:shower:count']] > 0) & (formula_df[col_mapping['events:shower:last']] > 18).astype(int)
-    formula_df['had_morning_sun'] = (formula_df[col_mapping['sunExposureCombined:sunlightBeforeMidday']] > 0.1666).astype(int)  # >10 mins threshold
+    formula_df['used_luminette'] = (formula_df[col_mapping['luminette:duration']] > 0).astype(int)
+    formula_df['had_shower'] = (formula_df[col_mapping['shower:count']] > 0).astype(int)
+    formula_df['had_morning_shower'] = (formula_df[col_mapping['shower:count']] > 0) & (formula_df[col_mapping['shower:first']] < 12).astype(int)
+    formula_df['had_evening_shower'] = (formula_df[col_mapping['shower:count']] > 0) & (formula_df[col_mapping['shower:last']] > 18).astype(int)
+    formula_df['had_morning_sun'] = (formula_df[col_mapping['sunlightBeforeMidday']] > 0.1666).astype(int)  # >10 mins threshold
     
     # Additional binary indicators for new features
-    if 'sunExposureCombined:sunlightWithin2HoursOfSunset' in analysis_df.columns:
-        formula_df['had_evening_sun'] = (formula_df[col_mapping['sunExposureCombined:sunlightWithin2HoursOfSunset']] > 0).astype(int)
+    if 'sunlightWithin2HoursOfSunset' in analysis_df.columns:
+        formula_df['had_evening_sun'] = (formula_df[col_mapping['sunlightWithin2HoursOfSunset']] > 0).astype(int)
     
-    if 'sunExposureCombined:sunlightWithin2HoursOfSunrise' in analysis_df.columns:
-        formula_df['had_early_morning_sun'] = (formula_df[col_mapping['sunExposureCombined:sunlightWithin2HoursOfSunrise']] > 0).astype(int)
+    if 'sunlightWithin2HoursOfSunrise' in analysis_df.columns:
+        formula_df['had_early_morning_sun'] = (formula_df[col_mapping['sunlightWithin2HoursOfSunrise']] > 0).astype(int)
     
-    if 'sunExposureCombined:wentOutside' in analysis_df.columns:
-        formula_df['went_outside'] = formula_df[col_mapping['sunExposureCombined:wentOutside']].astype(int)
+    if 'wentOutside' in analysis_df.columns:
+        formula_df['went_outside'] = formula_df[col_mapping['wentOutside']].astype(int)
     
     # Create timing features using sanitized column names
-    shower_last_col = col_mapping.get('events:shower:last')
-    luminette_first_col = col_mapping.get('events:luminette:first')
+    shower_last_col = col_mapping.get('shower:last')
+    luminette_first_col = col_mapping.get('luminette:first')
     
     if shower_last_col in formula_df.columns and luminette_first_col in formula_df.columns:
         # Early morning indicator (before 8 AM)
@@ -916,9 +919,9 @@ def analyze_circadian_with_glm(df_lep, target='circadian:basic:entries:LEP:datet
     print("---------------------")
     
     # Map original feature names to sanitized ones for the formula
-    luminette_duration_col = col_mapping.get('events:luminette:duration')
-    shower_count_col = col_mapping.get('events:shower:count')
-    morning_sun_col = col_mapping.get('sunExposureCombined:sunlightBeforeMidday')
+    luminette_duration_col = col_mapping.get('luminette:duration')
+    shower_count_col = col_mapping.get('shower:count')
+    morning_sun_col = col_mapping.get('sunlightBeforeMidday')
     
     # Fit the model with key intervention variables predicting the target directly
     basic_formula = f"{target_formula} ~ {luminette_duration_col} + {shower_count_col} + {morning_sun_col}"
@@ -989,8 +992,8 @@ def analyze_circadian_with_glm(df_lep, target='circadian:basic:entries:LEP:datet
     print("--------------------")
     
     # Use timing variables to predict the target
-    timing_vars_orig = ['events:shower:first', 'events:shower:last', 'events:luminette:first', 
-                     'events:luminette:last', 'sunExposureCombined:firstEnteredOutside']
+    timing_vars_orig = ['shower:first', 'shower:last', 'luminette:first', 
+                     'luminette:last', 'firstEnteredOutside']
     
     # Map to sanitized column names
     timing_vars = [col_mapping.get(var) for var in timing_vars_orig if var in analysis_df.columns]
@@ -1013,8 +1016,8 @@ def analyze_circadian_with_glm(df_lep, target='circadian:basic:entries:LEP:datet
     print("------------------------------")
     
     # Test if evening light affects circadian phase
-    evening_vars_orig = ['sunExposureCombined:sunlightWithin2HoursOfSunset', 
-                      'sunExposureCombined:sunlightWithin1HourOfSunset']
+    evening_vars_orig = ['sunlightWithin2HoursOfSunset', 
+                      'sunlightWithin1HourOfSunset']
     
     # Map to sanitized column names
     evening_vars = [col_mapping.get(var) for var in evening_vars_orig if var in analysis_df.columns]
@@ -1055,13 +1058,13 @@ def analyze_circadian_with_glm(df_lep, target='circadian:basic:entries:LEP:datet
     # Select the most promising features from all prior models
     # Focus on original feature names without transformations
     key_features_orig = [
-        'events:luminette:duration',
-        'events:shower:duration',
-        'sunExposureCombined:sunlightBeforeMidday',
-        'sunExposureCombined:sunlightWithin2HoursOfSunset',
-        'events:shower:last',
-        'events:luminette:first',
-        'sunExposureCombined:totalTimeAnySun'
+        'luminette:duration',
+        'shower:duration',
+        'sunlightBeforeMidday',
+        'sunlightWithin2HoursOfSunset',
+        'shower:last',
+        'luminette:first',
+        'totalTimeAnySun'
     ]
     key_features_orig = df_clean.columns
     
@@ -1090,9 +1093,9 @@ def analyze_circadian_with_glm(df_lep, target='circadian:basic:entries:LEP:datet
     # formula_df = formula_df.sort_values('dayAndNightOf')
     
     # Create sanitized names for key variables
-    luminette_var = col_mapping.get('events:luminette:duration')
-    shower_var = col_mapping.get('events:shower:duration')
-    morning_sun_var = col_mapping.get('sunExposureCombined:sunlightBeforeMidday')
+    luminette_var = col_mapping.get('luminette:duration')
+    shower_var = col_mapping.get('shower:duration')
+    morning_sun_var = col_mapping.get('sunlightBeforeMidday')
     
     # Create lagged versions of key interventions
     if all(var in formula_df.columns for var in [luminette_var, shower_var, morning_sun_var]):
@@ -1238,3 +1241,497 @@ def analyze_circadian_with_glm(df_lep, target='circadian:basic:entries:LEP:datet
         'col_mapping': col_mapping,
         'rev_mapping': rev_mapping
     }
+
+
+
+import featuretools as ft
+import pandas as pd
+import numpy as np
+from featuretools.primitives import (
+    TimeSince, 
+    SubtractNumeric, 
+    Hour, 
+    Minute, 
+    TimeSince, 
+    TimeSincePrevious
+)
+
+def try_featuretools(df_lep):
+
+    # Create an EntitySet properly
+    es = ft.EntitySet(id="circadian")
+
+    # Add the dataframe as an entity
+    df_lep_with_index = df_lep.copy()
+    # if 'dayAndNightOf' in df_lep.columns:
+    #     # Use date as index if available
+    #     df_lep_with_index = df_lep_with_index.reset_index(drop=True)
+        
+    # Add the dataframe to the EntitySet with a proper index
+    es.add_dataframe(
+        dataframe=df_lep_with_index,
+        dataframe_name='df_lep',
+        index='index',
+        # make_index=True,
+        # time_index='dayAndNightOf' if 'dayAndNightOf' in df_lep.columns else None
+    )
+
+    # Create custom time difference features manually
+    # This is often more reliable than relying on automatic discovery
+    # time_cols = [col for col in df_lep.columns if any(term in col.lower() for term in 
+    #             ['ssm', 'datetime'])]
+    time_cols = ['firstEnteredOutside', 'lastOutside', 'luminette:first', 'luminette:last', 'shower:first', 'shower:last', 'LEP:datetime']
+
+    print(f"Found {len(time_cols)} time-related columns: {time_cols[:5]}...")
+
+    # Create a custom feature to calculate differences between time columns
+    # def add_time_differences(dataframe, time_columns, target_col='LEP:datetime'):
+    #     """Add time differences between all time columns and the target LEP time."""
+    #     result = dataframe.copy()
+        
+    #     for col in time_columns:
+    #         if col != target_col:
+    #             # Calculate hours between this event and LEP
+    #             diff_name = f"{col}_to_{target_col.split(':')[-1]}_diff"
+    #             result[diff_name] = result[target_col] - result[col]
+        
+    #     return result
+
+    # # Apply manual feature engineering
+    # df_with_diffs = add_time_differences(df_lep, time_cols)
+
+    # Show the new features
+    # new_cols = [col for col in df_with_diffs.columns if col not in df_lep.columns]
+    # print(f"\nManually created {len(new_cols)} new time difference features")
+    # print(f"Sample new features: {new_cols[:5]}")
+
+    # Now run Deep Feature Synthesis with our enhanced dataset and specific primitives
+    feature_matrix, feature_defs = ft.dfs(
+        entityset=es,
+        target_dataframe_name="df_lep",
+        # None of these work on the basic tabular data I'm using (no relationships, each row is a unique index value)
+        agg_primitives=["mean", "std", "min", "max", "count", "percent_true"],
+        # trans_primitives=["time_since_previous", "subtract", "divide", "multiply"],
+        trans_primitives=["diff"],
+        ignore_columns={"df_lep": ["dayAndNightOf"]},  # Ignore date column to avoid errors
+        # trans_primitives=[SubtractNumeric],  # Explicitly include the Subtract primitive
+        cutoff_time=None,  # No time cutoff
+        max_depth=2  # Increase depth for more complex features
+    )
+
+    # Combine manual features with automatically generated ones
+    # combined_features = pd.concat([
+    #     feature_matrix,
+    #     df_with_diffs[new_cols]
+    # ], axis=1)
+
+    print(f"\nFinal feature matrix has {len(list(feature_defs))} features")
+    return feature_matrix, feature_defs
+
+    # Calculate feature correlations with target
+    # if 'LEP:datetime' in df_lep.columns:
+    #     target_col = 'LEP:datetime'
+    #     correlations = []
+        
+    #     for col in combined_features.columns:
+    #         if col != target_col:
+    #             corr = combined_features[col].corr(df_lep[target_col])
+    #             if not np.isnan(corr):
+    #                 correlations.append((col, corr))
+        
+    #     # Sort by absolute correlation
+    #     sorted_correlations = sorted(correlations, key=lambda x: abs(x[1]), reverse=True)
+        
+    #     print("\nTop 10 features correlated with LEP time:")
+    #     for feature, corr in sorted_correlations[:10]:
+    #         direction = "increases" if corr > 0 else "decreases"
+    #         print(f"• {feature}: {abs(corr):.4f} ({direction} LEP time)")
+
+    # combined_features.head(5)    
+
+def create_event_stream(df_lep, time_cols=None, debug=False):
+    """
+    Convert daily time data into a stream of events.
+    
+    Parameters:
+        df_lep (pd.DataFrame): Dataframe with one row per day
+        time_cols (list): List of time columns to convert to events
+        debug (bool): Whether to print detailed error information
+        
+    Returns:
+        list: List of (timestamp, event_name) tuples
+    """
+    if time_cols is None:
+        time_cols = ['firstEnteredOutside', 'lastOutside', 'luminette:first', 
+                     'luminette:last', 'shower:first', 'shower:last', 'LEP:datetime']
+    
+    # Create event stream from time columns
+    event_stream = []
+    error_report = {}
+    
+    # Track the found columns
+    found_columns = []
+    
+    # Process each day
+    for idx, row in df_lep.iterrows():
+        day_events = []
+        day_date = None
+
+        # Get the date from index (dayAndNightOf is the index)
+        try:
+            if isinstance(idx, pd.Timestamp) or isinstance(idx, datetime):
+                day_date = idx
+            # If the index is a string that can be parsed as a date
+            elif isinstance(idx, str):
+                day_date = pd.to_datetime(idx)
+            else:
+                # If there's a dayAndNightOf column, try that
+                day_date = pd.to_datetime(row.index)
+        except Exception as e:
+            if debug:
+                print(f"Warning: Could not parse date from index for row {idx}, using dummy date instead. Error: {str(e)}")
+            # If all conversions fail, create a dummy date
+            day_date = datetime(2000, 1, 1) + timedelta(days=len(event_stream))
+        
+        # Process each time column
+        for col in time_cols:
+            if col in row and not pd.isna(row[col]):
+                # Get the time value (hours past midnight)
+                time_val = row[col]
+                
+                # Track found columns
+                if col not in found_columns:
+                    found_columns.append(col)
+                
+                # Convert to hours and minutes with validation
+                try:
+                    hours = int(time_val)
+                    minutes = int((time_val - hours) * 60)
+                    
+                    # Validate hours and minutes are in range
+                    if hours < 0 or hours > 23:
+                        error_key = f"{col}_hour_out_of_range"
+                        if error_key not in error_report:
+                            error_report[error_key] = []
+                        error_report[error_key].append({
+                            'row_index': idx,
+                            'value': time_val,
+                            'hours': hours,
+                            'minutes': minutes
+                        })
+                        # Skip this invalid event
+                        continue
+                        
+                    if minutes < 0 or minutes > 59:
+                        # Just clamp minutes to valid range
+                        minutes = min(max(0, minutes), 59)
+                    
+                    # Create timestamp
+                    event_time = day_date.replace(hour=hours, minute=minutes)
+                    
+                    # Get event name (remove :datetime or :first, etc.)
+                    event_name = col.split(':')[0] if ':' in col else col
+                    
+                    # Add to day's events
+                    day_events.append((event_time, event_name))
+                except Exception as e:
+                    error_key = f"{col}_parse_error"
+                    if error_key not in error_report:
+                        error_report[error_key] = []
+                    error_report[error_key].append({
+                        'row_index': idx,
+                        'value': time_val,
+                        'error': str(e)
+                    })
+        
+        # Sort the day's events by time
+        day_events.sort(key=lambda x: x[0])
+        
+        # Add to the event stream
+        event_stream.extend(day_events)
+    
+    # Print error report
+    if error_report:
+        print("\n===== DATA VALIDATION ERRORS =====")
+        for error_type, errors in error_report.items():
+            print(f"\n{error_type} ({len(errors)} occurrences):")
+            
+            # Show first 5 errors
+            for i, error in enumerate(errors[:5]):
+                if 'hours' in error:
+                    print(f"  {i+1}. Row {error['row_index']}: value {error['value']} converts to {error['hours']}:{error['minutes']}")
+                else:
+                    print(f"  {i+1}. Row {error['row_index']}: value {error['value']} - {error['error']}")
+            
+            if len(errors) > 5:
+                print(f"  ... and {len(errors) - 5} more errors of this type")
+    
+    # Report missing columns
+    missing_columns = [col for col in time_cols if col not in found_columns]
+    if missing_columns and debug:
+        print("\nWARNING: The following requested columns were not found in the dataframe:")
+        for col in missing_columns:
+            print(f"  - {col}")
+    
+    print(f"\nProcessed {len(df_lep)} days into {len(event_stream)} events")
+    
+    return event_stream
+
+def create_time_windows(event_stream, window_size=30, use_time_buckets=True):
+    """
+    Create sliding time windows from event stream and extract temporal patterns.
+    
+    Parameters:
+        event_stream (list): List of (timestamp, event_name) tuples
+        window_size (int): Size of time windows in minutes
+        use_time_buckets (bool): Whether to bucket time differences into ranges
+        
+    Returns:
+        list: List of transactions (sets of events in each window)
+    """
+    if not event_stream:
+        return []
+    
+    # Sort events by time
+    event_stream.sort(key=lambda x: x[0])
+    
+    # Get start and end times
+    start_time = event_stream[0][0]
+    end_time = event_stream[-1][0]
+    
+    # Create sliding windows
+    windows = []
+    current_time = start_time
+    window_delta = timedelta(minutes=window_size)
+    overlap_delta = timedelta(minutes=window_size // 2)  # 50% overlap
+    
+    # Define time buckets if needed
+    def get_time_bucket(minutes):
+        if minutes < 5:
+            return "immediate"
+        elif minutes < 15:
+            return "under_15min"
+        elif minutes < 30:
+            return "15_30min"
+        elif minutes < 60:
+            return "30_60min"
+        elif minutes < 120:
+            return "1_2hours"
+        else:
+            return "over_2hours"
+    
+    while current_time < end_time:
+        window_end = current_time + window_delta
+        
+        # Get events in this window
+        window_events = []
+        for event_time, event_name in event_stream:
+            if current_time <= event_time < window_end:
+                window_events.append(event_name)
+                
+                # Add sequential patterns (for events within 120 minutes of each other)
+                for prev_time, prev_name in event_stream:
+                    if prev_time < event_time and (event_time - prev_time).total_seconds() <= 7200:  # 2 hours
+                        time_diff = int((event_time - prev_time).total_seconds() / 60)
+                        
+                        if use_time_buckets:
+                            # Use bucketed time differences
+                            bucket = get_time_bucket(time_diff)
+                            window_events.append(f"{prev_name}_to_{event_name}_{bucket}")
+                        else:
+                            # Use exact minutes
+                            window_events.append(f"{prev_name}_to_{event_name}_{time_diff}min")
+        
+        # Add non-empty windows
+        if window_events:
+            windows.append(window_events)
+        
+        # Slide the window forward with overlap
+        current_time += overlap_delta
+    
+    return windows
+
+def temporal_association_mining(df_lep, time_cols=None, window_size=30, min_support=0.1, min_confidence=0.7, use_time_buckets=True):
+    """
+    Convert daily time data into event streams and perform association rule mining with temporal components.
+    
+    Parameters:
+        df_lep (pd.DataFrame): Dataframe with one row per day
+        time_cols (list): List of time columns to convert to events
+        window_size (int): Size of time windows in minutes
+        min_support (float): Minimum support for apriori algorithm
+        min_confidence (float): Minimum confidence for association rules
+        use_time_buckets (bool): Whether to bucket time differences into ranges
+        
+    Returns:
+        tuple: (event_stream, transactions, frequent_itemsets, rules)
+    """
+    # First create the event stream
+    event_stream = create_event_stream(df_lep, time_cols)
+    
+    # Create time windows
+    windows = create_time_windows(event_stream, window_size, use_time_buckets)
+    
+    # Apply association rule mining
+    if windows:
+        te = TransactionEncoder()
+        te_ary = te.fit_transform(windows)
+        df = pd.DataFrame(te_ary, columns=te.columns_)
+        
+        # Find frequent itemsets
+        frequent_itemsets = apriori(df, min_support=min_support, use_colnames=True)
+        
+        # Generate rules
+        rules = association_rules(frequent_itemsets, metric="confidence", min_threshold=min_confidence)
+        
+        return event_stream, windows, frequent_itemsets, rules
+    else:
+        return event_stream, [], pd.DataFrame(), pd.DataFrame()
+
+def interpret_rule(antecedents, consequents, confidence, lift):
+    """Create a human-readable interpretation of a rule"""
+    # Convert frozensets to lists
+    ant_list = list(antecedents)
+    cons_list = list(consequents)
+    
+    # Function to make time bucket names more readable
+    def readable_time_bucket(item):
+        if isinstance(item, str) and "_to_" in item:
+            parts = item.split("_")
+            if parts[-1] in ["immediate", "under_15min", "15_30min", "30_60min", "1_2hours", "over_2hours"]:
+                # Get the event names
+                events = item[:item.rfind("_")]
+                time_bucket = parts[-1]
+                
+                # Make it more readable
+                if time_bucket == "immediate":
+                    return events.replace("_to_", " immediately followed by ")
+                elif time_bucket == "under_15min":
+                    return events.replace("_to_", " followed within 15 minutes by ")
+                elif time_bucket == "15_30min":
+                    return events.replace("_to_", " followed 15-30 minutes later by ")
+                elif time_bucket == "30_60min":
+                    return events.replace("_to_", " followed 30-60 minutes later by ")
+                elif time_bucket == "1_2hours":
+                    return events.replace("_to_", " followed 1-2 hours later by ")
+                elif time_bucket == "over_2hours":
+                    return events.replace("_to_", " followed over 2 hours later by ")
+        return item
+    
+    # Make items more readable
+    readable_ant = [readable_time_bucket(item) for item in ant_list]
+    readable_cons = [readable_time_bucket(item) for item in cons_list]
+    
+    # Check if this is a sequential pattern
+    sequential_patterns = [item for item in ant_list if '_to_' in item]
+    
+    if sequential_patterns:
+        # This is a temporal sequence rule
+        return f"When {', '.join(str(item) for item in readable_ant)}, then {', '.join(str(item) for item in readable_cons)} occurs with {confidence:.1%} confidence"
+    else:
+        # Regular association rule
+        return f"If {', '.join(str(item) for item in readable_ant)}, then {', '.join(str(item) for item in readable_cons)} with {confidence:.1%} confidence"
+
+def visualize_temporal_patterns(event_stream, rules=None):
+    """
+    Visualize temporal patterns and discovered rules.
+    
+    Parameters:
+        event_stream (list): List of (timestamp, event_name) tuples
+        rules (pd.DataFrame): Association rules dataframe
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
+    
+    if not event_stream:
+        print("No events to visualize")
+        return
+    
+    # Extract unique event types
+    event_types = list(set(event[1] for event in event_stream))
+    
+    # Create a color map
+    colors = plt.cm.tab10(np.linspace(0, 1, len(event_types)))
+    color_map = dict(zip(event_types, colors))
+    
+    # Sort events by time
+    event_stream.sort(key=lambda x: x[0])
+    
+    # Get unique days
+    days = list(set(event[0].date() for event in event_stream))
+    days.sort()
+    
+    # Create plot
+    fig, ax = plt.subplots(figsize=(12, 8))
+    
+    # Plot events on timeline
+    for day_idx, day in enumerate(days):
+        day_events = [event for event in event_stream if event[0].date() == day]
+        
+        for event_time, event_name in day_events:
+            # Plot point
+            time_in_day = event_time.hour + event_time.minute / 60
+            ax.scatter(time_in_day, day_idx, color=color_map[event_name], s=100, label=event_name)
+            
+            # Add label
+            ax.text(time_in_day, day_idx+0.1, event_name, fontsize=8, ha='center')
+    
+    # Add legend (without duplicates)
+    handles, labels = [], []
+    for event_type in event_types:
+        handles.append(plt.Line2D([0], [0], marker='o', color='w', 
+                                 markerfacecolor=color_map[event_type], markersize=10))
+        labels.append(event_type)
+    
+    ax.legend(handles, labels, loc='upper right', bbox_to_anchor=(1.1, 1))
+    
+    # Set labels and title
+    ax.set_yticks(range(len(days)))
+    ax.set_yticklabels([day.strftime('%Y-%m-%d') for day in days])
+    ax.set_xlabel('Time of Day (hours)')
+    ax.set_ylabel('Date')
+    ax.set_xlim(0, 24)
+    ax.set_title('Temporal Event Patterns')
+    
+    # Add grid
+    ax.grid(True, linestyle='--', alpha=0.7)
+    
+    # If rules are provided, annotate the most significant ones
+    if rules is not None and not rules.empty:
+        top_rule = rules.sort_values('lift', ascending=False).iloc[0]
+        ax.text(0.5, -0.1, f"Top Rule: {top_rule['interpretation']}", 
+                ha='center', transform=ax.transAxes, fontsize=10)
+    
+    plt.tight_layout()
+    plt.show()
+
+def analyze_temporal_rules(rules, top_n=20):
+    """
+    Analyze and interpret temporal association rules.
+    
+    Parameters:
+        rules (pd.DataFrame): Association rules dataframe
+        top_n (int): Number of top rules to analyze
+        
+    Returns:
+        pd.DataFrame: Annotated rules with interpretations
+    """
+    if rules.empty:
+        return pd.DataFrame()
+    
+    # Sort rules by lift
+    sorted_rules = rules.sort_values('lift', ascending=False).head(top_n)
+    
+    # Add interpretation column
+    sorted_rules['interpretation'] = sorted_rules.apply(
+        lambda row: interpret_rule(row['antecedents'], row['consequents'], row['confidence'], row['lift']),
+        axis=1
+    )
+    
+    # Print top rules
+    print(f"\nTop {min(top_n, len(sorted_rules))} Temporal Association Rules:")
+    for i, (_, rule) in enumerate(sorted_rules.iterrows()):
+        print(f"{i+1}. {rule['interpretation']}")
+        print(f"   Support: {rule['support']:.3f}, Confidence: {rule['confidence']:.3f}, Lift: {rule['lift']:.3f}")
+    
+    return sorted_rules
