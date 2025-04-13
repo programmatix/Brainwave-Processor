@@ -792,3 +792,449 @@ import statsmodels.formula.api as smf
 from statsmodels.graphics.factorplots import interaction_plot
 from scipy import stats
 
+def analyze_circadian_with_glm(df_lep, target='circadian:basic:entries:LEP:datetimeSSM'):
+    """
+    Apply Generalized Linear Models to analyze circadian rhythm data.
+    Predicts the target column directly instead of shifts.
+    Uses original feature names but replaces colons in formulas to avoid Patsy errors.
+    """
+    # Clean data - drop rows with missing target values
+    df_clean = df_lep.dropna(subset=[target])
+    
+    # Create analysis dataframe - use original column names
+    analysis_df = df_clean.copy()
+    
+    # Create a copy of the dataframe with sanitized column names for formulas
+    formula_df = analysis_df.copy()
+    
+    # Create a mapping between original and sanitized column names
+    col_mapping = {}
+    rev_mapping = {}
+    
+    for col in formula_df.columns:
+        # Replace colons with underscores for Patsy formulas
+        new_col = col.replace(':', '_')
+        col_mapping[col] = new_col
+        rev_mapping[new_col] = col
+        
+        # Rename in the formula dataframe
+        if col != new_col:
+            formula_df[new_col] = formula_df[col]
+            formula_df.drop(columns=[col], inplace=True)
+    
+    # Get sanitized target name
+    target_formula = col_mapping.get(target, target)
+    
+    # Print data overview
+    print(f"Data overview: {len(analysis_df)} rows, {analysis_df.columns.size} features")
+    print(f"{target} stats: min={analysis_df[target].min():.1f}, max={analysis_df[target].max():.1f}, mean={analysis_df[target].mean():.1f}")
+    
+    # Create binary indicators for key interventions using sanitized feature names
+    formula_df['used_luminette'] = (formula_df[col_mapping['events:luminette:duration']] > 0).astype(int)
+    formula_df['had_shower'] = (formula_df[col_mapping['events:shower:count']] > 0).astype(int)
+    formula_df['had_morning_shower'] = (formula_df[col_mapping['events:shower:count']] > 0) & (formula_df[col_mapping['events:shower:first']] < 12).astype(int)
+    formula_df['had_evening_shower'] = (formula_df[col_mapping['events:shower:count']] > 0) & (formula_df[col_mapping['events:shower:last']] > 18).astype(int)
+    formula_df['had_morning_sun'] = (formula_df[col_mapping['sunExposureCombined:sunlightBeforeMidday']] > 0.1666).astype(int)  # >10 mins threshold
+    
+    # Additional binary indicators for new features
+    if 'sunExposureCombined:sunlightWithin2HoursOfSunset' in analysis_df.columns:
+        formula_df['had_evening_sun'] = (formula_df[col_mapping['sunExposureCombined:sunlightWithin2HoursOfSunset']] > 0).astype(int)
+    
+    if 'sunExposureCombined:sunlightWithin2HoursOfSunrise' in analysis_df.columns:
+        formula_df['had_early_morning_sun'] = (formula_df[col_mapping['sunExposureCombined:sunlightWithin2HoursOfSunrise']] > 0).astype(int)
+    
+    if 'sunExposureCombined:wentOutside' in analysis_df.columns:
+        formula_df['went_outside'] = formula_df[col_mapping['sunExposureCombined:wentOutside']].astype(int)
+    
+    # Create timing features using sanitized column names
+    shower_last_col = col_mapping.get('events:shower:last')
+    luminette_first_col = col_mapping.get('events:luminette:first')
+    
+    if shower_last_col in formula_df.columns and luminette_first_col in formula_df.columns:
+        # Early morning indicator (before 8 AM)
+        formula_df['early_shower'] = (formula_df[shower_last_col] < 12).astype(int)
+        formula_df['early_luminette'] = (formula_df[luminette_first_col] < 12).astype(int)
+        
+        # Calculate time difference between interventions when both present
+        mask = (formula_df['used_luminette'] == 1) & (formula_df['had_shower'] == 1)
+        formula_df.loc[mask, 'lum_shower_gap'] = abs(
+            formula_df.loc[mask, luminette_first_col] - 
+            formula_df.loc[mask, shower_last_col]
+        )
+    
+    # Create interaction terms
+    formula_df['lum_and_shower'] = formula_df['used_luminette'] * formula_df['had_shower']
+    formula_df['lum_and_sun'] = formula_df['used_luminette'] * formula_df['had_morning_sun']
+    formula_df['shower_and_sun'] = formula_df['had_shower'] * formula_df['had_morning_sun']
+    formula_df['all_three'] = formula_df['used_luminette'] * formula_df['had_shower'] * formula_df['had_morning_sun']
+    
+    # Check for evening sun interactions
+    if 'had_evening_sun' in formula_df.columns:
+        formula_df['evening_sun'] = formula_df['had_evening_sun']
+    
+    print("\nIntervention frequencies:")
+    for col in ['used_luminette', 'had_shower', 'had_morning_shower', 'had_evening_shower', 'had_morning_sun', 'had_evening_sun', 
+                'went_outside', 'lum_and_shower', 'lum_and_sun', 'shower_and_sun', 'all_three']:
+        if col in formula_df.columns:
+            print(f"{col}: {formula_df[col].sum()} days ({formula_df[col].mean()*100:.1f}%)")
+
+    # Scale all features to mean 0, std 1, except binary indicators
+    # binary_cols = ['used_luminette', 'had_shower', 'had_morning_shower', 'had_evening_shower',
+    #                'early_shower', 'early_luminette',
+    #             'had_morning_sun', 'had_evening_sun', 'went_outside', 'lum_and_shower', 
+    #             'lum_and_sun', 'shower_and_sun', 'all_three']
+    
+    # Skipping scaling - it's not needed for linear regression
+
+    # Get columns to scale (non-binary)
+    # cols_to_scale = formula_df.columns[~formula_df.columns.isin(binary_cols)]
+    
+    # # Standardize selected columns
+    # formula_df[cols_to_scale] = (formula_df[cols_to_scale] - formula_df[cols_to_scale].mean()) / formula_df[cols_to_scale].std()
+
+    # # Assert that all cols have no na values. Do this column by column. print nice failure if not
+    # for col in formula_df.columns:
+    #     if formula_df[col].isna().sum() > 0:
+    #         print(f"Column {col} has {formula_df[col].isna().sum()} na values")
+    #         print(formula_df[col])
+    #         assert False
+
+    print("\nGLOSSARY")
+    print("---------------------")
+    print("Note that all the tests below, despite the fancy titles, are basically doing linear regression, with different sets of features.")
+    print("coef       The actual effect of this intervention on LEP, in hours.  Positive is LEP delaying (later), negative is LEP advancing (earlier).  So -1 means it's 1 hour earlier.")
+    print("P>|t|      p-value, the probability the result is significant.  < 0.05 is good (only 5% likelihood it's due to chance).")
+    print("t          t-value, the number of standard deviations the coefficient is away from 0.  Higher (absolute) is more significant.  Positive is LEP delaying (later), negative is LEP advancing (earlier).")
+    print("[0.025]    Lower bound of the 95% confidence interval.  With 95% confidence, the true value is at least X")
+    print("[0.975]    Upper bound of the 95% confidence interval.  With 95% confidence, the true value is at most X")
+    print("Intercept  Bit confused. AI says it's the value of the target when all the features are 0.")
+    
+
+
+    # 1. Basic Linear Model (using sanitized feature names)
+    print("\n1. BASIC LINEAR MODEL")
+    print("---------------------")
+    
+    # Map original feature names to sanitized ones for the formula
+    luminette_duration_col = col_mapping.get('events:luminette:duration')
+    shower_count_col = col_mapping.get('events:shower:count')
+    morning_sun_col = col_mapping.get('sunExposureCombined:sunlightBeforeMidday')
+    
+    # Fit the model with key intervention variables predicting the target directly
+    basic_formula = f"{target_formula} ~ {luminette_duration_col} + {shower_count_col} + {morning_sun_col}"
+    
+    basic_model = smf.ols(formula=basic_formula, data=formula_df).fit()
+    
+    print(basic_model.summary().tables[1])  # Coefficient table only
+    
+    # 2. Binary Predictors Model
+    print("\n2. BINARY PREDICTORS MODEL")
+    print("---------------------------")
+    
+    # Build binary formula based on available columns
+    binary_vars = ['used_luminette', 'had_shower', 'had_morning_sun']
+    
+    if 'had_evening_sun' in formula_df.columns:
+        binary_vars.append('had_evening_sun')
+    
+    if 'went_outside' in formula_df.columns:
+        binary_vars.append('went_outside')
+    
+    binary_formula = f"{target_formula} ~ " + " + ".join(binary_vars)
+    binary_model = smf.ols(formula=binary_formula, data=formula_df).fit()
+    
+    print(binary_model.summary().tables[1])  # Coefficient table only
+    
+    # 3. Interaction Model
+    print("\n3. INTERACTION MODEL")
+    print("--------------------")
+    print("Despite the fancy title, it's just adding some binary features.")
+    
+    # Build interaction formula based on available columns
+    interaction_vars = ['used_luminette', 'had_shower', 'had_morning_sun']
+    interaction_terms = []
+    
+    if all(var in formula_df.columns for var in ['used_luminette', 'had_shower']):
+        interaction_terms.append('lum_and_shower')
+    
+    if all(var in formula_df.columns for var in ['used_luminette', 'had_morning_sun']):
+        interaction_terms.append('lum_and_sun')
+    
+    if all(var in formula_df.columns for var in ['had_shower', 'had_morning_sun']):
+        interaction_terms.append('shower_and_sun')
+    
+    interaction_formula = f"{target_formula} ~ " + " + ".join(interaction_vars + interaction_terms)
+    interaction_model = smf.ols(formula=interaction_formula, data=formula_df).fit()
+    
+    print(interaction_model.summary().tables[1])  # Coefficient table only
+    
+    # Test if interactions significantly improve the model
+    from statsmodels.stats.anova import anova_lm
+    
+    basic_vars_formula = f"{target_formula} ~ " + " + ".join(interaction_vars)
+    basic_vars_model = smf.ols(formula=basic_vars_formula, data=formula_df).fit()
+    
+    anova_result = anova_lm(basic_vars_model, interaction_model)
+    print("\nANOVA comparing models with and without interactions:")
+    print(anova_result)
+
+    print("df_resid: Degrees of freedom remaining in each model (more df = fewer parameters)")
+    print("ssr: Sum of Squared Residuals (lower = better fit)")
+    print("df_diff: Difference in degrees of freedom between models (3.0 means you added 3 interaction terms)")
+    print("F: F-statistic testing if the improvement is significant, higher = better fit")
+    print("p: p-value, < 0.05 means the interaction terms are significant")
+
+    # 4. Time of Day Model
+    print("\n4. TIME OF DAY MODEL")
+    print("--------------------")
+    
+    # Use timing variables to predict the target
+    timing_vars_orig = ['events:shower:first', 'events:shower:last', 'events:luminette:first', 
+                     'events:luminette:last', 'sunExposureCombined:firstEnteredOutside']
+    
+    # Map to sanitized column names
+    timing_vars = [col_mapping.get(var) for var in timing_vars_orig if var in analysis_df.columns]
+    
+    # Filter to include only timing variables that are in the dataset
+    available_timing_vars = [var for var in timing_vars if var in formula_df.columns]
+    
+    if available_timing_vars:
+        # Create formula with available timing variables
+        timing_formula = f"{target_formula} ~ " + " + ".join(available_timing_vars)
+        
+        try:
+            timing_model = smf.ols(formula=timing_formula, data=formula_df).fit()
+            print(timing_model.summary().tables[1])  # Coefficient table only
+        except Exception as e:
+            print(f"Error in time of day model: {str(e)}")
+    
+    # 5. Evening Light Effects Model
+    print("\n5. EVENING LIGHT EFFECTS MODEL")
+    print("------------------------------")
+    
+    # Test if evening light affects circadian phase
+    evening_vars_orig = ['sunExposureCombined:sunlightWithin2HoursOfSunset', 
+                      'sunExposureCombined:sunlightWithin1HourOfSunset']
+    
+    # Map to sanitized column names
+    evening_vars = [col_mapping.get(var) for var in evening_vars_orig if var in analysis_df.columns]
+    
+    if 'had_evening_sun' in formula_df.columns:
+        evening_vars.append('had_evening_sun')
+    
+    # Filter to include only evening variables that are in the dataset
+    available_evening_vars = [var for var in evening_vars if var in formula_df.columns]
+    
+    if available_evening_vars:
+        # Create formula with available evening variables
+        evening_formula = f"{target_formula} ~ " + " + ".join(available_evening_vars)
+        
+        try:
+            evening_model = smf.ols(formula=evening_formula, data=formula_df).fit()
+            print(evening_model.summary().tables[1])  # Coefficient table only
+            
+            # Compare evening vs morning effects
+            if all(var in formula_df.columns for var in ['had_evening_sun', 'had_morning_sun']):
+                evening_days = formula_df[formula_df['had_evening_sun'] == 1][target_formula]
+                morning_days = formula_df[formula_df['had_morning_sun'] == 1][target_formula]
+                neither_days = formula_df[(formula_df['had_evening_sun'] == 0) & 
+                                          (formula_df['had_morning_sun'] == 0)][target_formula]
+                
+                if len(evening_days) > 0 and len(morning_days) > 0 and len(neither_days) > 0:
+                    print("\nComparison of Light Timing Effects:")
+                    print(f"Evening sun only: mean={evening_days.mean():.2f}")
+                    print(f"Morning sun only: mean={morning_days.mean():.2f}")
+                    print(f"Neither: mean={neither_days.mean():.2f}")
+        except Exception as e:
+            print(f"Error in evening light model: {str(e)}")
+    
+    # 6. Comprehensive Model
+    print("\n6. COMPREHENSIVE MODEL")
+    print("----------------------")
+    
+    # Select the most promising features from all prior models
+    # Focus on original feature names without transformations
+    key_features_orig = [
+        'events:luminette:duration',
+        'events:shower:duration',
+        'sunExposureCombined:sunlightBeforeMidday',
+        'sunExposureCombined:sunlightWithin2HoursOfSunset',
+        'events:shower:last',
+        'events:luminette:first',
+        'sunExposureCombined:totalTimeAnySun'
+    ]
+    key_features_orig = df_clean.columns
+    
+    # Map to sanitized column names
+    key_features = [col_mapping.get(var) for var in key_features_orig if var in analysis_df.columns]
+    
+    # Filter to include only features that are in the dataset
+    available_key_features = [feat for feat in key_features if feat in formula_df.columns]
+    
+    if available_key_features:
+        # Create formula with available key features
+        comprehensive_formula = f"{target_formula} ~ " + " + ".join(available_key_features)
+        
+        try:
+            comprehensive_model = smf.ols(formula=comprehensive_formula, data=formula_df).fit()
+            print(comprehensive_model.summary().tables[1])  # Coefficient table only
+        except Exception as e:
+            print(f"Error in comprehensive model: {str(e)}")
+    
+    # 7. Lagged Effects Model (if dayAndNightOf is available)
+    # if 'dayAndNightOf' in formula_df.columns:
+    print("\n7. LAGGED EFFECTS MODEL")
+    print("----------------------")
+    
+    # Sort by date
+    # formula_df = formula_df.sort_values('dayAndNightOf')
+    
+    # Create sanitized names for key variables
+    luminette_var = col_mapping.get('events:luminette:duration')
+    shower_var = col_mapping.get('events:shower:duration')
+    morning_sun_var = col_mapping.get('sunExposureCombined:sunlightBeforeMidday')
+    
+    # Create lagged versions of key interventions
+    if all(var in formula_df.columns for var in [luminette_var, shower_var, morning_sun_var]):
+        formula_df['luminette_prev_day'] = formula_df[luminette_var].shift(1)
+        formula_df['shower_prev_day'] = formula_df[shower_var].shift(1)
+        formula_df['morning_sun_prev_day'] = formula_df[morning_sun_var].shift(1)
+        
+        # Drop rows with NaN in lagged variables
+        lagged_df = formula_df.dropna(subset=['luminette_prev_day', 'shower_prev_day', 'morning_sun_prev_day'])
+        
+        if len(lagged_df) > 10:  # Only proceed if we have sufficient data after creating lags
+            # Create formula with current and lagged variables
+            lagged_formula = f"{target_formula} ~ {luminette_var} + {shower_var} + " + \
+                            f"{morning_sun_var} + " + \
+                            "luminette_prev_day + shower_prev_day + morning_sun_prev_day"
+            
+            try:
+                lagged_model = smf.ols(formula=lagged_formula, data=lagged_df).fit()
+                print(lagged_model.summary().tables[1])  # Coefficient table only
+                
+                # Print information about lagged effects
+                print("\nCurrent vs. Lagged Effects (coefficients):")
+                
+                if luminette_var in lagged_model.params and 'luminette_prev_day' in lagged_model.params:
+                    print(f"Luminette current day: {lagged_model.params[luminette_var]:.4f}")
+                    print(f"Luminette previous day: {lagged_model.params['luminette_prev_day']:.4f}")
+                
+                if shower_var in lagged_model.params and 'shower_prev_day' in lagged_model.params:
+                    print(f"Shower current day: {lagged_model.params[shower_var]:.4f}")
+                    print(f"Shower previous day: {lagged_model.params['shower_prev_day']:.4f}")
+                
+                if morning_sun_var in lagged_model.params and 'morning_sun_prev_day' in lagged_model.params:
+                    print(f"Morning sun current day: {lagged_model.params[morning_sun_var]:.4f}")
+                    print(f"Morning sun previous day: {lagged_model.params['morning_sun_prev_day']:.4f}")
+            except Exception as e:
+                print(f"Error in lagged effects model: {str(e)}")
+    
+    # 8. Summary of Findings
+    print("\n===== SUMMARY OF CIRCADIAN RHYTHM FACTORS =====")
+    
+    # Collect all models
+    all_models = {
+        'Basic': basic_model,
+        'Binary': binary_model,
+        'Interaction': interaction_model
+    }
+    
+    # Add optional models if they exist
+    try:
+        all_models['Timing'] = timing_model
+    except:
+        pass
+    
+    try:
+        all_models['Evening'] = evening_model
+    except:
+        pass
+    
+    try:
+        all_models['Comprehensive'] = comprehensive_model
+    except:
+        pass
+    
+    try:
+        all_models['Lagged'] = lagged_model
+    except:
+        pass
+    
+    # Map sanitized column names back to original names for reporting
+    def get_original_name(sanitized_name):
+        if sanitized_name in rev_mapping:
+            return rev_mapping[sanitized_name]
+        return sanitized_name  # Return as is if not found
+    
+    # Collect significant predictors from all models
+    significant_predictors = {}
+    
+    for model_name, model in all_models.items():
+        for var, p_value in zip(model.params.index[1:], model.pvalues[1:]):
+            if p_value < 0.05:
+                coef = model.params[var]
+                orig_var = get_original_name(var)
+                if orig_var not in significant_predictors:
+                    significant_predictors[orig_var] = []
+                significant_predictors[orig_var].append((model_name, coef, p_value))
+    
+    # Print significant predictors
+    if significant_predictors:
+        print("\nStatistically Significant Factors:")
+        for var, results in significant_predictors.items():
+            print(f"\n{var}:")
+            for model_name, coef, p_value in results:
+                direction = "increases" if coef > 0 else "decreases"
+                print(f"  • {model_name} model: {abs(coef):.4f} ({direction}, p={p_value:.3f})")
+    else:
+        print("\nNo statistically significant predictors were found.")
+    
+    # Create practical guidelines
+    print("\n===== PRACTICAL CIRCADIAN CONTROL GUIDELINES =====")
+    
+    # Find most influential features across models
+    feature_influence = {}
+    
+    for model_name, model in all_models.items():
+        # Calculate standardized coefficients to compare across features
+        for var in model.params.index[1:]:
+            # Skip if variable not in dataframe (might be intercept or derived variable)
+            if var not in formula_df.columns:
+                continue
+                
+            orig_var = get_original_name(var)
+            if orig_var not in feature_influence:
+                feature_influence[orig_var] = []
+            
+            # Store absolute value of standardized coefficient
+            std_coef = abs(model.params[var]) * formula_df[var].std()
+            feature_influence[orig_var].append((model_name, std_coef, model.params[var]))
+    
+    # Calculate average influence for each feature
+    avg_influence = {}
+    for var, values in feature_influence.items():
+        if values:  # Only if we have values
+            avg_influence[var] = (np.mean([v[1] for v in values]), np.mean([v[2] for v in values]))
+    
+    # Sort by average absolute influence
+    sorted_features = sorted(avg_influence.items(), key=lambda x: abs(x[1][0]), reverse=True)
+    
+    print("\nMost influential factors (ranked):")
+    for var, (abs_influence, avg_coef) in sorted_features[:10]:  # Top 10 features
+        direction = "increase" if avg_coef > 0 else "decrease"
+        print(f"• {var}: {abs_influence:.4f} ({direction})")
+    
+    # Return the analysis results
+    return {
+        'basic_model': basic_model,
+        'binary_model': binary_model,
+        'interaction_model': interaction_model,
+        'all_models': all_models,
+        'significant_predictors': significant_predictors,
+        'feature_influence': feature_influence,
+        'analysis_df': analysis_df,
+        'formula_df': formula_df,
+        'col_mapping': col_mapping,
+        'rev_mapping': rev_mapping
+    }

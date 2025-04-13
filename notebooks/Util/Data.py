@@ -61,3 +61,5 @@ def analyze_missing_values(day_data, columns):
     # print(f"Last date:  {day_data['dayAndNightOf'].max()}")
     
     return summary
+
+
