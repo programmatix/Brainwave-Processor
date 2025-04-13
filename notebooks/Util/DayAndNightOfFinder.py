@@ -1,10 +1,15 @@
 from datetime import datetime, timedelta
 import dateutil.parser
 import os
+
 # '2024-09-18 06:54:44.539987087+01:00' -> '2024-09-17'
+# '20250404_011856' -> '2025-04-03'  (for videos and audio)
 def day_and_night_of(timestamp_str: str) -> str:
-    # Parse the timestamp
-    dt = dateutil.parser.parse(timestamp_str)
+    try:
+        dt = dateutil.parser.parse(timestamp_str)
+    except:
+        # Handle format YYYYMMDD_HHMMSS
+        dt = datetime.strptime(timestamp_str, '%Y%m%d_%H%M%S')
     
     # If time is before 11am, use the previous day
     if dt.hour < 11:

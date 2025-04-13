@@ -143,7 +143,7 @@ def get_audio(sftp, remote_dir: str, filename: str):
 
 import simpleaudio as sa # type: ignore
 
-def play_audio(data_array, ogg, duration=None):
+def play_audio(data_array, ogg, duration=None, gain=1.0):
     # Calculate samples for duration if specified
     if duration:
         samples = int(duration * ogg.frequency)
@@ -151,6 +151,9 @@ def play_audio(data_array, ogg, duration=None):
         data_to_play = data_array[:samples]
     else:
         data_to_play = data_array
+
+    # Apply gain by multiplying the audio data
+    data_to_play = (data_to_play * gain).astype(data_to_play.dtype)
 
     # Play the audio
     play_obj = sa.play_buffer(data_to_play,
@@ -229,7 +232,9 @@ def display_waveform(audio_data, sample_rate, figsize=(12, 4)):
 import numpy as np
 from scipy import signal
 import matplotlib.pyplot as plt
-from IPython.display import Audio
+from IPython.display import Audio, display
+import ipywidgets as widgets
+import soundfile as sf
 
 def find_audio_events(audio_data, sample_rate, filename,
                      window_size=1024,
@@ -351,35 +356,33 @@ def plot_audio_events(audio_data, events):
         return
     
     sample_rate = events[0]['sample_rate']
-    n_events = len(events)
     
-    fig, axs = plt.subplots(n_events + 1, 1, figsize=(12, 4 * (n_events + 1)))
+    plt.figure(figsize=(12, 4))
     
     # Plot full audio
     time_axis = np.linspace(0, len(audio_data)/sample_rate, len(audio_data))
-    axs[0].plot(time_axis, audio_data)
-    axs[0].set_title('Full Audio')
-    axs[0].set_ylabel('Amplitude')
+    plt.plot(time_axis, audio_data)
+    plt.title('Full Audio')
+    plt.ylabel('Amplitude')
+    plt.xlabel('Time (seconds)')
     
     # Mark events on full audio
     for event in events:
-        axs[0].axvspan(event['start_time'], event['end_time'], 
-                      color='red', alpha=0.2)
+        plt.axvspan(event['start_time'], event['end_time'], 
+                   color='red', alpha=0.2)
     
-    # Plot individual events
-    for i, event in enumerate(events, 1):
-        event_time = np.linspace(0, event['duration_time'], 
-                               len(event['audio_data']))
-        axs[i].plot(event_time + event['start_time'], event['audio_data'])
-        axs[i].set_title(f'Event {i}: {event["start_time"]:.2f}s - {event["end_time"]:.2f}s')
-        axs[i].set_ylabel('Amplitude')
-    
-    axs[-1].set_xlabel('Time (seconds)')
+    plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.show()
 
 import json
 from datetime import datetime
+
+
+best_silence_detection_params = {'window_size': 2048,
+ 'threshold_multiplier': 1.5,
+ 'min_event_duration': 0.2,
+ 'merge_distance': 0.3}
 
 def save_events_metadata(events, original_filename, sftp, remote_dir):
     """
@@ -413,3 +416,253 @@ def save_events_metadata(events, original_filename, sftp, remote_dir):
         f.write(json_str)
     
     return remote_path
+
+
+
+def train_find_audio_events(sftp, remote_dir):
+    tests = {
+        "recording_20250404_011856.opus": {
+            "expected_events": 0
+        },
+        "recording_20250404_013557.opus": {
+            "expected_events": 0
+        },
+        "recording_20250404_011125.opus": {
+            "expected_events": 0
+        },
+        "recording_20250403_212804.opus": {
+            "min_events": 10  # Now works independently
+        },
+        "recording_20250403_212734.opus": {
+            "min_events": 8
+        },
+        "recording_20250405_010934.opus": {
+            "expected_events": 0
+        },
+        "recording_20250405_011034.opus": {
+            # Snort or something
+            "min_events": 1
+        },
+        'recording_20250404_220046.opus': {
+            # Blink sync
+            "min_events": 1
+        },
+        'recording_20250404_220116.opus': {
+            # Blink sync
+            "min_events": 3 # Arbitrary
+        },
+        'recording_20250402_022414.opus': {
+            # Weird glitch
+            "min_events": 1
+        },
+        'recording_20250402_022445.opus': {
+            # Weird glitch
+            "min_events": 1
+        },
+        'recording_20250402_022615': {
+            # Something!  Mayeb car at end
+            "min_events": 2
+        },
+        'recording_20250402_022645': {
+            # Maybe same car
+            "min_events": 1
+        },
+        'recording_20250402_023415': {
+            # Soemthing! and glitches
+            "min_events": 2
+        },
+        'recording_20250402_023445': {
+            # Soemthing! and glitches
+            "min_events": 2
+        },
+        
+        
+        
+    }
+    talking = [
+        'recording_20250401_210915.opus',
+        'recording_20250401_210945.opus'
+    ]
+    for t in talking:
+        tests[t] = {
+            "min_events": 3 # Arbitrary
+        }
+
+    silence = [
+        'recording_20250405_011104.opus'
+        ]
+    for s in silence:
+        tests[s] = {
+            "expected_events": 0
+        }
+    
+    # Parameter ranges to search
+    param_grid = {
+        "window_size": [512, 1024, 2048],
+        "threshold_multiplier": [1.2, 1.5, 1.8],
+        "min_event_duration": [0.05, 0.1, 0.2],
+        "merge_distance": [0.3, 0.5, 0.7]
+    }
+    
+    # Cache for audio data
+    audio_cache = {}
+    
+    # Load all audio files once
+    for filename in tests.keys():
+        if filename not in audio_cache:
+            copied = copy_audio_file(sftp, remote_dir, filename)
+            data_array, ogg, temp_filename = load_audio_as_ogg(copied.getvalue())
+            audio_cache[filename] = {
+                "data_array": data_array,
+                "sample_rate": ogg.frequency
+            }
+    
+    best_params = None
+    best_error = float('inf')
+    
+    # Try all parameter combinations
+    for window_size in param_grid["window_size"]:
+        for threshold in param_grid["threshold_multiplier"]:
+            for min_duration in param_grid["min_event_duration"]:
+                for merge_dist in param_grid["merge_distance"]:
+                    total_error = 0
+                    
+                    # Test current parameters on all test cases
+                    for filename, expected in tests.items():
+                        cached_audio = audio_cache[filename]
+                        
+                        events = find_audio_events(
+                            cached_audio["data_array"], 
+                            cached_audio["sample_rate"], 
+                            filename,
+                            window_size=window_size,
+                            threshold_multiplier=threshold,
+                            min_event_duration=min_duration,
+                            merge_distance=merge_dist
+                        )
+                        
+                        num_events = len(events)
+                        error = 0
+                        
+                        # Calculate error based on test requirements
+                        if "expected_events" in expected:
+                            # Exact number of events required
+                            error = abs(num_events - expected["expected_events"])
+                        
+                        if "expected_non_zero_events" in expected and num_events == 0:
+                            # Add error if we expect non-zero events but found none
+                            error += 1
+                            
+                        if "min_events" in expected and num_events < expected["min_events"]:
+                            # Add error for falling short of minimum events
+                            error += expected["min_events"] - num_events
+                        
+                        total_error += error
+                        
+                        # Early stopping if this parameter set isn't going to be better
+                        if total_error >= best_error:
+                            break
+                    
+                    # Update best parameters if current combination is better
+                    if total_error < best_error:
+                        best_error = total_error
+                        best_params = {
+                            "window_size": window_size,
+                            "threshold_multiplier": threshold,
+                            "min_event_duration": min_duration,
+                            "merge_distance": merge_dist
+                        }
+                        
+                        # If we found perfect parameters, stop searching
+                        if total_error == 0:
+                            print("Found perfect parameters!")
+                            print(best_params)
+                            print("\nEvents found in each file:")
+                            for filename, expected in tests.items():
+                                events = find_audio_events(
+                                    audio_cache[filename]["data_array"],
+                                    audio_cache[filename]["sample_rate"],
+                                    filename,
+                                    **best_params
+                                )
+                                print(f"{filename}: {len(events)} events")
+                                if "min_events" in expected:
+                                    print(f"  (minimum required: {expected['min_events']})")
+                            return best_params
+    
+    print("Best parameters found (but not perfect):")
+    print(best_params)
+    print(f"Total error: {best_error}")
+    
+    print("\nEvents found in each file:")
+    for filename, expected in tests.items():
+        events = find_audio_events(
+            audio_cache[filename]["data_array"],
+            audio_cache[filename]["sample_rate"],
+            filename,
+            **best_params
+        )
+        print(f"{filename}: {len(events)} events")
+        if "min_events" in expected:
+            print(f"  (minimum required: {expected['min_events']})")
+    
+    return best_params
+
+def play_audio_widget(data_array, ogg, duration=None):
+    """
+    Create an interactive audio player widget in Jupyter notebook
+    """
+    if duration:
+        samples = int(duration * ogg.frequency)
+        data_to_play = data_array[:samples]
+    else:
+        data_to_play = data_array
+    
+    # Convert to WAV in memory
+    wav_buffer = io.BytesIO()
+    sf.write(wav_buffer, data_to_play, ogg.frequency, 
+             format='WAV',
+             subtype='PCM_16')
+    wav_buffer.seek(0)
+    
+    # Create audio widget with WAV data
+    audio = Audio(data=wav_buffer.read(), 
+                 rate=ogg.frequency)
+    
+    # Create gain slider
+    gain_slider = widgets.FloatSlider(
+        value=1.0,
+        min=0.0,
+        max=5.0,
+        step=0.1,
+        description='Gain:',
+        continuous_update=False
+    )
+    
+    # Create output widget for the audio player
+    player_output = widgets.Output()
+    
+    def update_gain(change):
+        with player_output:
+            player_output.clear_output()
+            # Apply gain and maintain original dtype
+            adjusted_data = (data_to_play * change['new']).astype(data_to_play.dtype)
+            
+            # Convert to WAV
+            wav_buffer = io.BytesIO()
+            sf.write(wav_buffer, adjusted_data, ogg.frequency,
+                    format='WAV',
+                    subtype='PCM_16')
+            wav_buffer.seek(0)
+            
+            display(Audio(data=wav_buffer.read(), rate=ogg.frequency))
+    
+    gain_slider.observe(update_gain, names='value')
+    
+    # Display initial audio player
+    with player_output:
+        display(audio)
+    
+    # Stack widgets vertically
+    return widgets.VBox([gain_slider, player_output])
+
