@@ -5,6 +5,13 @@ import os
 import pandas as pd
 from dataclasses import dataclass
 import traceback
+import numpy as np
+from sklearn.cluster import KMeans
+from sklearn.mixture import GaussianMixture
+from sklearn.preprocessing import KBinsDiscretizer
+from sklearn.tree import DecisionTreeRegressor
+import matplotlib.pyplot as plt
+import seaborn as sns
 dotenv.load_dotenv()
 
 host = os.getenv('INFLUXDB_HOST')
@@ -2227,3 +2234,4 @@ def plot_pca_results(pca_results):
     
     plt.tight_layout()
     return fig
+

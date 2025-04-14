@@ -1,6 +1,22 @@
 import pandas as pd
+from IPython.display import display
+def require_no_missing_values(df, columns):
+    """
+    Check if a dataframe has missing values in specific columns.
+    
+    Args:
 
-def analyze_missing_values(day_data, columns):
+    Returns:
+        True if the dataframe has no missing values in the specified columns, False otherwise.
+    """
+    out = df[columns].isnull().sum().sum() == 0
+    if not out:
+        display(analyze_missing_values(df, columns))
+        raise ValueError(f"Missing values found in columns: {columns}")
+    return out
+
+
+def analyze_missing_values(df, columns):
     """
     Analyze missing values for specific columns in day_data, using dayAndNightOf for dates.
     
@@ -9,8 +25,8 @@ def analyze_missing_values(day_data, columns):
         columns: List of column names to analyze
     """
     # Check which columns exist in the dataframe
-    existing_cols = [col for col in columns if col in day_data.columns]
-    missing_cols = [col for col in columns if col not in day_data.columns]
+    existing_cols = [col for col in columns if col in df.columns]
+    missing_cols = [col for col in columns if col not in df.columns]
     
     if missing_cols:
         print("Columns not found in dataframe:")
@@ -19,8 +35,8 @@ def analyze_missing_values(day_data, columns):
         print()
     
     # Analyze missing values for existing columns
-    missing_stats = day_data[existing_cols].isnull().sum()
-    missing_pct = (day_data[existing_cols].isnull().sum() / len(day_data)) * 100
+    missing_stats = df[existing_cols].isnull().sum()
+    missing_pct = (df[existing_cols].isnull().sum() / len(df)) * 100
     
     # Get first and last dates with missing values for each column
     # first_missing = {}
@@ -37,10 +53,10 @@ def analyze_missing_values(day_data, columns):
     
     # Create summary DataFrame
     summary = pd.DataFrame({
-        'Present Count': day_data[existing_cols].count(),
+        'Present Count': df[existing_cols].count(),
         'Missing Count': missing_stats,
         'Missing %': missing_pct.round(1),
-        'Type': day_data[existing_cols].dtypes,
+        'Type': df[existing_cols].dtypes,
         # 'Sample': day_data[existing_cols].apply(lambda x: x.dropna().iloc[0] if not x.isnull().all() else None),
         # 'First Missing': pd.Series(first_missing),
         # 'Last Missing': pd.Series(last_missing)
