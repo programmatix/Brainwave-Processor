@@ -8,6 +8,206 @@ from mlxtend.preprocessing import TransactionEncoder
 from mlxtend.frequent_patterns import apriori, association_rules
 from datetime import datetime, timedelta
 
+def quantitative_associative_rule_mining(df, numeric_cols=None, categorical_cols=None, bins=5, min_support=0.1, min_confidence=0.5, min_lift=1.0):
+    """
+    Performs Quantitative Associative Rule Mining on circadian data.
+    
+    Quantitative ARM extends traditional association rule mining to handle 
+    numeric attributes by discretizing them into bins before mining rules.
+    
+    Parameters:
+    -----------
+    df : pandas DataFrame
+        The dataset containing both numeric and categorical variables
+    numeric_cols : list, default=None
+        List of numeric column names to include in the analysis
+        If None, all numeric columns will be used
+    categorical_cols : list, default=None
+        List of categorical column names to include in the analysis
+        If None, all object/category columns will be used
+    bins : int or dict, default=5
+        Number of bins for discretization or dictionary mapping column names to bin counts
+    min_support : float, default=0.1
+        Minimum support threshold for frequent itemsets
+    min_confidence : float, default=0.5
+        Minimum confidence threshold for rules
+    min_lift : float, default=1.0
+        Minimum lift threshold for rules
+    
+    Returns:
+    --------
+    tuple:
+        - discretized_df: The discretized dataframe
+        - frequent_itemsets: DataFrame of frequent itemsets
+        - rules: DataFrame of discovered rules
+        - rule_interpretations: List of human-readable rule interpretations
+    """
+    from mlxtend.frequent_patterns import apriori, association_rules
+    from mlxtend.preprocessing import TransactionEncoder
+    import pandas as pd
+    import numpy as np
+    
+    df_copy = df.copy()
+    
+    # Identify column types if not provided
+    if numeric_cols is None:
+        numeric_cols = df.select_dtypes(include=['int64', 'float64']).columns.tolist()
+    
+    if categorical_cols is None:
+        categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+    
+    print(f"Processing {len(numeric_cols)} numeric columns and {len(categorical_cols)} categorical columns")
+    
+    # Discretize numeric columns
+    discretized_df = df_copy.copy()
+    bin_labels = {}
+    
+    for col in numeric_cols:
+        if col not in df_copy.columns:
+            continue
+            
+        num_bins = bins[col] if isinstance(bins, dict) and col in bins else bins
+        
+        # Create readable bin labels
+        col_min = df_copy[col].min()
+        col_max = df_copy[col].max()
+        bin_edges = np.linspace(col_min, col_max, num_bins + 1)
+        
+        # Create human-readable labels for the bins
+        labels = [f"{col}_{i+1}" for i in range(num_bins)]
+        bin_labels[col] = {label: (bin_edges[i], bin_edges[i+1]) 
+                           for i, label in enumerate(labels)}
+        
+        # Discretize the column
+        discretized_df[col] = pd.cut(df_copy[col], bins=num_bins, labels=labels)
+    
+    # Convert categorical columns to string to ensure compatibility
+    for col in categorical_cols:
+        if col in df_copy.columns:
+            discretized_df[col] = discretized_df[col].astype(str)
+    
+    # Create transactions from discretized data
+    transactions = []
+    for _, row in discretized_df.iterrows():
+        transaction = []
+        for col in numeric_cols + categorical_cols:
+            if col in discretized_df.columns and not pd.isna(row[col]):
+                transaction.append(f"{col}={row[col]}")
+        transactions.append(transaction)
+    
+    # Extract frequent itemsets and rules
+    te = TransactionEncoder()
+    te_ary = te.fit_transform(transactions)
+    df_encoded = pd.DataFrame(te_ary, columns=te.columns_)
+    
+    print("Mining frequent itemsets...")
+    frequent_itemsets = apriori(df_encoded, min_support=min_support, use_colnames=True)
+    
+    print("Generating association rules...")
+    rules = association_rules(frequent_itemsets, metric="confidence", 
+                             min_threshold=min_confidence)
+    
+    # Filter by lift
+    rules = rules[rules['lift'] >= min_lift]
+    
+    # Sort by lift
+    rules = rules.sort_values('lift', ascending=False)
+    
+    # Create interpretable rule descriptions
+    rule_interpretations = []
+    for _, rule in rules.iterrows():
+        antecedents = list(rule['antecedents'])
+        consequents = list(rule['consequents'])
+        
+        # Make the rule more readable
+        antecedent_str = " AND ".join([str(item) for item in antecedents])
+        consequent_str = " AND ".join([str(item) for item in consequents])
+        
+        interpretation = (f"If {antecedent_str}, then {consequent_str} "
+                         f"(support={rule['support']:.3f}, "
+                         f"confidence={rule['confidence']:.3f}, "
+                         f"lift={rule['lift']:.3f})")
+        
+        rule_interpretations.append(interpretation)
+    
+    # Print top rules
+    print(f"\nFound {len(rules)} rules. Top 10 rules by lift:")
+    for i, interp in enumerate(rule_interpretations[:10]):
+        print(f"{i+1}. {interp}")
+    
+    return discretized_df, frequent_itemsets, rules, rule_interpretations
+
+def apply_qarm_to_circadian(df_lep, target_col='LEP:datetimeSSM'):
+    """
+    Apply Quantitative Associative Rule Mining to circadian data.
+    
+    Parameters:
+    -----------
+    df_lep : pandas DataFrame
+        DataFrame with circadian data
+    target_col : str, default='LEP:datetimeSSM'
+        Target column for analysis
+    
+    Returns:
+    --------
+    tuple:
+        - rules: DataFrame of discovered rules
+        - rule_interpretations: List of human-readable rule interpretations
+    """
+    # Prepare data - focus on numeric features 
+    df = df_lep.copy()
+    
+    # Create additional time-related features
+    if target_col in df.columns and pd.api.types.is_datetime64_any_dtype(df[target_col]):
+        df['LEP_hour'] = df[target_col].dt.hour + df[target_col].dt.minute/60
+        df['LEP_shift'] = df['LEP_hour'].diff().fillna(0)
+        
+        # Create LEP earliness/lateness features
+        median_lep = df['LEP_hour'].median()
+        df['LEP_earliness'] = np.maximum(0, median_lep - df['LEP_hour']) 
+        df['LEP_lateness'] = np.maximum(0, df['LEP_hour'] - median_lep)
+    
+    # Select relevant columns for QARM
+    time_cols = [col for col in df.columns if ':datetime' in col or ':time' in col]
+    numeric_cols = df.select_dtypes(include=['int64', 'float64']).columns.tolist()
+    
+    # Custom bin sizes for different feature types
+    bin_dict = {
+        'LEP_hour': 8,          # 3-hour chunks
+        'LEP_shift': 10,        # Finer granularity for shifts
+        'LEP_earliness': 6,     
+        'LEP_lateness': 6,
+        'steps:sum': 5,         # Activity level bins
+        'heartrate:mean': 5,    # Heart rate level bins
+    }
+    
+    # Apply quantitative ARM
+    _, frequent_itemsets, rules, rule_interpretations = quantitative_associative_rule_mining(
+        df,
+        numeric_cols=numeric_cols,
+        bins=bin_dict,
+        min_support=0.05,  
+        min_confidence=0.6,
+        min_lift=1.2
+    )
+    
+    # Analyze specific relationships for LEP shifts
+    lep_rules = rules[rules.apply(
+        lambda x: any('LEP_shift' in str(item) or 'LEP_hour' in str(item) 
+                     for item in list(x['antecedents']) + list(x['consequents'])), 
+        axis=1
+    )]
+    
+    print("\nRules related to LEP shifts:")
+    for i, rule in lep_rules.head(10).iterrows():
+        ant = " AND ".join([str(item) for item in list(rule['antecedents'])])
+        cons = " AND ".join([str(item) for item in list(rule['consequents'])])
+        print(f"Rule: {ant} → {cons}")
+        print(f"Support: {rule['support']:.3f}, Confidence: {rule['confidence']:.3f}, Lift: {rule['lift']:.3f}\n")
+    
+    return rules, rule_interpretations
+
+
 def apply_ripper_to_circadian(df_lep):
     """
     Apply RIPPER algorithm to discover rules in circadian data.
@@ -2720,6 +2920,10 @@ def bayesian_network(df, scoring_method='bic', highlight_nodes=None, target_focu
         - connections_df: DataFrame with details about all connections found
     """
     # Option 1: Score-based learning with Hill Climbing
+
+    # df = df.copy()
+    # df = df.replace(0, np.nan)
+
     hc = HillClimbSearch(df)
     if scoring_method == 'bic':
         score = BIC(df)
@@ -2728,7 +2932,15 @@ def bayesian_network(df, scoring_method='bic', highlight_nodes=None, target_focu
     elif scoring_method == 'bdeu':
         score = BDeu(df)
 
+    # set any 0 values to NaN
+
+    # constraints = [('shower:last', 'LEP:datetime')]
+
     best_model = hc.estimate(scoring_method=score)
+
+    # pc = PC(df)
+    # best_model = pc.estimate(significance_level=0.05)
+
     
     # Identify root nodes (nodes with no parents)
     root_nodes = {node for node in best_model.nodes() if not list(best_model.predecessors(node))}
