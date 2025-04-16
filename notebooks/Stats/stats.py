@@ -1266,9 +1266,3 @@ def compare_hard_vs_fuzzy_binning(original_series, n_bins=5, figsize=(15, 12)):
     return fig
 
 
-
-# replce ':' with '_' in column names
-df = df_lep.copy()
-df.columns = df.columns.str.replace(':', '_')
-X = df.drop(columns=['LEP_datetime'])
-y = df['LEP_datetime']

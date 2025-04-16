@@ -78,4 +78,50 @@ def analyze_missing_values(df, columns):
     
     return summary
 
+def analyze_negative_values(df, columns):
+    """
+    Analyze negative values for specific columns in a DataFrame.
+    
+    Args:
+        df: DataFrame containing the data
+        columns: List of column names to analyze
+    
+    Returns:
+        DataFrame with statistics about negative values
+    """
+    # Check which columns exist in the dataframe
+    existing_cols = [col for col in columns if col in df.columns]
+    missing_cols = [col for col in columns if col not in df.columns]
+    
+    if missing_cols:
+        print("Columns not found in dataframe:")
+        for col in missing_cols:
+            print(f"  - {col}")
+        print()
+    
+    # Filter to only numeric columns
+    numeric_cols = [col for col in existing_cols if pd.api.types.is_numeric_dtype(df[col])]
+    non_numeric_cols = [col for col in existing_cols if col not in numeric_cols]
+    
+    if non_numeric_cols:
+        print("Non-numeric columns that will be skipped:")
+        for col in non_numeric_cols:
+            print(f"  - {col}")
+        print()
+    
+    # Analyze negative values for existing numeric columns
+    negative_stats = {col: (df[col] < 0).sum() for col in numeric_cols}
+    negative_pct = {col: ((df[col] < 0).sum() / len(df)) * 100 for col in numeric_cols}
+    
+    # Create summary DataFrame
+    summary = pd.DataFrame({
+        'Total Count': df[numeric_cols].count(),
+        'Negative Count': pd.Series(negative_stats),
+        'Negative %': pd.Series(negative_pct).round(1),
+        'Type': df[numeric_cols].dtypes,
+        'Min Value': df[numeric_cols].min()
+    }).sort_values('Negative Count', ascending=False)
+    
+    return summary
+
 
