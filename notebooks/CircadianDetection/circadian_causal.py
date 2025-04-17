@@ -11,7 +11,6 @@ from torch.utils.data import DataLoader, TensorDataset
 from causallearn.search.ConstraintBased.CDNOD import cdnod
 from causallearn.search.FCMBased import lingam
 
-# Causal discovery libraries - wrapped in try-except to handle missing dependencies
 try:
     from causallearn.search.ConstraintBased.PC import pc
     from causallearn.search.ConstraintBased.FCI import fci
@@ -244,100 +243,44 @@ def run_ges_algorithm(data):
         print(f"Error running GES algorithm: {e}")
         return None, processed_data.columns.tolist()
 
-def run_fci_algorithm(data, feature_names, sig_level=0.05, max_cond_set_size=5, adjacency_matrix=None, apply_sparse_shifts=True):
+def run_fci_algorithm(data, alpha=0.05):
     """
-    Run the Fast Causal Inference (FCI) algorithm from the causallearn package.
+    Run the FCI (Fast Causal Inference) algorithm for causal discovery
     
     Parameters:
     -----------
     data : pd.DataFrame
-        The data to run the algorithm on
-    feature_names : list
-        List of feature names
-    sig_level : float, default=0.05
+        Data to analyze
+    alpha : float
         Significance level for conditional independence tests
-    max_cond_set_size : int, default=5
-        Maximum size of conditioning set for CI tests
-    adjacency_matrix : np.ndarray, default=None
-        Optional adjacency matrix to use as a prior knowledge graph
-    apply_sparse_shifts : bool, default=True
-        Whether to apply sparse shifts preprocessing for time series data
-    
+        
     Returns:
     --------
-    tuple
-        (graph, edges, feature_names) where graph is the FCI graph object
+    tuple:
+        - Causal graph from FCI algorithm
+        - Processed feature names
     """
+    if not CAUSAL_LEARN_AVAILABLE:
+        print("FCI algorithm not available. Skipping.")
+        return None, []
+    
+    # Preprocess data to avoid singular correlation matrix
+    processed_data, removed_cols = preprocess_for_causal_discovery(data)
+    if len(removed_cols) > 0:
+        print(f"Removed {len(removed_cols)} problematic columns for FCI algorithm")
+    
+    # Standardize the data
+    scaler = StandardScaler()
+    scaled_data = scaler.fit_transform(processed_data)
+    
     try:
-        from causallearn.search.ConstraintBased.FCI import fci
-        import numpy as np
-        from causallearn.utils.PCUtils.BackgroundKnowledge import BackgroundKnowledge
-        
-        print(f"Running FCI algorithm with sig_level={sig_level}, max_cond_set={max_cond_set_size}")
-        
-        # Make a copy of the data to avoid modifying the original
-        data_array = data.copy().values
-        
-        # If we're dealing with time series, apply sparse shifts preprocessing
-        if apply_sparse_shifts:
-            # Simple preprocessing for time series: 
-            # Create differences (returns) to approximate non-stationarity shifts
-            try:
-                # Apply differencing - more robust against non-stationary data
-                diff_data = np.diff(data_array, axis=0)
-                # Append a row of zeros at beginning to maintain shape
-                data_array = np.vstack([np.zeros((1, data_array.shape[1])), diff_data])
-                print(f"Applied differencing for time series. Shape: {data_array.shape}")
-            except Exception as e:
-                print(f"Error applying differencing: {e}")
-        
-        # For numerical stability, check for zero variance
-        variances = np.var(data_array, axis=0)
-        if any(variances < 1e-10):
-            print("Warning: Some features have near-zero variance. Adding small noise.")
-            # Add small noise to variables with zero variance
-            for i in range(data_array.shape[1]):
-                if variances[i] < 1e-10:
-                    data_array[:, i] += np.random.normal(0, 1e-5, size=data_array.shape[0])
-        
-        # Create background knowledge if adjacency matrix is provided
-        background_knowledge = None
-        if adjacency_matrix is not None:
-            background_knowledge = BackgroundKnowledge()
-            for i in range(adjacency_matrix.shape[0]):
-                for j in range(adjacency_matrix.shape[1]):
-                    if adjacency_matrix[i, j] == 1:  # i -> j
-                        background_knowledge.add_required_by_knowledge(str(i), str(j))
-                    elif adjacency_matrix[i, j] == -1:  # i -/-> j (forbidden)
-                        background_knowledge.add_forbidden_by_knowledge(str(i), str(j))
-            print(f"Added background knowledge constraints")
-            
         # Run FCI algorithm
-        try:
-            fci_graph = fci(data_array, 
-                          alpha=sig_level, 
-                          depth=max_cond_set_size,
-                          background_knowledge=background_knowledge)
-            
-            # Get edges from FCI graph
-            edges = fci_graph.G.get_graph_edges()
-            
-            # Create a more detailed description of the graph
-            num_nodes = fci_graph.G.get_num_nodes()
-            num_edges = len(edges)
-            print(f"FCI graph has {num_nodes} nodes and {num_edges} edges")
-            
-            # Export the graph as a graphviz dot object for later visualization
-            # Note: We don't create the NetworkX graph here because plot_causal_graph
-            # will handle that with the complete set of feature names
-            
-            return (fci_graph, edges, feature_names)
-        except Exception as e:
-            print(f"Error running FCI algorithm: {e}")
-            return None
-    except ImportError:
-        print("causallearn package not found. Install with: pip install causallearn")
-        return None
+        print("Running FCI algorithm...")
+        cg, edges = fci(scaled_data, alpha=alpha, indep_test='fisherz')
+        return cg, edges, processed_data.columns.tolist()
+    except ValueError as e:
+        print(f"Error running FCI algorithm: {e}")
+        return None, processed_data.columns.tolist()
 
 def run_cd_nod_algorithm(data, c_indx):
     """
@@ -497,7 +440,7 @@ def run_var_lingam_algorithm(data, lags=1):
         print(f"Error running VAR-LiNGAM algorithm: {e}")
         return None, processed_data.columns.tolist()
 
-def run_rcd_algorithm(data):
+def run_rcd_algorithm(data, **kwargs):
     """
     Run the RCD (Recursive Causal Discovery) algorithm
     
@@ -524,7 +467,7 @@ def run_rcd_algorithm(data):
     try:
         # Run RCD algorithm from CDT
         print("Running RCD algorithm...")
-        model =  lingam.RCD()
+        model =  lingam.RCD(**kwargs)
         skeleton = model.fit(processed_data)
         return skeleton, processed_data.columns.tolist()
     except Exception as e:
@@ -566,6 +509,7 @@ def run_cam_uv_algorithm(data):
         print(f"Error running CAM-UV algorithm: {e}")
         return None, processed_data.columns.tolist()
 
+# Needs R...
 def run_anm_algorithm(data):
     """
     Run the ANM (Additive Noise Model) algorithm for pairwise causal discovery
@@ -604,6 +548,7 @@ def run_anm_algorithm(data):
         print(f"Error running ANM algorithm: {e}")
         return None, processed_data.columns.tolist()
 
+# Needs R...
 def run_pnl_algorithm(data):
     """
     Run the PNL (Post-Nonlinear causal model) algorithm for pairwise causal discovery
@@ -928,184 +873,216 @@ def plot_causal_graph(graph_tuple, title='Causal Graph', highlight_nodes=None, t
     nx_graph = nx.DiGraph()
     is_directed = True
     
-    # Add nodes - make sure to add all nodes from feature_names
-    for i, name in enumerate(feature_names):
-        nx_graph.add_node(name)
-    
-    # Handle FCI-specific graph and edges
-    if is_fci:
-        print("Processing FCI algorithm output with explicit edges")
-        from causallearn.graph.Endpoint import Endpoint
-        
-        # Map endpoint types to strings
-        def endpoint_to_str(endpoint):
-            if endpoint == Endpoint.TAIL:
-                return "-"
-            elif endpoint == Endpoint.ARROW:
-                return ">"
-            elif endpoint == Endpoint.CIRCLE:
-                return "o"
-            else:
-                return "?"
-        
-        # Check if node names include "X" prefixes from causallearn
-        first_node_name = edges[0].get_node1().get_name() if edges else None
-        use_direct_names = (isinstance(first_node_name, str) and first_node_name.startswith('X'))
-        
-        # Create a mapping from X-names to feature names
-        node_name_mapping = {}
-        if use_direct_names:
-            print("Mapping FCI node names to feature names")
-            
-            # Create a new NetworkX graph with feature names
-            nx_graph = nx.DiGraph()
-            
-            # Add all nodes from feature_names
-            for name in feature_names:
-                nx_graph.add_node(name)
-            
-            # Create mapping from X names to feature names
-            # Extract number from 'X1', 'X2', etc. and map to corresponding feature
-            for edge in edges:
-                for node in [edge.get_node1(), edge.get_node2()]:
-                    x_name = node.get_name()
-                    if x_name not in node_name_mapping:
-                        try:
-                            # Extract index from 'X1', 'X2', etc. (convert to 0-based)
-                            index = int(x_name.replace('X', '')) - 1
-                            if 0 <= index < len(feature_names):
-                                node_name_mapping[x_name] = feature_names[index]
-                            else:
-                                # Use original name if index out of bounds
-                                node_name_mapping[x_name] = x_name
-                        except ValueError:
-                            # Use original name if conversion fails
-                            node_name_mapping[x_name] = x_name
-            
-            print(f"Node mapping: {node_name_mapping}")
-        
-        for edge in edges:
-            try:
-                # Get edge endpoints
-                node1 = edge.get_node1().get_name()
-                node2 = edge.get_node2().get_name()
-                
-                # Get edge type using proper conversion
-                endpoint1 = endpoint_to_str(edge.get_endpoint1())
-                endpoint2 = endpoint_to_str(edge.get_endpoint2())
-                edge_type = endpoint1 + endpoint2
-                
-                # Map nodes to feature names
-                if use_direct_names:
-                    source = node_name_mapping.get(node1, node1)
-                    target = node_name_mapping.get(node2, node2)
-                else:
-                    # Try to convert node names to indices
-                    try:
-                        source = feature_names[int(node1)]
-                        target = feature_names[int(node2)]
-                    except (ValueError, IndexError):
-                        # If conversion fails, use as is
-                        source = node1
-                        target = node2
-                
-                # Handle different edge types
-                if edge_type == "->":  # Directed edge
-                    nx_graph.add_edge(source, target, style='solid')
-                elif edge_type == "<-":  # Directed edge (opposite)
-                    nx_graph.add_edge(target, source, style='solid')
-                elif edge_type == "--":  # Undirected edge
-                    nx_graph.add_edge(source, target, style='dashed')
-                    nx_graph.add_edge(target, source, style='dashed')
-                elif edge_type == "o-":  # Partially directed edge
-                    nx_graph.add_edge(target, source, style='dotted')
-                elif edge_type == "-o":  # Partially directed edge
-                    nx_graph.add_edge(source, target, style='dotted')
-                elif edge_type == "o>":  # Partially directed edge
-                    nx_graph.add_edge(target, source, style='dashed_arrow')
-                elif edge_type == "<o":  # Partially directed edge
-                    nx_graph.add_edge(source, target, style='dashed_arrow')
-                elif edge_type == "oo":  # Unknown direction
-                    nx_graph.add_edge(source, target, style='dotted')
-                    nx_graph.add_edge(target, source, style='dotted')
-                else:
-                    # Default edge type
-                    nx_graph.add_edge(source, target, style='solid')
-                    
-                print(f"Added edge: {source} {edge_type} {target}")
-            except Exception as e:
-                print(f"Error processing edge: {e}")
-                try:
-                    print(f"Edge details: {edge.get_node1().get_name()} to {edge.get_node2().get_name()}, "
-                          f"endpoints: {edge.get_endpoint1()} {edge.get_endpoint2()}")
-                except:
-                    print("Could not print edge details")
-    
-    # Handle NetworkX skeleton graph from PC algorithm
-    elif hasattr(graph, 'nx_skel') and graph.nx_skel is not None:
-        print("Using nx_skel from PC algorithm result")
-        original_nx_graph = graph.nx_skel
-        is_directed = isinstance(original_nx_graph, nx.DiGraph)
-        print(f"Graph is {'directed' if is_directed else 'undirected'}")
-        
-        # Relabel nodes with feature names if needed
-        if len(original_nx_graph.nodes()) == len(feature_names):
-            # Check if already labeled
-            if not isinstance(list(original_nx_graph.nodes())[0], str):
-                mapping = {i: name for i, name in enumerate(feature_names)}
-                original_nx_graph = nx.relabel_nodes(original_nx_graph, mapping)
-        
-        # Copy all edges to our new graph
-        for u, v, data in original_nx_graph.edges(data=True):
-            nx_graph.add_edge(u, v, **data)
-    
-    # Try different approaches to extract edges for other algorithms
-    elif hasattr(graph, 'G'):
-        # For PC algorithm
-        try:
-            if hasattr(graph.G, 'edges'):
-                print(f"Graph has 'edges' attribute with {len(list(graph.G.edges()))} edges")
-                for u, v, data in graph.G.edges(data=True):
-                    edge_type = data.get('type', 'directed')
-                    if edge_type == 'directed':
-                        nx_graph.add_edge(feature_names[u], feature_names[v])
-                    else:
-                        nx_graph.add_edge(feature_names[u], feature_names[v], style='dashed')
-                        nx_graph.add_edge(feature_names[v], feature_names[u], style='dashed')
-        except Exception as e:
-            print(f"Error processing PC graph: {e}")
-    elif hasattr(graph, 'graph'):
-        # For GES
-        try:
-            # Inspect the graph structure
-            print(f"GES Graph type: {type(graph.graph)}")
-            
-            # Try to get nonzero elements safely
-            if hasattr(graph.graph, 'shape'):
-                nonzero_indices = np.where(graph.graph != 0)
-                if len(nonzero_indices) >= 2:
-                    for i, j in zip(nonzero_indices[0], nonzero_indices[1]):
-                        if i < j:  # Avoid duplicated edges
-                            edge_type = graph.graph[i, j]
-                            if edge_type == 1:  # i -> j
-                                nx_graph.add_edge(feature_names[i], feature_names[j])
-                            elif edge_type == 2:  # i <- j
-                                nx_graph.add_edge(feature_names[j], feature_names[i])
-                            elif edge_type == 3:  # i -- j (undirected)
-                                nx_graph.add_edge(feature_names[i], feature_names[j], style='dashed')
-                                nx_graph.add_edge(feature_names[j], feature_names[i], style='dashed')
-        except Exception as e:
-            print(f"Error processing GES graph: {e}")
-    elif isinstance(graph, nx.Graph):
-        # Direct NetworkX graph
-        print("Using direct NetworkX graph")
+    # If graph is already a NetworkX graph, use it directly
+    if isinstance(graph, nx.Graph):
+        print(f"Using existing NetworkX graph with {len(graph.nodes())} nodes and {len(graph.edges())} edges")
+        nx_graph = graph
         is_directed = isinstance(graph, nx.DiGraph)
         
-        # Copy all edges to our new graph
-        for u, v, data in graph.edges(data=True):
-            nx_graph.add_edge(u, v, **data)
-    else:
-        print(f"Unknown graph type. Graph attributes: {dir(graph)}")
+        # Verify node labels match feature names
+        if len(feature_names) > 0 and not set(graph.nodes()).issubset(set(feature_names)):
+            print("Node labels don't match feature names, applying mapping...")
+            # Try to map numerical nodes to feature names
+            if all(isinstance(node, int) or (isinstance(node, str) and node.isdigit()) for node in graph.nodes()):
+                node_mapping = {int(node): feature_names[int(node)] if int(node) < len(feature_names) else f"Node_{node}" 
+                               for node in graph.nodes()}
+                nx_graph = nx.relabel_nodes(graph, node_mapping)
+    
+    # If nx_graph is empty, try other approaches
+    elif len(nx_graph.nodes()) == 0:
+        # Add nodes from feature_names if not already added
+        for name in feature_names:
+            nx_graph.add_node(name)
+        
+        # Handle FCI-specific graph and edges
+        if is_fci:
+            print("Processing FCI algorithm output with explicit edges")
+            from causallearn.graph.Endpoint import Endpoint
+            
+            # Map endpoint types to strings
+            def endpoint_to_str(endpoint):
+                if endpoint == Endpoint.TAIL:
+                    return "-"
+                elif endpoint == Endpoint.ARROW:
+                    return ">"
+                elif endpoint == Endpoint.CIRCLE:
+                    return "o"
+                else:
+                    return "?"
+            
+            # Check if node names include "X" prefixes from causallearn
+            first_node_name = edges[0].get_node1().get_name() if edges else None
+            use_direct_names = (isinstance(first_node_name, str) and first_node_name.startswith('X'))
+            
+            # Create a mapping from X-names to feature names
+            node_name_mapping = {}
+            if use_direct_names:
+                print("Mapping FCI node names to feature names")
+                
+                # Create a new NetworkX graph with feature names
+                nx_graph = nx.DiGraph()
+                
+                # Add all nodes from feature_names
+                for name in feature_names:
+                    nx_graph.add_node(name)
+                
+                # Create mapping from X names to feature names
+                # Extract number from 'X1', 'X2', etc. and map to corresponding feature
+                for edge in edges:
+                    for node in [edge.get_node1(), edge.get_node2()]:
+                        x_name = node.get_name()
+                        if x_name not in node_name_mapping:
+                            try:
+                                # Extract index from 'X1', 'X2', etc. (convert to 0-based)
+                                index = int(x_name.replace('X', '')) - 1
+                                if 0 <= index < len(feature_names):
+                                    node_name_mapping[x_name] = feature_names[index]
+                                else:
+                                    # Use original name if index out of bounds
+                                    node_name_mapping[x_name] = x_name
+                            except ValueError:
+                                # Use original name if conversion fails
+                                node_name_mapping[x_name] = x_name
+                
+                print(f"Node mapping: {node_name_mapping}")
+            
+            for edge in edges:
+                try:
+                    # Get edge endpoints
+                    node1 = edge.get_node1().get_name()
+                    node2 = edge.get_node2().get_name()
+                    
+                    # Get edge type using proper conversion
+                    endpoint1 = endpoint_to_str(edge.get_endpoint1())
+                    endpoint2 = endpoint_to_str(edge.get_endpoint2())
+                    edge_type = endpoint1 + endpoint2
+                    
+                    # Map nodes to feature names
+                    if use_direct_names:
+                        source = node_name_mapping.get(node1, node1)
+                        target = node_name_mapping.get(node2, node2)
+                    else:
+                        # Try to convert node names to indices
+                        try:
+                            source = feature_names[int(node1)]
+                            target = feature_names[int(node2)]
+                        except (ValueError, IndexError):
+                            # If conversion fails, use as is
+                            source = node1
+                            target = node2
+                    
+                    # Handle different edge types
+                    if edge_type == "->":  # Directed edge
+                        nx_graph.add_edge(source, target, style='solid')
+                    elif edge_type == "<-":  # Directed edge (opposite)
+                        nx_graph.add_edge(target, source, style='solid')
+                    elif edge_type == "--":  # Undirected edge
+                        nx_graph.add_edge(source, target, style='dashed')
+                        nx_graph.add_edge(target, source, style='dashed')
+                    elif edge_type == "o-":  # Partially directed edge
+                        nx_graph.add_edge(target, source, style='dotted')
+                    elif edge_type == "-o":  # Partially directed edge
+                        nx_graph.add_edge(source, target, style='dotted')
+                    elif edge_type == "o>":  # Partially directed edge
+                        nx_graph.add_edge(target, source, style='dashed_arrow')
+                    elif edge_type == "<o":  # Partially directed edge
+                        nx_graph.add_edge(source, target, style='dashed_arrow')
+                    elif edge_type == "oo":  # Unknown direction
+                        nx_graph.add_edge(source, target, style='dotted')
+                        nx_graph.add_edge(target, source, style='dotted')
+                    else:
+                        # Default edge type
+                        nx_graph.add_edge(source, target, style='solid')
+                        
+                    print(f"Added edge: {source} {edge_type} {target}")
+                except Exception as e:
+                    print(f"Error processing edge: {e}")
+                    try:
+                        print(f"Edge details: {edge.get_node1().get_name()} to {edge.get_node2().get_name()}, "
+                            f"endpoints: {edge.get_endpoint1()} {edge.get_endpoint2()}")
+                    except:
+                        print("Could not print edge details")
+        
+        # Handle NetworkX skeleton graph from PC algorithm
+        elif hasattr(graph, 'nx_skel') and graph.nx_skel is not None:
+            print("Using nx_skel from PC algorithm result")
+            original_nx_graph = graph.nx_skel
+            is_directed = isinstance(original_nx_graph, nx.DiGraph)
+            print(f"Graph is {'directed' if is_directed else 'undirected'}")
+            
+            # Relabel nodes with feature names if needed
+            if len(original_nx_graph.nodes()) == len(feature_names):
+                # Check if already labeled
+                if not isinstance(list(original_nx_graph.nodes())[0], str):
+                    mapping = {i: name for i, name in enumerate(feature_names)}
+                    original_nx_graph = nx.relabel_nodes(original_nx_graph, mapping)
+            
+            # Copy all edges to our new graph
+            for u, v, data in original_nx_graph.edges(data=True):
+                nx_graph.add_edge(u, v, **data)
+        
+        # Try different approaches to extract edges for other algorithms
+        elif hasattr(graph, 'G'):
+            # For PC algorithm
+            try:
+                if hasattr(graph.G, 'edges'):
+                    print(f"Graph has 'edges' attribute with {len(list(graph.G.edges()))} edges")
+                    for u, v, data in graph.G.edges(data=True):
+                        edge_type = data.get('type', 'directed')
+                        if edge_type == 'directed':
+                            nx_graph.add_edge(feature_names[u], feature_names[v])
+                        else:
+                            nx_graph.add_edge(feature_names[u], feature_names[v], style='dashed')
+                            nx_graph.add_edge(feature_names[v], feature_names[u], style='dashed')
+            except Exception as e:
+                print(f"Error processing PC graph: {e}")
+        elif hasattr(graph, 'graph'):
+            # For GES
+            try:
+                # Inspect the graph structure
+                print(f"GES Graph type: {type(graph.graph)}")
+                
+                # Check if it's a dictionary
+                if isinstance(graph.graph, dict):
+                    print("Processing GES graph in dictionary format")
+                    for node1 in graph.graph:
+                        for node2 in graph.graph[node1]:
+                            edge_type = graph.graph[node1][node2]
+                            if edge_type > 0:  # Some kind of edge exists
+                                nx_graph.add_edge(feature_names[int(node1)], feature_names[int(node2)])
+                
+                # Try to get nonzero elements safely from array
+                elif hasattr(graph.graph, 'shape'):
+                    nonzero_indices = np.where(graph.graph != 0)
+                    if len(nonzero_indices) >= 2:
+                        for i, j in zip(nonzero_indices[0], nonzero_indices[1]):
+                            if i < j:  # Avoid duplicated edges
+                                edge_type = graph.graph[i, j]
+                                if edge_type == 1:  # i -> j
+                                    nx_graph.add_edge(feature_names[i], feature_names[j])
+                                elif edge_type == 2:  # i <- j
+                                    nx_graph.add_edge(feature_names[j], feature_names[i])
+                                elif edge_type == 3:  # i -- j (undirected)
+                                    nx_graph.add_edge(feature_names[i], feature_names[j], style='dashed')
+                                    nx_graph.add_edge(feature_names[j], feature_names[i], style='dashed')
+            except Exception as e:
+                print(f"Error processing GES graph: {e}")
+        elif hasattr(graph, 'adjacency_matrix_'):
+            # For LiNGAM models
+            print("Processing model with adjacency_matrix_ attribute (LiNGAM)")
+            B = graph.adjacency_matrix_
+            
+            for i in range(B.shape[0]):
+                for j in range(B.shape[1]):
+                    if B[i, j] != 0:
+                        try:
+                            nx_graph.add_edge(feature_names[i], feature_names[j], weight=B[i, j])
+                        except IndexError:
+                            print(f"Index error adding edge {i} -> {j}. Feature names length: {len(feature_names)}")
+        else:
+            print(f"Unknown graph type. Graph attributes: {dir(graph)}")
+    
+    print(f"Final graph has {len(nx_graph.nodes())} nodes and {len(nx_graph.edges())} edges")
     
     # Calculate correlation between connected nodes
     correlations = {}
@@ -1317,7 +1294,7 @@ def plot_causal_graph(graph_tuple, title='Causal Graph', highlight_nodes=None, t
                 # Draw edges with varying width and color based on strength
                 if is_directed:
                     nx.draw_networkx_edges(nx_graph, pos, 
-                                        edges=edges,
+                                        edgelist=edges,
                                         arrowsize=20, 
                                         edge_color=edge_colors,
                                         width=edge_widths,
