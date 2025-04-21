@@ -1,6 +1,5 @@
 **/papermill_out
 **/*.pyc
-**/*.ipynb
 **/*.ipynb_checkpoints
 **/__pycache__
 *.pyc
