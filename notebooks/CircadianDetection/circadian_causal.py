@@ -16,7 +16,9 @@ try:
     from causallearn.search.ConstraintBased.FCI import fci
     from causallearn.search.ScoreBased.GES import ges
     from causallearn.search.FCMBased.lingam import DirectLiNGAM
-    #from causallearn.search.PermutationBased.GRaSP import GRaSP
+    from causallearn.search.PermutationBased.GRaSP import grasp
+    from causallearn.search.PermutationBased.BOSS import boss
+
     from causallearn.utils.cit import fisherz, mv_fisherz
     CAUSAL_LEARN_AVAILABLE = True
 except ImportError:
@@ -510,6 +512,8 @@ def run_cam_uv_algorithm(data):
         return None, processed_data.columns.tolist()
 
 # Needs R...
+# And giant PITA even then due to  package 'RCIT' is not available for this version of R
+# Note that it's just doing PC anyway and then using ANM to identify the direction of the edges
 def run_anm_algorithm(data):
     """
     Run the ANM (Additive Noise Model) algorithm for pairwise causal discovery
@@ -587,7 +591,7 @@ def run_pnl_algorithm(data):
         print(f"Error running PNL algorithm: {e}")
         return None, processed_data.columns.tolist()
 
-def run_grasp_algorithm(data):
+def run_grasp_algorithm(data, **kwargs):
     """
     Run the GRaSP (Greedy relaxation of Sparsest Permutation) algorithm
     
@@ -618,13 +622,13 @@ def run_grasp_algorithm(data):
         
         # Run GRaSP algorithm
         print("Running GRaSP algorithm...")
-        cg = GRaSP(scaled_data)
+        cg = grasp(scaled_data, **kwargs)
         return cg, processed_data.columns.tolist()
     except Exception as e:
         print(f"Error running GRaSP algorithm: {e}")
         return None, processed_data.columns.tolist()
 
-def run_boss_algorithm(data):
+def run_boss_algorithm(data, **kwargs):
     """
     Run the BOSS (Best Order Score Search) algorithm
     
@@ -651,9 +655,8 @@ def run_boss_algorithm(data):
     try:
         # Run BOSS algorithm from CDT
         print("Running BOSS algorithm...")
-        model = cdt.causality.graph.BOSS()
-        skeleton = model.predict(processed_data)
-        return skeleton, processed_data.columns.tolist()
+        model = boss(processed_data, **kwargs)
+        return model, processed_data.columns.tolist()
     except Exception as e:
         print(f"Error running BOSS algorithm: {e}")
         return None, processed_data.columns.tolist()
