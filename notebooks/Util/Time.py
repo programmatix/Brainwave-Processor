@@ -32,3 +32,11 @@ def convert_cols_to_hours(df):
     return df
 
 
+
+def convert_col_name(col_name):
+    if 'SSM' in col_name:
+        return col_name.replace('SSM', '')
+    elif 'Secs' in col_name:
+        return col_name.replace('Secs', '')
+    else:
+        return col_name

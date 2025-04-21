@@ -10,7 +10,7 @@ from sklearn.svm import SVR
 from sklearn.neighbors import KNeighborsRegressor
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import mean_squared_error, r2_score, mutual_info_score
+from sklearn.metrics import mean_squared_error, r2_score, mutual_info_score, mean_absolute_error
 from sklearn.feature_selection import mutual_info_regression
 from sklearn.model_selection import KFold, cross_val_score
 from sklearn.cluster import KMeans, DBSCAN
@@ -21,6 +21,8 @@ from matplotlib.colors import ListedColormap, BoundaryNorm
 import matplotlib.gridspec as gridspec
 from matplotlib.patches import Patch
 from matplotlib.patches import Ellipse
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import silhouette_score
 
 # Set a seed for reproducibility
 np.random.seed(42)
@@ -310,9 +312,9 @@ def find_optimal_threshold(X, y, threshold_range=None, step=0.1):
     
     return best_threshold, results_df
 
-def fit_decision_tree_regressor(df, shower_var, lep_var, max_depth=3, find_subsets=True, remove_outliers=True, outlier_method='influence'):
-    X = df[shower_var].values.reshape(-1, 1)
-    y = df[lep_var].values
+def fit_decision_tree_regressor(df, feat1, feat2, max_depth=3, find_subsets=True, remove_outliers=True, outlier_method='influence'):
+    X = df[feat1].values.reshape(-1, 1)
+    y = df[feat2].values
     
     # Define model factory function for consistent model creation
     def dt_factory(X_train, y_train):
@@ -345,22 +347,6 @@ def fit_decision_tree_regressor(df, shower_var, lep_var, max_depth=3, find_subse
         'rmse': np.sqrt(mean_squared_error(y_filtered, y_pred_filtered))
     }
     
-    # Get decision rules
-    tree_text = export_text(model, feature_names=[shower_var])
-    print("Decision Tree Rules:")
-    print(tree_text)
-    
-    # Visualize the decision tree
-    plt.figure(figsize=(20, 10))
-    plot_tree(model, filled=True, feature_names=[shower_var], rounded=True, fontsize=12)
-    plt.title(f"Decision Tree (max_depth={max_depth})")
-    plt.tight_layout()
-    plt.show()
-    
-    # Create prediction grid for smooth curve
-    x_new = create_prediction_grid(X.ravel())
-    y_new = model.predict(x_new)
-    
     # Extract the decision thresholds from the tree
     thresholds = []
     tree = model.tree_
@@ -370,44 +356,204 @@ def fit_decision_tree_regressor(df, shower_var, lep_var, max_depth=3, find_subse
             if tree.feature[i] == 0:  # Only if it's our feature
                 thresholds.append(threshold)
     
-    # Plot predictions with errors highlighted and outliers marked
-    fig, ax = plt.subplots(figsize=(10, 6))
+    # Create prediction grid for smooth curve
+    x_new = create_prediction_grid(X.ravel())
+    y_new = model.predict(x_new)
     
-    # First plot removed outliers in grey
-    if not np.all(outlier_mask):
-        ax.scatter(X[~outlier_mask], y[~outlier_mask], color='grey', alpha=0.5, 
-                  label=f'Outliers ({np.sum(~outlier_mask)} points)')
-    
-    # Plot kept points with color based on error
-    scatter = ax.scatter(X_filtered, y_filtered, c=errors_filtered, cmap='YlOrRd', 
-                       norm=plt.Normalize(vmin=0, vmax=errors_filtered.max()),
-                       s=50, edgecolors='k', zorder=3)
-    
-    # Plot the model prediction curve
-    ax.plot(x_new, y_new, color='red', linewidth=2, label='Predicted relationship')
-    
-    # Add vertical lines for decision boundaries
-    y_range = ax.get_ylim()
-    for threshold in sorted(thresholds):
-        ax.axvline(x=threshold, color='green', linestyle='--', alpha=0.7)
-        ax.text(threshold, y_range[0] + 0.05 * (y_range[1] - y_range[0]), 
-                f"{threshold:.2f}", rotation=90, color='green', fontweight='bold',
-                verticalalignment='bottom')
-    
-    plt.colorbar(scatter, ax=ax, label='Prediction Error')
-    ax.set_title(f"Decision Tree Regression\nR² = {metrics['r2']:.4f}, RMSE = {metrics['rmse']:.4f}")
-    ax.set_xlabel('Shower Time')
-    ax.set_ylabel('LEP Time')
-    ax.legend()
-    plt.tight_layout()
-    plt.show()
+    # Print decision tree rules
+    tree_text = export_text(model, feature_names=[feat1])
+    print("Decision Tree Rules:")
+    print(tree_text)
     
     # Find optimal data subsets if requested
     best_subset = None
+    subset_results = None
     if find_subsets:
         # Use only the filtered data for subset discovery
         df_filtered = df.iloc[np.where(outlier_mask)[0]]
-        best_subset = find_optimal_data_subsets(df_filtered, shower_var, lep_var, dt_factory, "Decision Tree")
+        subset_results = find_optimal_data_subsets(df_filtered, feat1, feat2, dt_factory, 
+                                                   f"Decision Tree (max_depth={max_depth})", use_2d_clustering=True)
+    
+    # --- Combined Plotting with Tree Visualization ---
+    # Create a 1x3 grid: [Tree | Prediction+Clusters | Performance]
+    fig = plt.figure(figsize=(22, 8))
+    gs = gridspec.GridSpec(1, 3, width_ratios=[1, 1.5, 1])  # Tree, Prediction, Performance
+    
+    # Panel 1 (Left): Tree Visualization
+    ax_tree = fig.add_subplot(gs[0])
+    plot_tree(model, filled=True, feature_names=[feat1], rounded=True, 
+              ax=ax_tree, fontsize=10, proportion=True)
+    ax_tree.set_title(f"Decision Tree (max_depth={max_depth})", fontsize=14)
+    
+    # Panel 2 (Middle): Prediction Plot with Clusters
+    ax_pred = fig.add_subplot(gs[1])
+    
+    # Plot common elements - prediction line, outliers, decision boundaries
+    if not np.all(outlier_mask):
+        ax_pred.scatter(X[~outlier_mask], y[~outlier_mask], color='grey', alpha=0.4, s=30,
+                      label=f'Outliers ({np.sum(~outlier_mask)} points)')
+    
+    # Plot the model prediction curve
+    ax_pred.plot(x_new, y_new, color='red', linewidth=2.5, label='Decision Tree Prediction', zorder=10)
+    
+    # Add vertical lines for decision boundaries to Prediction Panel
+    y_range = ax_pred.get_ylim()
+    for threshold in sorted(thresholds):
+        ax_pred.axvline(x=threshold, color='green', linestyle='--', alpha=0.7, zorder=8)
+        ax_pred.text(threshold, y_range[0] + 0.05 * (y_range[1] - y_range[0]), 
+                   f"{threshold:.2f}", rotation=90, color='green', fontweight='bold',
+                   verticalalignment='bottom')
+    
+    # Plot specific content based on subset_results
+    if subset_results:
+        # --- Plotting for Combined View ---
+        gmm_labels = subset_results['gmm_labels']
+        gmm_probs = subset_results['gmm_probs']
+        actual_n_clusters = subset_results['n_clusters']
+        distinct_colors = plt.cm.tab10(np.linspace(0, 1, actual_n_clusters))
+        
+        # Blend colors for scatter plot
+        blended_colors = np.zeros((len(X_filtered), 3))
+        if gmm_probs.shape[1] == actual_n_clusters:
+            rgb_colors = distinct_colors[:, :3]
+            blended_colors = gmm_probs @ rgb_colors
+        else:
+            print(f"Warning: Mismatch between GMM probability columns ({gmm_probs.shape[1]}) and reported clusters ({actual_n_clusters}). Using discrete assignments.")
+            gmm_all_labels = subset_results['gmm_labels']
+            unique_labels = sorted(np.unique(gmm_all_labels))
+            label_map = {label: i for i, label in enumerate(unique_labels)}
+            mapped_labels = np.array([label_map[l] for l in gmm_all_labels])
+            safe_labels = np.clip(mapped_labels, 0, actual_n_clusters - 1)
+            blended_colors = distinct_colors[safe_labels][:, :3]
+        
+        # Plot filtered points colored by cluster
+        ax_pred.scatter(X_filtered, y_filtered, c=blended_colors, 
+                      s=60, edgecolors='k', alpha=0.8, zorder=5,
+                      label='Filtered Data (colored by GMM Cluster)')
+        
+        # Draw GMM ellipses/means
+        if subset_results['use_2d_clustering']:
+            means = subset_results['gmm_means']
+            covariances = subset_results['gmm_covariances']
+            gmm_components_used_for_cov = subset_results.get('gmm_covariances_', covariances)
+            for j in range(actual_n_clusters):
+                mean = means[j]
+                if j < len(gmm_components_used_for_cov):
+                    covar = gmm_components_used_for_cov[j]
+                    if np.all(np.linalg.eigvalsh(covar) > 1e-6):
+                        try:
+                            v, w = np.linalg.eigh(covar)
+                            angle = np.arctan2(w[1, 0], w[0, 0])
+                            angle = 180 * angle / np.pi
+                            v = 2.0 * np.sqrt(2.0) * np.sqrt(v)
+                            ell = Ellipse(xy=(mean[0], mean[1]), width=v[0], height=v[1], angle=angle,
+                                        color=distinct_colors[j], alpha=0.25, zorder=1)
+                            ax_pred.add_artist(ell)
+                            ax_pred.scatter(mean[0], mean[1], marker='X', s=100, c=[distinct_colors[j]], edgecolors='black', zorder=11)
+                        except np.linalg.LinAlgError:
+                            print(f"Warning: Could not draw ellipse for cluster {j}.")
+                            ax_pred.scatter(mean[0], mean[1], marker='X', s=100, c=[distinct_colors[j]], edgecolors='black', zorder=11)
+                    else:
+                        print(f"Warning: Skipping ellipse for cluster {j} due to non-positive definite covariance.")
+                        ax_pred.scatter(mean[0], mean[1], marker='X', s=100, c=[distinct_colors[j]], edgecolors='black', zorder=11)
+                else:
+                    print(f"Warning: Covariance data not found for cluster index {j}.")
+                    ax_pred.scatter(mean[0], mean[1], marker='X', s=100, c=[distinct_colors[j]], edgecolors='black', zorder=11)
+        else: # 1D clustering
+            means = subset_results['gmm_means']
+            for j in range(actual_n_clusters):
+                mean_x = means[j][0]
+                ax_pred.axvline(x=mean_x, color=distinct_colors[j], linestyle='--', alpha=0.7, linewidth=2, zorder=1)
+                ax_pred.text(mean_x, ax_pred.get_ylim()[1] * 0.95, f' C{j}', color=distinct_colors[j], ha='center', va='top', fontweight='bold')
+        
+        # Add combined legend for ax_pred
+        handles, labels = ax_pred.get_legend_handles_labels()
+        cluster_metrics_list = subset_results.get('cluster_metrics', [])
+        legend_elements = []
+        if cluster_metrics_list:
+            legend_elements = [Patch(facecolor=distinct_colors[i], edgecolor='black', alpha=0.6,
+                                   label=f"Cluster {cluster_metrics_list[i]['label']} (n={cluster_metrics_list[i]['size']})") 
+                             for i in range(min(actual_n_clusters, len(cluster_metrics_list)))]
+        
+        ax_pred.legend(handles=handles + legend_elements, loc='best', fontsize='small')
+        
+        # Panel 3 (Right): Cluster Performance Bar Chart
+        ax_bars = fig.add_subplot(gs[2])
+        cluster_metrics = subset_results['cluster_metrics']
+        if cluster_metrics:
+            cluster_labels = [f"C{m['label']}\n(n={m['size']})" for m in cluster_metrics]
+            cv_r2 = [m['cv_r2'] for m in cluster_metrics]
+            spearman_rho = [m['spearman_rho'] for m in cluster_metrics]
+            spearman_p = [m['spearman_p'] for m in cluster_metrics]
+            x = np.arange(len(cluster_labels))
+            width = 0.25
+            bar_colors = distinct_colors[:len(cluster_labels)]
+            
+            rects1 = ax_bars.bar(x - width, cv_r2, width, label='CV R²', color=bar_colors)
+            rects2 = ax_bars.bar(x, spearman_rho, width, label='Spearman ρ', color=[(c[0], c[1], c[2], 0.7) for c in bar_colors])
+            rects3 = ax_bars.bar(x + width, spearman_p, width, label='Spearman p', color=[(c[0], c[1], c[2], 0.4) for c in bar_colors])
+            
+            ax_bars.set_ylabel('Score / p-value')
+            ax_bars.set_title(f"Cluster Performance Metrics", fontsize=14)
+            ax_bars.set_xticks(x)
+            ax_bars.set_xticklabels(cluster_labels)
+            ax_bars.legend(fontsize='small')
+            ax_bars.axhline(0, color='grey', linewidth=0.8)
+            
+            # Dynamic Y limits
+            min_val = min([min(cv_r2, default=0), min(spearman_rho, default=0)])
+            max_val = max([max(cv_r2, default=0), max(spearman_rho, default=0), max(spearman_p, default=0)])
+            ax_bars.set_ylim(min(min_val * 1.1 if min_val < 0 else -0.1, -0.1),
+                           max(1.05, max_val * 1.1 if max_val > 0 else 0.1))
+            
+            # Add bar labels
+            def add_bar_labels(bars, format_str="{:.2f}"):
+                for bar in bars:
+                    height = bar.get_height()
+                    if not np.isnan(height):
+                        ax_bars.annotate(format_str.format(height),
+                                      xy=(bar.get_x() + bar.get_width() / 2, height),
+                                      xytext=(0, 3 if height >= 0 else -12),
+                                      textcoords="offset points",
+                                      ha='center', va='bottom' if height >= 0 else 'top', fontsize=8)
+            
+            add_bar_labels(rects1)
+            add_bar_labels(rects2)
+            add_bar_labels(rects3, format_str="{:.3f}")
+            ax_bars.grid(True, axis='y', linestyle='--', alpha=0.6)
+        else:
+            # If no cluster metrics, use this space to show error distribution
+            ax_bars.text(0.5, 0.5, "No cluster metrics available", 
+                       ha='center', va='center', fontsize=12,
+                       transform=ax_bars.transAxes)
+            ax_bars.set_title("Error Distribution", fontsize=14)
+    
+    else:
+        # --- Plotting for Simple View (No Subset Analysis) ---
+        ax_pred.scatter(X_filtered, y_filtered, color='blue', alpha=0.6, s=50, edgecolors='k',
+                      label='Filtered Data', zorder=5)
+        
+        # Use the third panel for something relevant even without clustering
+        ax_bars = fig.add_subplot(gs[2])
+        ax_bars.hist(errors_filtered, bins=15, color='skyblue', edgecolor='black')
+        ax_bars.set_title('Prediction Error Distribution', fontsize=14)
+        ax_bars.set_xlabel('Absolute Error')
+        ax_bars.set_ylabel('Frequency')
+        ax_bars.grid(True, linestyle='--', alpha=0.4)
+        
+        # Add legend to prediction plot
+        ax_pred.legend(loc='best', fontsize='small')
+    
+    # Common settings for prediction plot
+    ax_pred.set_title(f"Decision Tree (R²={metrics['r2']:.3f}, RMSE={metrics['rmse']:.3f})", fontsize=14)
+    ax_pred.set_xlabel(feat1, fontsize=12)
+    ax_pred.set_ylabel(feat2, fontsize=12)
+    ax_pred.grid(True, linestyle='--', alpha=0.6)
+    
+    # Final figure adjustments
+    fig.suptitle(f"Decision Tree Analysis (max_depth={max_depth})", fontsize=16)
+    fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.show()
     
     print(f"Decision Tree Regression Results:")
     print(f"R² score: {metrics['r2']:.4f}")
@@ -415,11 +561,11 @@ def fit_decision_tree_regressor(df, shower_var, lep_var, max_depth=3, find_subse
     if not np.all(outlier_mask):
         print(f"Outliers removed: {np.sum(~outlier_mask)} points ({np.sum(~outlier_mask)/len(X)*100:.1f}%)")
     
-    return model, metrics, best_subset, {'mask': outlier_mask, 'scores': outlier_scores}
+    return model, metrics, subset_results, {'mask': outlier_mask, 'scores': outlier_scores}
 
-def fit_gaussian_process_regressor(df, shower_var, lep_var, find_subsets=True, remove_outliers=True, outlier_method='influence'):
-    X = df[shower_var].values.reshape(-1, 1)
-    y = df[lep_var].values
+def fit_gaussian_process_regressor(df, feat1, feat2, find_subsets=True, remove_outliers=True, outlier_method='influence'):
+    X = df[feat1].values.reshape(-1, 1)
+    y = df[feat2].values
     
     scaler_X = StandardScaler()
     X_scaled = scaler_X.fit_transform(X)
@@ -520,34 +666,9 @@ def fit_gaussian_process_regressor(df, shower_var, lep_var, find_subsets=True, r
     print(f"Best Gaussian Process Kernel: {best_kernel_name}")
     print(f"Optimized kernel parameters: {model.kernel_}")
     
-    # Plot predictions with uncertainties
-    fig, ax = plt.subplots(figsize=(10, 6))
-    
-    # First plot removed outliers in grey
-    if not np.all(outlier_mask):
-        ax.scatter(X[~outlier_mask], y[~outlier_mask], color='grey', alpha=0.5, 
-                  label=f'Outliers ({np.sum(~outlier_mask)} points)')
-    
-    # Plot the prediction curve with uncertainty
-    ax.plot(x_new, y_new, color='red', linewidth=2, label='Predicted relationship')
-    ax.fill_between(x_new.ravel(), y_new - 2*y_std, y_new + 2*y_std, 
-                   color='red', alpha=0.2, label='Uncertainty (±2σ)')
-    
-    # Plot kept points with color based on error
-    scatter = ax.scatter(X_filtered, y_filtered, c=errors_filtered, cmap='YlOrRd', 
-                       norm=plt.Normalize(vmin=0, vmax=errors_filtered.max()),
-                       s=50, edgecolors='k', zorder=3)
-    
-    plt.colorbar(scatter, ax=ax, label='Prediction Error')
-    ax.set_title(f"Gaussian Process Regression ({best_kernel_name})\nR² = {metrics['r2']:.4f}, RMSE = {metrics['rmse']:.4f}")
-    ax.set_xlabel('Shower Time')
-    ax.set_ylabel('LEP Time')
-    ax.legend()
-    plt.tight_layout()
-    plt.show()
-    
     # Find optimal data subsets if requested
     best_subset = None
+    subset_results = None
     if find_subsets:
         # Use only the filtered data for subset discovery
         df_filtered = df.iloc[np.where(outlier_mask)[0]]
@@ -581,24 +702,193 @@ def fit_gaussian_process_regressor(df, shower_var, lep_var, find_subsets=True, r
                     self.scaler = scaler
                 
                 def predict(self, X):
+                    if X.ndim == 1:
+                        X = X.reshape(-1, 1)
                     X_scaled = self.scaler.transform(X)
                     return self.gp.predict(X_scaled)
             
             return GPWrapper(gp, scaler)
             
-        best_subset = find_optimal_data_subsets(df_filtered, shower_var, lep_var, gp_subset_factory, "Gaussian Process")
+        subset_results = find_optimal_data_subsets(df_filtered, feat1, feat2, gp_subset_factory, 
+                                                  f"Gaussian Process ({best_kernel_name})", use_2d_clustering=True)
     
-    print(f"Gaussian Process Regression Results (Kernel: {best_kernel_name}):")
+    # --- Combined Plotting ---
+    # Always create figure and axes using gridspec initially
+    fig = plt.figure(figsize=(12, 16))
+    gs = gridspec.GridSpec(2, 1, height_ratios=[3, 1])
+    ax_pred = fig.add_subplot(gs[0])
+    ax_bars = fig.add_subplot(gs[1])
+    
+    # Plot 1 (ax_pred): Common elements - prediction line, uncertainty, outliers
+    if not np.all(outlier_mask):
+        ax_pred.scatter(X[~outlier_mask], y[~outlier_mask], color='grey', alpha=0.4, s=30,
+                      label=f'Outliers ({np.sum(~outlier_mask)} points)')
+    
+    # Plot prediction line with uncertainty bands
+    ax_pred.plot(x_new, y_new, color='red', linewidth=2.5, label='GP Prediction', zorder=10)
+    ax_pred.fill_between(x_new.ravel(), y_new - 2*y_std, y_new + 2*y_std, 
+                       color='red', alpha=0.2, label='Uncertainty (±2σ)', zorder=9)
+    
+    # Plot specific content based on subset_results
+    if subset_results:
+        # --- Plotting for Combined View ---
+        gmm_labels = subset_results['gmm_labels']
+        gmm_probs = subset_results['gmm_probs']
+        actual_n_clusters = subset_results['n_clusters']
+        distinct_colors = plt.cm.tab10(np.linspace(0, 1, actual_n_clusters))
+        
+        # Blend colors for scatter plot
+        blended_colors = np.zeros((len(X_filtered), 3))
+        if gmm_probs.shape[1] == actual_n_clusters:
+            rgb_colors = distinct_colors[:, :3]
+            blended_colors = gmm_probs @ rgb_colors
+        else:
+            print(f"Warning: Mismatch between GMM probability columns ({gmm_probs.shape[1]}) and reported clusters ({actual_n_clusters}). Using discrete assignments.")
+            gmm_all_labels = subset_results['gmm_labels']
+            unique_labels = sorted(np.unique(gmm_all_labels))
+            label_map = {label: i for i, label in enumerate(unique_labels)}
+            mapped_labels = np.array([label_map[l] for l in gmm_all_labels])
+            safe_labels = np.clip(mapped_labels, 0, actual_n_clusters - 1)
+            blended_colors = distinct_colors[safe_labels][:, :3]
+        
+        # Plot filtered points colored by cluster
+        ax_pred.scatter(X_filtered, y_filtered, c=blended_colors, 
+                      s=60, edgecolors='k', alpha=0.8, zorder=5,
+                      label='Filtered Data (colored by GMM Cluster)')
+        
+        # Draw GMM ellipses/means
+        if subset_results['use_2d_clustering']:
+            means = subset_results['gmm_means']
+            covariances = subset_results['gmm_covariances']
+            gmm_components_used_for_cov = subset_results.get('gmm_covariances_', covariances)
+            for j in range(actual_n_clusters):
+                mean = means[j]
+                if j < len(gmm_components_used_for_cov):
+                    covar = gmm_components_used_for_cov[j]
+                    if np.all(np.linalg.eigvalsh(covar) > 1e-6):
+                        try:
+                            v, w = np.linalg.eigh(covar)
+                            angle = np.arctan2(w[1, 0], w[0, 0])
+                            angle = 180 * angle / np.pi
+                            v = 2.0 * np.sqrt(2.0) * np.sqrt(v)
+                            ell = Ellipse(xy=(mean[0], mean[1]), width=v[0], height=v[1], angle=angle,
+                                        color=distinct_colors[j], alpha=0.25, zorder=1)
+                            ax_pred.add_artist(ell)
+                            ax_pred.scatter(mean[0], mean[1], marker='X', s=100, c=[distinct_colors[j]], edgecolors='black', zorder=11)
+                        except np.linalg.LinAlgError:
+                            print(f"Warning: Could not draw ellipse for cluster {j}.")
+                            ax_pred.scatter(mean[0], mean[1], marker='X', s=100, c=[distinct_colors[j]], edgecolors='black', zorder=11)
+                    else:
+                        print(f"Warning: Skipping ellipse for cluster {j} due to non-positive definite covariance.")
+                        ax_pred.scatter(mean[0], mean[1], marker='X', s=100, c=[distinct_colors[j]], edgecolors='black', zorder=11)
+                else:
+                    print(f"Warning: Covariance data not found for cluster index {j}.")
+                    ax_pred.scatter(mean[0], mean[1], marker='X', s=100, c=[distinct_colors[j]], edgecolors='black', zorder=11)
+        else: # 1D clustering
+            means = subset_results['gmm_means']
+            for j in range(actual_n_clusters):
+                mean_x = means[j][0]
+                ax_pred.axvline(x=mean_x, color=distinct_colors[j], linestyle='--', alpha=0.7, linewidth=2, zorder=1)
+                ax_pred.text(mean_x, ax_pred.get_ylim()[1] * 0.95, f' C{j}', color=distinct_colors[j], ha='center', va='top', fontweight='bold')
+        
+        # Add combined legend for ax_pred
+        handles, labels = ax_pred.get_legend_handles_labels()
+        cluster_metrics_list = subset_results.get('cluster_metrics', [])
+        legend_elements = []
+        if cluster_metrics_list:
+            legend_elements = [Patch(facecolor=distinct_colors[i], edgecolor='black', alpha=0.6,
+                                   label=f"Cluster {cluster_metrics_list[i]['label']} (n={cluster_metrics_list[i]['size']})") 
+                             for i in range(min(actual_n_clusters, len(cluster_metrics_list)))]
+        
+        ax_pred.legend(handles=handles + legend_elements, loc='best', fontsize='small')
+        ax_pred.set_title(f"Overall Fit (R²={metrics['r2']:.3f}, RMSE={metrics['rmse']:.3f}) & GMM Clusters", fontsize=14)
+        
+        # Plot 2 (ax_bars): Cluster Performance Bar Chart
+        cluster_metrics = subset_results['cluster_metrics']
+        if cluster_metrics:
+            cluster_labels = [f"C{m['label']}\n(n={m['size']})" for m in cluster_metrics]
+            cv_r2 = [m['cv_r2'] for m in cluster_metrics]
+            spearman_rho = [m['spearman_rho'] for m in cluster_metrics]
+            spearman_p = [m['spearman_p'] for m in cluster_metrics]
+            x = np.arange(len(cluster_labels))
+            width = 0.25
+            bar_colors = distinct_colors[:len(cluster_labels)]
+            
+            rects1 = ax_bars.bar(x - width, cv_r2, width, label='CV R²', color=bar_colors)
+            rects2 = ax_bars.bar(x, spearman_rho, width, label='Spearman ρ', color=[(c[0], c[1], c[2], 0.7) for c in bar_colors])
+            rects3 = ax_bars.bar(x + width, spearman_p, width, label='Spearman p', color=[(c[0], c[1], c[2], 0.4) for c in bar_colors])
+            
+            ax_bars.set_ylabel('Score / p-value')
+            ax_bars.set_title(f"{subset_results['model_name']} Performance within GMM Clusters", fontsize=14)
+            ax_bars.set_xticks(x)
+            ax_bars.set_xticklabels(cluster_labels)
+            ax_bars.legend(fontsize='small')
+            ax_bars.axhline(0, color='grey', linewidth=0.8)
+            
+            # Dynamic Y limits
+            min_val = min([min(cv_r2, default=0), min(spearman_rho, default=0)])
+            max_val = max([max(cv_r2, default=0), max(spearman_rho, default=0), max(spearman_p, default=0)])
+            ax_bars.set_ylim(min(min_val * 1.1 if min_val < 0 else -0.1, -0.1),
+                           max(1.05, max_val * 1.1 if max_val > 0 else 0.1))
+            
+            # Add bar labels
+            def add_bar_labels(bars, format_str="{:.2f}"):
+                for bar in bars:
+                    height = bar.get_height()
+                    if not np.isnan(height):
+                        ax_bars.annotate(format_str.format(height),
+                                      xy=(bar.get_x() + bar.get_width() / 2, height),
+                                      xytext=(0, 3 if height >= 0 else -12),
+                                      textcoords="offset points",
+                                      ha='center', va='bottom' if height >= 0 else 'top', fontsize=8)
+            
+            add_bar_labels(rects1)
+            add_bar_labels(rects2)
+            add_bar_labels(rects3, format_str="{:.3f}")
+            ax_bars.grid(True, axis='y', linestyle='--', alpha=0.6)
+        else:
+            ax_bars.set_visible(False)
+            print("No cluster metrics available to plot performance bars.")
+        
+        # Set overall figure title
+        fig.suptitle(f"Gaussian Process Regression ({best_kernel_name}) Analysis", fontsize=16, y=0.98)
+    
+    else:
+        # --- Plotting for Simple View (No Subset Analysis) ---
+        ax_pred.scatter(X_filtered, y_filtered, color='blue', alpha=0.6, s=50, edgecolors='k',
+                      label='Filtered Data', zorder=5)
+        ax_pred.legend(loc='best', fontsize='small')
+        ax_pred.set_title(f"Gaussian Process Regression ({best_kernel_name})\nOverall Fit (R²={metrics['r2']:.3f}, RMSE={metrics['rmse']:.3f})", fontsize=14)
+        # Hide the second subplot
+        ax_bars.set_visible(False)
+    
+    # Configure ax_pred general settings
+    ax_pred.set_xlabel(feat1, fontsize=12)
+    ax_pred.set_ylabel(feat2, fontsize=12)
+    ax_pred.grid(True, linestyle='--', alpha=0.6)
+    
+    # Final adjustments and display
+    if not ax_bars.get_visible():
+        # Resize figure for single plot view
+        fig.set_size_inches(10, 7)
+        fig.tight_layout()
+    else:
+        # Adjust layout for combined view with suptitle
+        fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+    
+    plt.show()
+    
+    print(f"\nGaussian Process Regression Results (Kernel: {best_kernel_name}):")
     print(f"R² score: {metrics['r2']:.4f}")
     print(f"RMSE: {metrics['rmse']:.4f}")
     if not np.all(outlier_mask):
         print(f"Outliers removed: {np.sum(~outlier_mask)} points ({np.sum(~outlier_mask)/len(X)*100:.1f}%)")
     
-    return model, scaler_X, metrics, best_subset, {'mask': outlier_mask, 'scores': outlier_scores}
+    return model, scaler_X, metrics, subset_results, {'mask': outlier_mask, 'scores': outlier_scores}
 
-def fit_svr(df, shower_var, lep_var, find_subsets=True, remove_outliers=True, outlier_method='influence'):
-    X = df[shower_var].values.reshape(-1, 1)
-    y = df[lep_var].values
+def fit_svr(df, feat1, feat2, find_subsets=True, remove_outliers=True, outlier_method='influence'):
+    X = df[[feat1]].values
+    y = df[feat2].values
     
     scaler_X = StandardScaler()
     X_scaled = scaler_X.fit_transform(X)
@@ -623,6 +913,8 @@ def fit_svr(df, shower_var, lep_var, find_subsets=True, remove_outliers=True, ou
                 self.scaler = scaler
             
             def predict(self, X):
+                if X.ndim == 1:
+                    X = X.reshape(-1, 1)
                 X_scaled = self.scaler.transform(X)
                 return self.svr.predict(X_scaled)
         
@@ -670,7 +962,9 @@ def fit_svr(df, shower_var, lep_var, find_subsets=True, remove_outliers=True, ou
     
     metrics = {
         'r2': r2_score(y_filtered, y_pred_filtered),
-        'rmse': np.sqrt(mean_squared_error(y_filtered, y_pred_filtered))
+        'rmse': np.sqrt(mean_squared_error(y_filtered, y_pred_filtered)),
+        'mae': mean_absolute_error(y_filtered, y_pred_filtered),
+        'mse': mean_squared_error(y_filtered, y_pred_filtered)
     }
     
     # Create prediction grid for smooth curve
@@ -678,69 +972,238 @@ def fit_svr(df, shower_var, lep_var, find_subsets=True, remove_outliers=True, ou
     x_new_scaled = scaler_X.transform(x_new)
     y_new = model.predict(x_new_scaled)
     
-    # Plot predictions with errors highlighted
-    fig, ax = plt.subplots(figsize=(10, 6))
-    
-    # First plot removed outliers in grey
-    if not np.all(outlier_mask):
-        ax.scatter(X[~outlier_mask], y[~outlier_mask], color='grey', alpha=0.5, 
-                  label=f'Outliers ({np.sum(~outlier_mask)} points)')
-    
-    # Plot the prediction curve
-    ax.plot(x_new, y_new, color='red', linewidth=2, label='Predicted relationship')
-    
-    # Plot kept points with color based on error
-    scatter = ax.scatter(X_filtered, y_filtered, c=errors_filtered, cmap='YlOrRd', 
-                       norm=plt.Normalize(vmin=0, vmax=errors_filtered.max()),
-                       s=50, edgecolors='k', zorder=3)
-    
-    plt.colorbar(scatter, ax=ax, label='Prediction Error')
-    ax.set_title(f"Support Vector Regression ({kernel}, C={C})\nR² = {metrics['r2']:.4f}, RMSE = {metrics['rmse']:.4f}")
-    ax.set_xlabel('Shower Time')
-    ax.set_ylabel('LEP Time')
-    ax.legend()
-    plt.tight_layout()
-    plt.show()
-    
-    # Find optimal data subsets if requested
     best_subset = None
+    subset_results = None
+    cluster_models = {}
+    
     if find_subsets:
         # Use only the filtered data for subset discovery
         df_filtered = df.iloc[np.where(outlier_mask)[0]]
         
         # Create a model factory for SVR with best parameters
         def svr_subset_factory(X_train, y_train):
-            scaler = StandardScaler()
-            X_train_scaled = scaler.fit_transform(X_train)
+            # Need to handle scaling within the factory if the main model used scaling
+            scaler_subset = StandardScaler()
+            X_train_scaled = scaler_subset.fit_transform(X_train)
             
             svr_model = SVR(kernel=kernel, C=C)
             svr_model.fit(X_train_scaled, y_train)
             
-            # Create a wrapper that handles scaling internally
+            # Create a wrapper that handles scaling internally for prediction
             class SVRWrapper:
                 def __init__(self, svr, scaler):
                     self.svr = svr
                     self.scaler = scaler
                 
                 def predict(self, X):
+                    # Ensure X is 2D before scaling
+                    if X.ndim == 1:
+                        X = X.reshape(-1, 1)
                     X_scaled = self.scaler.transform(X)
                     return self.svr.predict(X_scaled)
             
-            return SVRWrapper(svr_model, scaler)
+            return SVRWrapper(svr_model, scaler_subset)
             
-        best_subset = find_optimal_data_subsets(df_filtered, shower_var, lep_var, svr_subset_factory, "SVR")
-    
-    print(f"SVR Results (kernel={kernel}, C={C}):")
-    print(f"R² score: {metrics['r2']:.4f}")
-    print(f"RMSE: {metrics['rmse']:.4f}")
-    if not np.all(outlier_mask):
-        print(f"Outliers removed: {np.sum(~outlier_mask)} points ({np.sum(~outlier_mask)/len(X)*100:.1f}%)")
-    
-    return model, scaler_X, metrics, best_subset, {'mask': outlier_mask, 'scores': outlier_scores}
+        subset_results = find_optimal_data_subsets(
+            df_filtered, feat1, feat2, svr_subset_factory, 
+            f"SVR ({kernel}, C={C})", use_2d_clustering=True
+        )
+        
+        if subset_results:
+            # Create a best subset dataframe with cluster assignments
+            best_subset = df_filtered.copy()
+            best_subset['cluster'] = subset_results['gmm_labels']
+            
+            # Create models for each cluster
+            if 'cluster_metrics' in subset_results and subset_results['cluster_metrics']:
+                for cluster_info in subset_results['cluster_metrics']:
+                    cluster_id = cluster_info['label']
+                    cluster_mask = best_subset['cluster'] == cluster_id
+                    
+                    if np.sum(cluster_mask) >= 5:  # Only create models for clusters with sufficient data
+                        cluster_X = best_subset.loc[cluster_mask, feat1].values.reshape(-1, 1)
+                        cluster_y = best_subset.loc[cluster_mask, feat2].values
+                        cluster_models[cluster_id] = svr_subset_factory(cluster_X, cluster_y)
 
-def fit_knn_regressor(df, shower_var, lep_var, find_subsets=True):
-    X = df[shower_var].values.reshape(-1, 1)
-    y = df[lep_var].values
+    # Create main visualization figure
+    fig, axes = plt.subplots(1, 2, figsize=(18, 7))
+    
+    # Plot the main model on the first axis
+    plot_regression_relationship(
+        model_name=f"SVR ({kernel}, C={C})", 
+        X=X_filtered, 
+        y=y_filtered, 
+        y_pred=y_pred_filtered,
+        x_new=x_new,
+        y_new=y_new,
+        ax=axes[0],
+        metrics=metrics
+    )
+    
+    # Plot per-cluster models on the second axis if available
+    if find_subsets and best_subset is not None:
+        subset_X = best_subset[feat1].values.reshape(-1, 1)
+        subset_y = best_subset[feat2].values
+        
+        if cluster_models:
+            axes[1].set_title(f"SVR (Per-Cluster Models)")
+            
+            # First plot the global model as a red line
+            axes[1].plot(x_new, y_new, color='red', linewidth=2.5, label='Global Model', zorder=10)
+            
+            colors = plt.cm.tab10(np.linspace(0, 1, 10))
+            for cluster_id, cluster_data in best_subset.groupby('cluster'):
+                cluster_X = cluster_data[feat1].values.reshape(-1, 1)
+                cluster_y = cluster_data[feat2].values
+                cluster_model = cluster_models.get(cluster_id)
+                
+                if cluster_model:
+                    cluster_y_pred = cluster_model.predict(cluster_X)
+                    
+                    axes[1].scatter(cluster_X, cluster_y, alpha=0.6, 
+                                   color=colors[cluster_id % len(colors)], 
+                                   label=f"Cluster {cluster_id}")
+                    
+                    x_sorted = np.sort(cluster_X, axis=0)
+                    y_pred_sorted = cluster_model.predict(x_sorted)
+                    
+                    axes[1].plot(x_sorted, y_pred_sorted, '--', 
+                                color=colors[cluster_id % len(colors)], 
+                                linewidth=2)
+                    
+                    cluster_r2 = r2_score(cluster_y, cluster_y_pred)
+                    cluster_rmse = np.sqrt(mean_squared_error(cluster_y, cluster_y_pred))
+                    
+                    handles, labels = axes[1].get_legend_handles_labels()
+                    labels = [f"{label} (R²={cluster_r2:.2f}, RMSE={cluster_rmse:.2f})" 
+                             if label == f"Cluster {cluster_id}" else label 
+                             for label in labels]
+                    axes[1].legend(handles, labels)
+            
+            # Create separate figure for cluster performance metrics
+            if 'cluster_metrics' in subset_results and subset_results['cluster_metrics']:
+                fig_metrics, ax_bars = plt.subplots(figsize=(12, 6))
+                
+                cluster_metrics = subset_results['cluster_metrics']
+                cluster_labels = [f"C{m['label']}\n(n={m['size']})" for m in cluster_metrics]
+                cv_r2 = [m['cv_r2'] for m in cluster_metrics]
+                spearman_rho = [m['spearman_rho'] for m in cluster_metrics]
+                spearman_p = [m['spearman_p'] for m in cluster_metrics]
+                mi_values = [m.get('mi', 0) for m in cluster_metrics]  # Add MI values
+                
+                x = np.arange(len(cluster_labels))
+                width = 0.2  # Make bars narrower to fit 4 bars
+                bar_colors = plt.cm.tab10(np.linspace(0, 1, 10))[:len(cluster_labels)]
+                
+                rects1 = ax_bars.bar(x - 1.5*width, cv_r2, width, label='CV R²', color=bar_colors)
+                rects2 = ax_bars.bar(x - 0.5*width, spearman_rho, width, label='Spearman ρ', 
+                                    color=[(c[0], c[1], c[2], 0.7) for c in bar_colors])
+                rects3 = ax_bars.bar(x + 0.5*width, spearman_p, width, label='Spearman p', 
+                                    color=[(c[0], c[1], c[2], 0.4) for c in bar_colors])
+                rects4 = ax_bars.bar(x + 1.5*width, mi_values, width, label='Mutual Info', 
+                                    color=[(c[0], c[1], c[2], 0.9) for c in bar_colors])
+                
+                ax_bars.set_ylabel('Score / p-value / MI')
+                ax_bars.set_title(f"SVR Performance within Clusters", fontsize=14)
+                ax_bars.set_xticks(x)
+                ax_bars.set_xticklabels(cluster_labels)
+                ax_bars.legend(fontsize='small')
+                ax_bars.axhline(0, color='grey', linewidth=0.8)
+                
+                # Dynamic Y limits
+                all_values = cv_r2 + spearman_rho + mi_values
+                min_val = min([min(all_values, default=0), min(spearman_p, default=0)])
+                max_val = max([max(all_values, default=0), max(spearman_p, default=0)])
+                ax_bars.set_ylim(min(min_val * 1.1 if min_val < 0 else -0.1, -0.1),
+                               max(1.05, max_val * 1.1 if max_val > 0 else 0.1))
+                
+                # Add bar labels
+                def add_bar_labels(bars, format_str="{:.2f}"):
+                    for bar in bars:
+                        height = bar.get_height()
+                        if not np.isnan(height):
+                            ax_bars.annotate(format_str.format(height),
+                                          xy=(bar.get_x() + bar.get_width() / 2, height),
+                                          xytext=(0, 3 if height >= 0 else -12),
+                                          textcoords="offset points",
+                                          ha='center', va='bottom' if height >= 0 else 'top', fontsize=8)
+                
+                add_bar_labels(rects1)
+                add_bar_labels(rects2)
+                add_bar_labels(rects3, format_str="{:.3f}")
+                add_bar_labels(rects4, format_str="{:.3f}")
+                ax_bars.grid(True, axis='y', linestyle='--', alpha=0.6)
+                
+                plt.tight_layout()
+                plt.show()
+        else:
+            subset_y_pred = model.predict(scaler_X.transform(subset_X))
+            plot_regression_relationship(
+                model_name=f"SVR (Best Subset, {len(subset_X)} points)",
+                X=subset_X,
+                y=subset_y,
+                y_pred=subset_y_pred,
+                x_new=np.linspace(subset_X.min(), subset_X.max(), 100).reshape(-1, 1),
+                y_new=model.predict(scaler_X.transform(np.linspace(subset_X.min(), subset_X.max(), 100).reshape(-1, 1))),
+                ax=axes[1],
+                metrics={
+                    'r2': r2_score(subset_y, subset_y_pred),
+                    'mae': mean_absolute_error(subset_y, subset_y_pred),
+                    'mse': mean_squared_error(subset_y, subset_y_pred),
+                    'rmse': np.sqrt(mean_squared_error(subset_y, subset_y_pred))
+                }
+            )
+    else:
+        axes[1].scatter(X_filtered, y_filtered, alpha=0.6)
+        axes[1].plot(x_new, y_new, 'r-', linewidth=2)
+        axes[1].set_title(f"SVR ({kernel}, C={C}) Original Data")
+        axes[1].set_xlabel(feat1)
+        axes[1].set_ylabel(feat2)
+        axes[1].grid(True, linestyle='--', alpha=0.7)
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Return comprehensive results
+    results = {
+        'model': model,
+        'scaler_X': scaler_X,
+        'metrics': metrics,
+        'X': X_filtered,
+        'y': y_filtered,
+        'y_pred': y_pred_filtered,
+        'best_subset': best_subset,
+        'subset_results': subset_results,
+        'cluster_models': cluster_models,
+        'outlier_mask': outlier_mask, 
+        'outlier_scores': outlier_scores,
+        'kernel': kernel,
+        'C': C,
+    }
+    
+    print(f"SVR ({kernel}, C={C}) Performance:")
+    print(f"R²: {metrics['r2']:.4f}")
+    print(f"MAE: {metrics['mae']:.4f}")
+    print(f"RMSE: {metrics['rmse']:.4f}")
+    
+    # Print per-cluster performance
+    if find_subsets and subset_results:
+        best_cluster_metrics = subset_results.get('cluster_metrics', [])
+        if best_cluster_metrics:
+            print("\nPer-Cluster Model Performance:")
+            for cluster_info in best_cluster_metrics:
+                cluster_id = cluster_info['label']
+                size = cluster_info['size']
+                r2 = cluster_info.get('cv_r2', 0)
+                rmse = cluster_info.get('y_std', 0) * np.sqrt(1 - max(0, r2))
+                mi = cluster_info.get('mi', 0)
+                print(f"  Cluster {cluster_id} (size: {size}): R²={r2:.4f}, RMSE={rmse:.4f}, MI={mi:.4f}")
+    
+    return results
+
+def fit_knn_regressor(df, feat1, feat2, find_subsets=True):
+    X = df[[feat1]].values
+    y = df[feat2].values
     
     scaler_X = StandardScaler()
     X_scaled = scaler_X.fit_transform(X)
@@ -772,7 +1235,9 @@ def fit_knn_regressor(df, shower_var, lep_var, find_subsets=True):
     
     metrics = {
         'r2': r2_score(y, y_pred),
-        'rmse': np.sqrt(mean_squared_error(y, y_pred))
+        'rmse': np.sqrt(mean_squared_error(y, y_pred)),
+        'mae': mean_absolute_error(y, y_pred),
+        'mse': mean_squared_error(y, y_pred)
     }
     
     # Create prediction grid for smooth curve
@@ -780,25 +1245,11 @@ def fit_knn_regressor(df, shower_var, lep_var, find_subsets=True):
     x_new_scaled = scaler_X.transform(x_new)
     y_new = model.predict(x_new_scaled)
     
-    # Plot predictions with errors highlighted
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.scatter(X, y, color='blue', alpha=0.6, label='Actual data')
-    ax.plot(x_new, y_new, color='red', linewidth=2, label='Predicted relationship')
-    
-    # Color points by error magnitude
-    error_norm = plt.Normalize(vmin=0, vmax=errors.max())
-    scatter = ax.scatter(X, y, c=errors, cmap='YlOrRd', norm=error_norm, s=50, edgecolors='k', zorder=3)
-    plt.colorbar(scatter, ax=ax, label='Prediction Error')
-    
-    ax.set_title(f"k-Nearest Neighbors (k={n_neighbors})\nR² = {metrics['r2']:.4f}, RMSE = {metrics['rmse']:.4f}")
-    ax.set_xlabel('Shower Time')
-    ax.set_ylabel('LEP Time')
-    ax.legend()
-    plt.tight_layout()
-    plt.show()
-    
     # Find optimal data subsets if requested
     best_subset = None
+    subset_results = None
+    cluster_models = {}
+    
     if find_subsets:
         # Create a model factory for KNN
         def knn_factory(X_train, y_train):
@@ -815,22 +1266,200 @@ def fit_knn_regressor(df, shower_var, lep_var, find_subsets=True):
                     self.scaler = scaler
                 
                 def predict(self, X):
+                    if X.ndim == 1:
+                        X = X.reshape(-1, 1)
                     X_scaled = self.scaler.transform(X)
                     return self.knn.predict(X_scaled)
             
             return KNNWrapper(knn_model, scaler)
             
-        best_subset = find_optimal_data_subsets(df, shower_var, lep_var, knn_factory, "k-NN")
+        subset_results = find_optimal_data_subsets(df, feat1, feat2, knn_factory, 
+                                                 f"k-NN Regressor (k={n_neighbors})", use_2d_clustering=True)
+        
+        if subset_results:
+            # Create a best subset dataframe with cluster assignments
+            best_subset = df.copy()
+            best_subset['cluster'] = subset_results['gmm_labels']
+            
+            # Create models for each cluster
+            if 'cluster_metrics' in subset_results and subset_results['cluster_metrics']:
+                for cluster_info in subset_results['cluster_metrics']:
+                    cluster_id = cluster_info['label']
+                    cluster_mask = best_subset['cluster'] == cluster_id
+                    
+                    if np.sum(cluster_mask) >= 5:  # Only create models for clusters with sufficient data
+                        cluster_X = best_subset.loc[cluster_mask, feat1].values.reshape(-1, 1)
+                        cluster_y = best_subset.loc[cluster_mask, feat2].values
+                        cluster_models[cluster_id] = knn_factory(cluster_X, cluster_y)
     
+    # Create main visualization figure
+    fig, axes = plt.subplots(1, 2, figsize=(18, 7))
+    
+    # Plot the main model on the first axis
+    plot_regression_relationship(
+        model_name=f"k-NN Regressor (k={n_neighbors})", 
+        X=X, 
+        y=y, 
+        y_pred=y_pred,
+        x_new=x_new,
+        y_new=y_new,
+        ax=axes[0],
+        metrics=metrics
+    )
+    
+    # Show regional performance in a separate figure
+    regional_metrics = analyze_regional_performance(X, y, y_pred)
+    plot_regional_performance(regional_metrics, f"k-NN Regressor (k={n_neighbors})")
+    
+    # Plot per-cluster models on the second axis if available
+    if find_subsets and best_subset is not None:
+        subset_X = best_subset[feat1].values.reshape(-1, 1)
+        subset_y = best_subset[feat2].values
+        
+        if cluster_models:
+            axes[1].set_title(f"k-NN Regressor (Per-Cluster Models)")
+            
+            # First plot the global model as a red line
+            axes[1].plot(x_new, y_new, color='red', linewidth=2.5, label='Global Model', zorder=10)
+            
+            colors = plt.cm.tab10(np.linspace(0, 1, 10))
+            for cluster_id, cluster_data in best_subset.groupby('cluster'):
+                cluster_X = cluster_data[feat1].values.reshape(-1, 1)
+                cluster_y = cluster_data[feat2].values
+                cluster_model = cluster_models.get(cluster_id)
+                
+                if cluster_model:
+                    cluster_y_pred = cluster_model.predict(cluster_X)
+                    
+                    axes[1].scatter(cluster_X, cluster_y, alpha=0.6, 
+                                   color=colors[cluster_id % len(colors)], 
+                                   label=f"Cluster {cluster_id}")
+                    
+                    x_sorted = np.sort(cluster_X, axis=0)
+                    y_pred_sorted = cluster_model.predict(x_sorted)
+                    
+                    axes[1].plot(x_sorted, y_pred_sorted, '--', 
+                                color=colors[cluster_id % len(colors)], 
+                                linewidth=2)
+                    
+                    cluster_r2 = r2_score(cluster_y, cluster_y_pred)
+                    cluster_rmse = np.sqrt(mean_squared_error(cluster_y, cluster_y_pred))
+                    
+                    handles, labels = axes[1].get_legend_handles_labels()
+                    labels = [f"{label} (R²={cluster_r2:.2f}, RMSE={cluster_rmse:.2f})" 
+                             if label == f"Cluster {cluster_id}" else label 
+                             for label in labels]
+                    axes[1].legend(handles, labels)
+            
+            # Create separate figure for cluster performance metrics with MI bar added
+            if 'cluster_metrics' in subset_results and subset_results['cluster_metrics']:
+                fig_metrics, ax_bars = plt.subplots(figsize=(12, 6))
+                
+                cluster_metrics = subset_results['cluster_metrics']
+                cluster_labels = [f"C{m['label']}\n(n={m['size']})" for m in cluster_metrics]
+                cv_r2 = [m['cv_r2'] for m in cluster_metrics]
+                spearman_rho = [m['spearman_rho'] for m in cluster_metrics]
+                spearman_p = [m['spearman_p'] for m in cluster_metrics]
+                mi_values = [m.get('mi', 0) for m in cluster_metrics]  # Add MI values
+                
+                x = np.arange(len(cluster_labels))
+                width = 0.2  # Make bars narrower to fit 4 bars
+                bar_colors = plt.cm.tab10(np.linspace(0, 1, 10))[:len(cluster_labels)]
+                
+                rects1 = ax_bars.bar(x - 1.5*width, cv_r2, width, label='CV R²', color=bar_colors)
+                rects2 = ax_bars.bar(x - 0.5*width, spearman_rho, width, label='Spearman ρ', 
+                                    color=[(c[0], c[1], c[2], 0.7) for c in bar_colors])
+                rects3 = ax_bars.bar(x + 0.5*width, spearman_p, width, label='Spearman p', 
+                                    color=[(c[0], c[1], c[2], 0.4) for c in bar_colors])
+                rects4 = ax_bars.bar(x + 1.5*width, mi_values, width, label='Mutual Info', 
+                                    color=[(c[0], c[1], c[2], 0.9) for c in bar_colors])
+                
+                ax_bars.set_ylabel('Score / p-value / MI')
+                ax_bars.set_title(f"k-NN Regressor Performance within Clusters", fontsize=14)
+                ax_bars.set_xticks(x)
+                ax_bars.set_xticklabels(cluster_labels)
+                ax_bars.legend(fontsize='small')
+                ax_bars.axhline(0, color='grey', linewidth=0.8)
+                
+                # Dynamic Y limits
+                all_values = cv_r2 + spearman_rho + mi_values
+                min_val = min([min(all_values, default=0), min(spearman_p, default=0)])
+                max_val = max([max(all_values, default=0), max(spearman_p, default=0)])
+                ax_bars.set_ylim(min(min_val * 1.1 if min_val < 0 else -0.1, -0.1),
+                               max(1.05, max_val * 1.1 if max_val > 0 else 0.1))
+                
+                # Add bar labels
+                def add_bar_labels(bars, format_str="{:.2f}"):
+                    for bar in bars:
+                        height = bar.get_height()
+                        if not np.isnan(height):
+                            ax_bars.annotate(format_str.format(height),
+                                          xy=(bar.get_x() + bar.get_width() / 2, height),
+                                          xytext=(0, 3 if height >= 0 else -12),
+                                          textcoords="offset points",
+                                          ha='center', va='bottom' if height >= 0 else 'top', fontsize=8)
+                
+                add_bar_labels(rects1)
+                add_bar_labels(rects2)
+                add_bar_labels(rects3, format_str="{:.3f}")
+                add_bar_labels(rects4, format_str="{:.3f}")
+                ax_bars.grid(True, axis='y', linestyle='--', alpha=0.6)
+                
+                plt.tight_layout()
+                plt.show()
+        else:
+            # If no cluster models, just show the data with the global model
+            axes[1].scatter(X, y, color='blue', alpha=0.6, s=50, edgecolors='k')
+            axes[1].plot(x_new, y_new, color='red', linewidth=2.5, label='Global Model')
+            axes[1].set_title(f"k-NN Regressor (k={n_neighbors})")
+            axes[1].legend()
+    
+    # Configure axes general settings
+    for ax in axes:
+        ax.set_xlabel(feat1, fontsize=12)
+        ax.set_ylabel(feat2, fontsize=12)
+        ax.grid(True, linestyle='--', alpha=0.6)
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Print results
     print(f"k-NN Regression Results (k={n_neighbors}):")
     print(f"R² score: {metrics['r2']:.4f}")
     print(f"RMSE: {metrics['rmse']:.4f}")
     
-    return model, scaler_X, metrics, best_subset
+    # Print per-cluster performance
+    if find_subsets and subset_results:
+        best_cluster_metrics = subset_results.get('cluster_metrics', [])
+        if best_cluster_metrics:
+            print("\nPer-Cluster Model Performance:")
+            for cluster_info in best_cluster_metrics:
+                cluster_id = cluster_info['label']
+                size = cluster_info['size']
+                r2 = cluster_info.get('cv_r2', 0)
+                rmse = cluster_info.get('y_std', 0) * np.sqrt(1 - max(0, r2))
+                mi = cluster_info.get('mi', 0)
+                print(f"  Cluster {cluster_id} (size: {size}): R²={r2:.4f}, RMSE={rmse:.4f}, MI={mi:.4f}")
+    
+    # Return comprehensive results
+    results = {
+        'model': model,
+        'scaler_X': scaler_X,
+        'metrics': metrics,
+        'X': X,
+        'y': y,
+        'y_pred': y_pred,
+        'n_neighbors': n_neighbors,
+        'best_subset': best_subset,
+        'subset_results': subset_results,
+        'cluster_models': cluster_models
+    }
+    
+    return results
 
-def fit_random_forest_regressor(df, shower_var, lep_var, find_subsets=True):
-    X = df[shower_var].values.reshape(-1, 1)
-    y = df[lep_var].values
+def fit_random_forest_regressor(df, feat1, feat2, find_subsets=True):
+    X = df[feat1].values.reshape(-1, 1)
+    y = df[feat2].values
     
     # Try different parameter combinations
     depths = [2, 3, 4, 5]
@@ -872,25 +1501,9 @@ def fit_random_forest_regressor(df, shower_var, lep_var, find_subsets=True):
     x_new = create_prediction_grid(X.ravel())
     y_new = model.predict(x_new)
     
-    # Plot predictions with errors highlighted
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.scatter(X, y, color='blue', alpha=0.6, label='Actual data')
-    ax.plot(x_new, y_new, color='red', linewidth=2, label='Predicted relationship')
-    
-    # Color points by error magnitude
-    error_norm = plt.Normalize(vmin=0, vmax=errors.max())
-    scatter = ax.scatter(X, y, c=errors, cmap='YlOrRd', norm=error_norm, s=50, edgecolors='k', zorder=3)
-    plt.colorbar(scatter, ax=ax, label='Prediction Error')
-    
-    ax.set_title(f"Random Forest (trees={n_estimators}, depth={max_depth})\nR² = {metrics['r2']:.4f}, RMSE = {metrics['rmse']:.4f}")
-    ax.set_xlabel('Shower Time')
-    ax.set_ylabel('LEP Time')
-    ax.legend()
-    plt.tight_layout()
-    plt.show()
-    
     # Find optimal data subsets if requested
     best_subset = None
+    subset_results = None
     if find_subsets:
         # Create a model factory for Random Forest
         def rf_factory(X_train, y_train):
@@ -898,13 +1511,193 @@ def fit_random_forest_regressor(df, shower_var, lep_var, find_subsets=True):
             rf_model.fit(X_train, y_train)
             return rf_model
             
-        best_subset = find_optimal_data_subsets(df, shower_var, lep_var, rf_factory, "Random Forest")
+        subset_results = find_optimal_data_subsets(df, feat1, feat2, rf_factory, 
+                                                 f"Random Forest (n={n_estimators}, depth={max_depth})", use_2d_clustering=True)
+    
+    # --- Combined Plotting ---
+    # Always create figure and axes using gridspec initially
+    fig = plt.figure(figsize=(12, 16))
+    gs = gridspec.GridSpec(2, 1, height_ratios=[3, 1])
+    ax_pred = fig.add_subplot(gs[0])
+    ax_bars = fig.add_subplot(gs[1])
+    
+    # Plot 1 (ax_pred): Common elements - prediction line
+    # Plot the prediction curve
+    ax_pred.plot(x_new, y_new, color='red', linewidth=2.5, label='Random Forest Prediction', zorder=10)
+    
+    # Plot specific content based on subset_results
+    if subset_results:
+        # --- Plotting for Combined View ---
+        gmm_labels = subset_results['gmm_labels']
+        gmm_probs = subset_results['gmm_probs']
+        actual_n_clusters = subset_results['n_clusters']
+        distinct_colors = plt.cm.tab10(np.linspace(0, 1, actual_n_clusters))
+        
+        # Blend colors for scatter plot
+        blended_colors = np.zeros((len(X), 3))  # Using full X since no outliers in RF
+        if gmm_probs.shape[1] == actual_n_clusters:
+            rgb_colors = distinct_colors[:, :3]
+            blended_colors = gmm_probs @ rgb_colors
+        else:
+            print(f"Warning: Mismatch between GMM probability columns ({gmm_probs.shape[1]}) and reported clusters ({actual_n_clusters}). Using discrete assignments.")
+            gmm_all_labels = subset_results['gmm_labels']
+            unique_labels = sorted(np.unique(gmm_all_labels))
+            label_map = {label: i for i, label in enumerate(unique_labels)}
+            mapped_labels = np.array([label_map[l] for l in gmm_all_labels])
+            safe_labels = np.clip(mapped_labels, 0, actual_n_clusters - 1)
+            blended_colors = distinct_colors[safe_labels][:, :3]
+        
+        # Plot points colored by cluster
+        ax_pred.scatter(X, y, c=blended_colors, s=60, edgecolors='k', alpha=0.8, zorder=5,
+                       label='Data (colored by GMM Cluster)')
+        
+        # Draw GMM ellipses/means
+        if subset_results['use_2d_clustering']:
+            means = subset_results['gmm_means']
+            covariances = subset_results['gmm_covariances']
+            gmm_components_used_for_cov = subset_results.get('gmm_covariances_', covariances)
+            for j in range(actual_n_clusters):
+                mean = means[j]
+                if j < len(gmm_components_used_for_cov):
+                    covar = gmm_components_used_for_cov[j]
+                    if np.all(np.linalg.eigvalsh(covar) > 1e-6):
+                        try:
+                            v, w = np.linalg.eigh(covar)
+                            angle = np.arctan2(w[1, 0], w[0, 0])
+                            angle = 180 * angle / np.pi
+                            v = 2.0 * np.sqrt(2.0) * np.sqrt(v)
+                            ell = Ellipse(xy=(mean[0], mean[1]), width=v[0], height=v[1], angle=angle,
+                                        color=distinct_colors[j], alpha=0.25, zorder=1)
+                            ax_pred.add_artist(ell)
+                            ax_pred.scatter(mean[0], mean[1], marker='X', s=100, c=[distinct_colors[j]], edgecolors='black', zorder=11)
+                        except np.linalg.LinAlgError:
+                            print(f"Warning: Could not draw ellipse for cluster {j}.")
+                            ax_pred.scatter(mean[0], mean[1], marker='X', s=100, c=[distinct_colors[j]], edgecolors='black', zorder=11)
+                    else:
+                        print(f"Warning: Skipping ellipse for cluster {j} due to non-positive definite covariance.")
+                        ax_pred.scatter(mean[0], mean[1], marker='X', s=100, c=[distinct_colors[j]], edgecolors='black', zorder=11)
+                else:
+                    print(f"Warning: Covariance data not found for cluster index {j}.")
+                    ax_pred.scatter(mean[0], mean[1], marker='X', s=100, c=[distinct_colors[j]], edgecolors='black', zorder=11)
+        else: # 1D clustering
+            means = subset_results['gmm_means']
+            for j in range(actual_n_clusters):
+                mean_x = means[j][0]
+                ax_pred.axvline(x=mean_x, color=distinct_colors[j], linestyle='--', alpha=0.7, linewidth=2, zorder=1)
+                ax_pred.text(mean_x, ax_pred.get_ylim()[1] * 0.95, f' C{j}', color=distinct_colors[j], ha='center', va='top', fontweight='bold')
+        
+        # Add combined legend for ax_pred
+        handles, labels = ax_pred.get_legend_handles_labels()
+        cluster_metrics_list = subset_results.get('cluster_metrics', [])
+        legend_elements = []
+        if cluster_metrics_list:
+            legend_elements = [Patch(facecolor=distinct_colors[i], edgecolor='black', alpha=0.6,
+                                   label=f"Cluster {cluster_metrics_list[i]['label']} (n={cluster_metrics_list[i]['size']})") 
+                             for i in range(min(actual_n_clusters, len(cluster_metrics_list)))]
+        
+        ax_pred.legend(handles=handles + legend_elements, loc='best', fontsize='small')
+        ax_pred.set_title(f"Overall Fit (R²={metrics['r2']:.3f}, RMSE={metrics['rmse']:.3f}) & GMM Clusters", fontsize=14)
+        
+        # Plot 2 (ax_bars): Cluster Performance Bar Chart
+        cluster_metrics = subset_results['cluster_metrics']
+        if cluster_metrics:
+            cluster_labels = [f"C{m['label']}\n(n={m['size']})" for m in cluster_metrics]
+            cv_r2 = [m['cv_r2'] for m in cluster_metrics]
+            spearman_rho = [m['spearman_rho'] for m in cluster_metrics]
+            spearman_p = [m['spearman_p'] for m in cluster_metrics]
+            x = np.arange(len(cluster_labels))
+            width = 0.25
+            bar_colors = distinct_colors[:len(cluster_labels)]
+            
+            rects1 = ax_bars.bar(x - width, cv_r2, width, label='CV R²', color=bar_colors)
+            rects2 = ax_bars.bar(x, spearman_rho, width, label='Spearman ρ', color=[(c[0], c[1], c[2], 0.7) for c in bar_colors])
+            rects3 = ax_bars.bar(x + width, spearman_p, width, label='Spearman p', color=[(c[0], c[1], c[2], 0.4) for c in bar_colors])
+            
+            ax_bars.set_ylabel('Score / p-value')
+            ax_bars.set_title(f"{subset_results['model_name']} Performance within GMM Clusters", fontsize=14)
+            ax_bars.set_xticks(x)
+            ax_bars.set_xticklabels(cluster_labels)
+            ax_bars.legend(fontsize='small')
+            ax_bars.axhline(0, color='grey', linewidth=0.8)
+            
+            # Dynamic Y limits
+            min_val = min([min(cv_r2, default=0), min(spearman_rho, default=0)])
+            max_val = max([max(cv_r2, default=0), max(spearman_rho, default=0), max(spearman_p, default=0)])
+            ax_bars.set_ylim(min(min_val * 1.1 if min_val < 0 else -0.1, -0.1),
+                           max(1.05, max_val * 1.1 if max_val > 0 else 0.1))
+            
+            # Add bar labels
+            def add_bar_labels(bars, format_str="{:.2f}"):
+                for bar in bars:
+                    height = bar.get_height()
+                    if not np.isnan(height):
+                        ax_bars.annotate(format_str.format(height),
+                                      xy=(bar.get_x() + bar.get_width() / 2, height),
+                                      xytext=(0, 3 if height >= 0 else -12),
+                                      textcoords="offset points",
+                                      ha='center', va='bottom' if height >= 0 else 'top', fontsize=8)
+            
+            add_bar_labels(rects1)
+            add_bar_labels(rects2)
+            add_bar_labels(rects3, format_str="{:.3f}")
+            ax_bars.grid(True, axis='y', linestyle='--', alpha=0.6)
+        else:
+            ax_bars.set_visible(False)
+            print("No cluster metrics available to plot performance bars.")
+        
+        # Set overall figure title
+        fig.suptitle(f"Random Forest Regression (trees={n_estimators}, depth={max_depth}) Analysis", fontsize=16, y=0.98)
+    
+    else:
+        # --- Plotting for Simple View (No Subset Analysis) ---
+        # Color points by error magnitude
+        error_norm = plt.Normalize(vmin=0, vmax=errors.max())
+        scatter = ax_pred.scatter(X, y, c=errors, cmap='YlOrRd', norm=error_norm, s=50, edgecolors='k', zorder=3)
+        plt.colorbar(scatter, ax=ax_pred, label='Prediction Error')
+        
+        ax_pred.set_title(f"Random Forest (trees={n_estimators}, depth={max_depth})\nR² = {metrics['r2']:.4f}, RMSE = {metrics['rmse']:.4f}")
+        # Hide the second subplot
+        ax_bars.set_visible(False)
+    
+    # Configure ax_pred general settings
+    ax_pred.set_xlabel(feat1, fontsize=12)
+    ax_pred.set_ylabel(feat2, fontsize=12)
+    ax_pred.grid(True, linestyle='--', alpha=0.6)
+    
+    # Final adjustments and display
+    if not ax_bars.get_visible():
+        # Resize figure for single plot view
+        fig.set_size_inches(10, 7)
+        fig.tight_layout()
+    else:
+        # Adjust layout for combined view with suptitle
+        fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+    
+    plt.show()
+    
+    # --- Remove redundant plotting section ---
+    # # Plot predictions with errors highlighted
+    # fig, ax = plt.subplots(figsize=(10, 6))
+    # ax.scatter(X, y, color='blue', alpha=0.6, label='Actual data')
+    # ax.plot(x_new, y_new, color='red', linewidth=2, label='Predicted relationship')
+    # 
+    # # Color points by error magnitude
+    # error_norm = plt.Normalize(vmin=0, vmax=errors.max())
+    # scatter = ax.scatter(X, y, c=errors, cmap='YlOrRd', norm=error_norm, s=50, edgecolors='k', zorder=3)
+    # plt.colorbar(scatter, ax=ax, label='Prediction Error')
+    # 
+    # ax.set_title(f"Random Forest (trees={n_estimators}, depth={max_depth})\nR² = {metrics['r2']:.4f}, RMSE = {metrics['rmse']:.4f}")
+    # ax.set_xlabel('Shower Time')
+    # ax.set_ylabel('LEP Time')
+    # ax.legend()
+    # plt.tight_layout()
+    # plt.show()
     
     print(f"Random Forest Regression Results (trees={n_estimators}, depth={max_depth}):")
     print(f"R² score: {metrics['r2']:.4f}")
     print(f"RMSE: {metrics['rmse']:.4f}")
     
-    return model, metrics, best_subset
+    return model, metrics, subset_results
 
 def compare_model_performance(models_results):
     model_names = []
@@ -947,7 +1740,7 @@ def compare_model_performance(models_results):
     
     return performance_df
 
-def find_optimal_data_subsets(df, shower_var, lep_var, model_factory, model_name, n_clusters=3, use_2d_clustering=True):
+def find_optimal_data_subsets(df, feat1, feat2, model_factory, model_name, n_clusters=3, use_2d_clustering=True):
     """
     Find data subsets where a model performs particularly well using GMM clustering and local validation.
     
@@ -955,9 +1748,9 @@ def find_optimal_data_subsets(df, shower_var, lep_var, model_factory, model_name
     -----------
     df : DataFrame
         The dataframe containing the data
-    shower_var : str
+    feat1 : str
         Column name for shower time
-    lep_var : str
+    feat2 : str
         Column name for LEP time
     model_factory : function
         A function that takes X and y and returns a fitted model
@@ -970,18 +1763,38 @@ def find_optimal_data_subsets(df, shower_var, lep_var, model_factory, model_name
         
     Returns:
     --------
-    None (plots the results directly)
+    None (prints results and plots charts)
+    dict or None:
+        A dictionary containing clustering results and metrics if successful,
+        otherwise None. Keys include:
+        - 'gmm_labels': Cluster assignment for each point in df.
+        - 'gmm_probs': Cluster membership probabilities for each point.
+        - 'gmm_means': Mean of each GMM component.
+        - 'gmm_covariances': Covariance of each GMM component.
+        - 'cluster_metrics': List of dicts, one per cluster, with performance metrics.
+        - 'n_clusters': The actual number of clusters found.
+        - 'use_2d_clustering': Boolean flag indicating clustering dimension.
+        - 'model_name': Name of the model analyzed.
+        - 'feat1': Name of the independent variable.
+        - 'feat2': Name of the dependent variable.
     """
-    X_1d = df[shower_var].values.reshape(-1, 1)
-    y = df[lep_var].values
+    if len(df) < n_clusters * 2: # Ensure enough data for clustering and CV
+        print(f"Skipping subset analysis for {model_name}: Insufficient data points ({len(df)}) for {n_clusters} clusters.")
+        return None
+        
+    X_1d = df[feat1].values.reshape(-1, 1)
+    y = df[feat2].values
     
     # For 2D clustering, include both variables
     if use_2d_clustering:
-        X_2d = np.column_stack((df[shower_var].values, df[lep_var].values))
-        print(f"Using 2D GMM clustering on both {shower_var} and {lep_var}")
+        X_2d = np.column_stack((df[feat1].values, df[feat2].values))
+        print(f"Using 2D GMM clustering on both {feat1} and {feat2}")
     else:
         X_2d = X_1d
-        print(f"Using 1D GMM clustering on {shower_var} only")
+        if len(np.unique(X_1d)) < n_clusters:
+            print(f"Skipping subset analysis for {model_name}: Not enough unique X values for {n_clusters} clusters in 1D.")
+            return None
+        print(f"Using 1D GMM clustering on {feat1} only")
     
     print(f"Finding GMM subsets for {model_name}...")
     
@@ -991,107 +1804,54 @@ def find_optimal_data_subsets(df, shower_var, lep_var, model_factory, model_name
     gmm_labels = gmm.predict(X_2d)
     gmm_probs = gmm.predict_proba(X_2d)
     
+    # Check if GMM converged and produced the expected number of clusters
+    actual_n_clusters = len(np.unique(gmm_labels))
+    if actual_n_clusters < 2: # Need at least 2 clusters to be meaningful
+        print(f"Warning: GMM clustering resulted in only {actual_n_clusters} cluster(s). Skipping detailed subset analysis.")
+        return None
+    elif actual_n_clusters < n_clusters:
+        print(f"Warning: GMM clustering resulted in {actual_n_clusters} clusters, fewer than the requested {n_clusters}.")
+        # Proceeding with the clusters found
+        
+    # Get component details (handle potential differences in attribute names across sklearn versions)
+    gmm_means = gmm.means_
+    gmm_covariances = gmm.covariances_
+        
     # Create a discrete colormap for the clusters
-    distinct_colors = plt.cm.tab20(np.linspace(0, 1, n_clusters))
+    # distinct_colors = plt.cm.tab10(np.linspace(0, 1, actual_n_clusters))
     
-    # Create figure for GMM results
-    fig = plt.figure(figsize=(16, 10))
-    gs = gridspec.GridSpec(2, 2, height_ratios=[2, 1]) # Scatter plot takes more space
-    ax_scatter = plt.subplot(gs[0, :]) # Scatter plot spans top row
-    ax_bars = plt.subplot(gs[1, :]) # Bar chart spans bottom row
+    # -- No plotting directly in this function anymore --
+    # fig = plt.figure(figsize=(16, 10))
+    # gs = gridspec.GridSpec(2, 2, height_ratios=[2, 1])
+    # ax_scatter = plt.subplot(gs[0, :])
+    # ax_bars = plt.subplot(gs[1, :])
     
-    debug_info = {}  # Store debugging information
+    cluster_results = [] # Store results for each cluster
+    debug_info = {"GMM": {}}
     
-    # Blend colors based on membership probabilities for scatter plot
-    blended_colors = np.zeros((len(X_1d), 3))
-    for point_idx in range(len(X_1d)):
-        for cluster_idx in range(n_clusters):
-            if cluster_idx < len(distinct_colors):
-                weight = gmm_probs[point_idx, cluster_idx]
-                color = distinct_colors[cluster_idx][:3]  # Get RGB without alpha
-                blended_colors[point_idx] += weight * np.array(color)
-    
-    # Plot the clusters with blended colors
-    scatter_plot = ax_scatter.scatter(X_1d, y, c=blended_colors, s=80, edgecolor='k')
-    
-    # Draw ellipses to show GMM components
-    for j in range(n_clusters):
-        if use_2d_clustering:
-            # For 2D, draw the actual covariance ellipses
-            mean = gmm.means_[j]
-            covar = gmm.covariances_[j]
-            try:
-                v, w = np.linalg.eigh(covar)
-                angle = np.arctan2(w[1, 0], w[0, 0])
-                angle = 180 * angle / np.pi  # Convert to degrees
-                v = 2.0 * np.sqrt(2.0) * np.sqrt(v) # 95% confidence interval scaling
-                
-                ell = Ellipse(xy=(mean[0], mean[1]),
-                              width=v[0], height=v[1],
-                              angle=angle, 
-                              color=distinct_colors[j])
-                ell.set_clip_box(ax_scatter.bbox)
-                ell.set_alpha(0.3)
-                ax_scatter.add_artist(ell)
-            except np.linalg.LinAlgError:
-                print(f"Warning: Covariance matrix for cluster {j} is singular, cannot draw ellipse.")
-                
-            # Add text label for cluster center
-            ax_scatter.text(mean[0], mean[1], f"Cluster {j}",
-                           fontsize=12, fontweight='bold',
-                           ha='center', va='center',
-                           bbox=dict(facecolor='white', alpha=0.7, boxstyle='round'))
-        else:
-            # For 1D, just draw vertical lines at means
-            mean = gmm.means_[j][0]
-            ax_scatter.axvline(x=mean, color=distinct_colors[j], linestyle='--', alpha=0.7, linewidth=2)
-            # Add text label near the line
-            text_y_pos = ax_scatter.get_ylim()[0] + 0.9 * (ax_scatter.get_ylim()[1] - ax_scatter.get_ylim()[0])
-            ax_scatter.text(mean, text_y_pos, f"Cluster {j}",
-                       fontsize=12, fontweight='bold', color=distinct_colors[j],
-                       ha='center', va='center',
-                       bbox=dict(facecolor='white', alpha=0.7, boxstyle='round'))
-    
-    ax_scatter.set_title(f"GMM Clustering for {model_name} ({n_clusters} clusters)", fontsize=14)
-    ax_scatter.set_xlabel(shower_var, fontsize=12)
-    ax_scatter.set_ylabel(lep_var, fontsize=12)
-    
-    # Add legend for clusters
-    legend_elements = [Patch(facecolor=distinct_colors[i], edgecolor='black', alpha=0.7, 
-                             label=f"Cluster {i} (n={np.sum(gmm_labels==i)})")
-                      for i in range(n_clusters)]
-    ax_scatter.legend(handles=legend_elements, loc="best", fontsize='medium')
-    
-    # Set up for bar chart
-    cluster_r2 = []
-    cluster_spearman = []
-    cluster_mi = []
-    cluster_sizes = []
-    cluster_names = []
-    cluster_colors = []
-    
-    debug_info["GMM"] = {}
+    unique_labels = np.unique(gmm_labels)
+    cluster_map = {label: idx for idx, label in enumerate(unique_labels)}
     
     # Evaluate each cluster
-    unique_labels = np.unique(gmm_labels)
-    for idx, label in enumerate(unique_labels):
-            
+    print(f"\n--- {model_name} Performance within GMM Clusters ---")
+    for label in unique_labels:
         mask = gmm_labels == label
         X_cluster = X_1d[mask]
         y_cluster = y[mask]
+        cluster_idx = cluster_map[label] # Consistent index 0 to k-1
         
-        # Skip if cluster is essentially empty (might happen with bad init)
-        if len(X_cluster) < 2: 
-            print(f"Skipping GMM cluster {label} due to insufficient data points ({len(X_cluster)})")
+        # Skip if cluster is too small for meaningful evaluation
+        if len(X_cluster) < 5: 
+            print(f"Skipping GMM cluster {label} due to insufficient data points ({len(X_cluster)} < 5)")
             continue
             
-        # Save diagnostics
         cluster_info = {
+            'label': int(label), # Original GMM label
             'size': int(np.sum(mask)),
             'X_range': (float(X_cluster.min()), float(X_cluster.max())),
             'y_range': (float(y_cluster.min()), float(y_cluster.max())),
-            'X_std': float(X_cluster.std()),
-            'y_std': float(y_cluster.std()),
+            'X_std': float(X_cluster.std()) if len(X_cluster) > 1 else 0.0,
+            'y_std': float(y_cluster.std()) if len(y_cluster) > 1 else 0.0,
         }
         
         # Evaluate model performance within this cluster using Cross-Validation
@@ -1099,91 +1859,94 @@ def find_optimal_data_subsets(df, shower_var, lep_var, model_factory, model_name
         scores = []
         
         for train_idx, test_idx in kf.split(X_cluster):
-            if len(train_idx) < 2 or len(test_idx) < 1: # Need enough data to train and test
+            # Ensure enough data points for the model factory
+            if len(train_idx) < 2 or len(test_idx) < 1: 
                 continue
-                
-            model = model_factory(X_cluster[train_idx], y_cluster[train_idx])
             
-            y_pred_cv = model.predict(X_cluster[test_idx])
-            
+            # Need to handle potential errors in model fitting (e.g., convergence)
+            try:
+                model = model_factory(X_cluster[train_idx], y_cluster[train_idx])
+                y_pred_cv = model.predict(X_cluster[test_idx])
+            except Exception as e:
+                print(f"  Warning: Model fitting/prediction failed for CV fold in cluster {label}: {e}")
+                # Assign NaN score if prediction fails for a fold
+                scores.append(float('nan')) 
+                continue
+
             # Check if y_true_cv has variance before calculating r2
             if len(np.unique(y_cluster[test_idx])) > 1:
                 scores.append(r2_score(y_cluster[test_idx], y_pred_cv))
             else:
-                # Handle cases with no variance in test set (e.g., all same values)
-                scores.append(1.0 if np.allclose(y_cluster[test_idx], y_pred_cv) else 0.0)
+                # Handle cases with no variance in test set
+                # If prediction matches the constant value, R2 is 1, else it can be considered 0 or negative infinity
+                # We'll use 0 as a more stable value than -inf
+                score = 1.0 if np.allclose(y_cluster[test_idx], y_pred_cv) else 0.0
+                scores.append(score)
         
-        avg_score = np.mean(scores) if scores else float('nan')
+        # Calculate average score, handling potential NaNs from failed folds
+        valid_scores = [s for s in scores if not np.isnan(s)]
+        avg_score = np.mean(valid_scores) if valid_scores else float('nan')
         
-        # Calculate Spearman correlation within the cluster
-        spearman, p_spearman = stats.spearmanr(X_cluster.flatten(), y_cluster) if len(X_cluster) > 1 else (float('nan'), 1)
-        
+        # Calculate Spearman correlation and p-value within the cluster
+        if len(X_cluster) > 1:
+            try:
+                spearman_rho, spearman_p = stats.spearmanr(X_cluster.flatten(), y_cluster)
+            except ValueError:
+                # Handle cases where spearmanr might fail (e.g., constant data)
+                spearman_rho, spearman_p = float('nan'), float('nan')
+        else:
+             spearman_rho, spearman_p = float('nan'), float('nan')
+
         # Calculate Mutual Information within the cluster
-        mi = mutual_info_regression(X_cluster, y_cluster, random_state=42)[0] if len(X_cluster) > 1 else float('nan')
+        if len(X_cluster) > 1:
+            # Ensure y_cluster is not constant for MI calculation
+            if len(np.unique(y_cluster)) > 1:
+                 mi = mutual_info_regression(X_cluster, y_cluster, random_state=42)[0]
+            else:
+                 mi = 0.0 # MI is 0 if one variable is constant
+        else:
+             mi = float('nan')
         
         # Add results to cluster info
         cluster_info['cv_r2'] = float(avg_score)
-        cluster_info['spearman'] = float(spearman)
+        cluster_info['spearman_rho'] = float(spearman_rho)
+        cluster_info['spearman_p'] = float(spearman_p)
         cluster_info['mi'] = float(mi)
         
-        print(f"  GMM - Cluster {label}:")
+        print(f"  GMM - Cluster {label} (Index {cluster_idx}):")
         print(f"    Size: {cluster_info['size']} points")
-        print(f"    {shower_var} range: {cluster_info['X_range'][0]:.2f} to {cluster_info['X_range'][1]:.2f} (std={cluster_info['X_std']:.2f})")
-        print(f"    {lep_var} range: {cluster_info['y_range'][0]:.2f} to {cluster_info['y_range'][1]:.2f} (std={cluster_info['y_std']:.2f})")
-        print(f"    CV R² Score: {cluster_info['cv_r2']:.4f}")
-        print(f"    Spearman's correlation: {cluster_info['spearman']:.4f}")
+        print(f"    {feat1} range: {cluster_info['X_range'][0]:.2f} to {cluster_info['X_range'][1]:.2f} (std={cluster_info['X_std']:.2f})")
+        print(f"    {feat2} range: {cluster_info['y_range'][0]:.2f} to {cluster_info['y_range'][1]:.2f} (std={cluster_info['y_std']:.2f})")
+        print(f"    CV R² Score: {cluster_info['cv_r2']:.4f}" + (" (Note: Negative R² indicates model performs worse than predicting the mean)" if cluster_info['cv_r2'] < 0 else ""))
+        print(f"    Spearman Correlation (ρ): {cluster_info['spearman_rho']:.4f}")
+        print(f"    Spearman p-value: {cluster_info['spearman_p']:.4f}")
         print(f"    Mutual Information: {cluster_info['mi']:.4f}")
         
-        # Get color for this cluster
-        color = distinct_colors[label]
-        
-        # Save for bar chart
-        cluster_r2.append(avg_score)
-        cluster_spearman.append(spearman)
-        cluster_mi.append(mi)
-        cluster_sizes.append(np.sum(mask))
-        cluster_names.append(f"{label}\n(n={np.sum(mask)})")
-        cluster_colors.append(color)
-        
-        # Store in debug info
+        # Add results to the list
+        cluster_results.append(cluster_info)
         debug_info["GMM"][f"cluster_{label}"] = cluster_info
-        
-    # Plot bar chart of cluster performance with matching colors
-    x = np.arange(len(cluster_names))
-    width = 0.25 # Width for each bar group
-
-    rects1 = ax_bars.bar(x - width, cluster_r2, width, label='CV R²', color=[c for c in cluster_colors])
-    rects2 = ax_bars.bar(x, cluster_spearman, width, label='Spearman ρ', color=[(c[0], c[1], c[2], 0.7) for c in cluster_colors]) # Slightly transparent
-    rects3 = ax_bars.bar(x + width, cluster_mi, width, label='Mutual Info', color=[(c[0], c[1], c[2], 0.4) for c in cluster_colors]) # More transparent
-
-    ax_bars.set_ylabel('Score')
-    ax_bars.set_title(f"{model_name} Performance within GMM Clusters")
-    ax_bars.set_xticks(x)
-    ax_bars.set_xticklabels(cluster_names)
-    ax_bars.legend()
-    ax_bars.axhline(0, color='grey', linewidth=0.8) # Line at y=0
-
-    def add_labels(bars):
-        for bar in bars:
-            height = bar.get_height()
-            ax_bars.annotate(f"{height:.2f}",
-                            xy=(bar.get_x() + bar.get_width() / 2, height),
-                            xytext=(0, 3),  # 3 points vertical offset
-                            textcoords="offset points",
-                            ha='center', va='bottom', fontsize=8)
-
-    add_labels(rects1)
-    add_labels(rects2)
-    add_labels(rects3)
     
-    fig.tight_layout(rect=[0, 0.03, 1, 0.97]) # Adjust layout to prevent title overlap
-    plt.show()
+    # --- Remove plotting from this function --- 
+    # # Plot bar chart of cluster performance with matching colors
+    # ... (bar chart plotting code removed)
     
-    # Print final debug info
-    # print("\nDebugging Info:")
-    # print(json.dumps(debug_info, indent=2))
+    # fig.tight_layout(rect=[0, 0.03, 1, 0.97]) 
+    # plt.show()
     
-    return None # Removed best subset return
+    # Return the collected data
+    return {
+        'gmm_labels': gmm_labels,
+        'gmm_probs': gmm_probs,
+        'gmm_means': gmm_means,
+        'gmm_covariances': gmm_covariances,
+        'cluster_metrics': cluster_results, # List of dicts for each valid cluster
+        'n_clusters': actual_n_clusters, # Actual number of clusters analyzed
+        'use_2d_clustering': use_2d_clustering,
+        'model_name': model_name,
+        'feat1': feat1,
+        'feat2': feat2,
+        # 'debug_info': debug_info # Optionally return debug info
+    }
 
 def detect_outliers(X, y, method='residual', max_remove_percent=10, model_factory=None):
     """
@@ -1295,36 +2058,640 @@ def detect_outliers(X, y, method='residual', max_remove_percent=10, model_factor
     print(f"Outlier removal: removed {best_n_removed} points ({best_n_removed/n*100:.1f}%), R² improved from {initial_r2:.4f} to {best_r2:.4f}")
     return best_mask, outlier_scores
 
-# Example usage:
-# df = pd.read_csv('your_data.csv')
-# 
-# # Analyzing correlations between shower_time and lep_time including Mutual Information
-# results = calculate_correlations(df, 'shower_time', 'lep_time')
-# print_correlation_results(results)
-# visualize_scatter(df, 'shower_time', 'lep_time', results)
-# visualize_joint_plot(df, 'shower_time', 'lep_time')
-# 
-# # Running models with automatic outlier removal and subset discovery
-# dt_results = fit_decision_tree_regressor(df, 'shower_time', 'lep_time', remove_outliers=True)
-# gp_results = fit_gaussian_process_regressor(df, 'shower_time', 'lep_time', remove_outliers=True)
-# svr_results = fit_svr(df, 'shower_time', 'lep_time', remove_outliers=True)
-# 
-# # Compare results table
-# models_results = {
-#     'Decision Tree': {'metrics': dt_results[1], 'subset': dt_results[2], 'outliers': dt_results[3]},
-#     'Gaussian Process': {'metrics': gp_results[2], 'subset': gp_results[3], 'outliers': gp_results[4]},
-#     'SVR': {'metrics': svr_results[2], 'subset': svr_results[3], 'outliers': svr_results[4]},
-# }
-# 
-# # Create a table of metrics for comparison
-# metrics_df = pd.DataFrame({
-#     'Model': list(models_results.keys()),
-#     'R²': [m['metrics']['r2'] for m in models_results.values()],
-#     'RMSE': [m['metrics']['rmse'] for m in models_results.values()],
-#     'Outliers Removed': [np.sum(~m['outliers']['mask']) if 'outliers' in m else 0 for m in models_results.values()],
-#     'Best Subset R²': [m['subset']['r2'] if m['subset'] is not None else None for m in models_results.values()],
-#     'Best Subset Size': [m['subset']['size'] if m['subset'] is not None else None for m in models_results.values()]
-# })
-# 
-# print("\nModel Performance Comparison:")
-# print(metrics_df.sort_values('R²', ascending=False))
+def fit_linear_regression(df, feat1, feat2, find_subsets=True, remove_outliers=True, outlier_method='influence'):
+    X = df[[feat1]].values
+    y = df[feat2].values
+    
+    outlier_mask = np.ones(len(df), dtype=bool)
+    if remove_outliers:
+        outlier_mask, outlier_scores = detect_outliers(X, y, method=outlier_method, model_factory=lambda X, y: LinearRegression().fit(X, y))
+        X_filtered = X[outlier_mask]
+        y_filtered = y[outlier_mask]
+    else:
+        X_filtered = X
+        y_filtered = y
+    
+    def lr_factory(X_train, y_train):
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        
+        lr = LinearRegression()
+        lr.fit(X_train_scaled, y_train)
+        
+        class LRWrapper:
+            def __init__(self, lr, scaler):
+                self.lr = lr
+                self.scaler = scaler
+            
+            def predict(self, X):
+                if X.ndim == 1:
+                    X = X.reshape(-1, 1)
+                X_scaled = self.scaler.transform(X)
+                return self.lr.predict(X_scaled)
+        
+        return LRWrapper(lr, scaler)
+    
+    model = lr_factory(X_filtered, y_filtered)
+    
+    y_pred = model.predict(X_filtered)
+    
+    metrics = {
+        'r2': r2_score(y_filtered, y_pred),
+        'mae': mean_absolute_error(y_filtered, y_pred),
+        'mse': mean_squared_error(y_filtered, y_pred),
+        'rmse': np.sqrt(mean_squared_error(y_filtered, y_pred))
+    }
+    
+    best_subset = None
+    subset_results = None
+    cluster_models = {}
+    
+    if find_subsets:
+        df_filtered = df.iloc[np.where(outlier_mask)[0]]
+        
+        def lr_subset_factory(X_train, y_train):
+            scaler = StandardScaler()
+            X_train_scaled = scaler.fit_transform(X_train)
+            
+            lr = LinearRegression()
+            lr.fit(X_train_scaled, y_train)
+            
+            class LRWrapper:
+                def __init__(self, lr, scaler):
+                    self.lr = lr
+                    self.scaler = scaler
+                
+                def predict(self, X):
+                    if X.ndim == 1:
+                        X = X.reshape(-1, 1)
+                    X_scaled = self.scaler.transform(X)
+                    return self.lr.predict(X_scaled)
+            
+            return LRWrapper(lr, scaler)
+        
+        subset_results = find_optimal_data_subsets(
+            df_filtered, feat1, feat2, 
+            model_factory=lr_subset_factory,
+            model_name="Linear Regression"
+        )
+        
+        if subset_results:
+            # Create a best subset dataframe with cluster assignments
+            best_subset = df_filtered.copy()
+            best_subset['cluster'] = subset_results['gmm_labels']
+            
+            # Create models for each cluster
+            if 'cluster_metrics' in subset_results and subset_results['cluster_metrics']:
+                for cluster_info in subset_results['cluster_metrics']:
+                    cluster_id = cluster_info['label']
+                    cluster_mask = best_subset['cluster'] == cluster_id
+                    
+                    if np.sum(cluster_mask) >= 5:  # Only create models for clusters with sufficient data
+                        cluster_X = best_subset.loc[cluster_mask, feat1].values.reshape(-1, 1)
+                        cluster_y = best_subset.loc[cluster_mask, feat2].values
+                        cluster_models[cluster_id] = lr_subset_factory(cluster_X, cluster_y)
+    
+    fig, axes = plt.subplots(1, 2, figsize=(18, 7))
+    
+    plot_regression_relationship(
+        model_name="Linear Regression", 
+        X=X_filtered, 
+        y=y_filtered, 
+        y_pred=y_pred,
+        x_new=np.linspace(X_filtered.min(), X_filtered.max(), 100).reshape(-1, 1),
+        y_new=model.predict(np.linspace(X_filtered.min(), X_filtered.max(), 100).reshape(-1, 1)),
+        ax=axes[0],
+        metrics=metrics
+    )
+    
+    if find_subsets and best_subset is not None:
+        subset_X = best_subset[feat1].values.reshape(-1, 1)
+        subset_y = best_subset[feat2].values
+        
+        if cluster_models:
+            axes[1].set_title(f"Linear Regression (Per-Cluster Models)")
+            
+            # First plot the global model as a red line
+            x_new = np.linspace(X_filtered.min(), X_filtered.max(), 100).reshape(-1, 1)
+            y_new = model.predict(np.linspace(X_filtered.min(), X_filtered.max(), 100).reshape(-1, 1))
+            axes[1].plot(x_new, y_new, color='red', linewidth=2.5, label='Global Model', zorder=10)
+            
+            colors = plt.cm.tab10(np.linspace(0, 1, 10))
+            for cluster_id, cluster_data in best_subset.groupby('cluster'):
+                cluster_X = cluster_data[feat1].values.reshape(-1, 1)
+                cluster_y = cluster_data[feat2].values
+                cluster_model = cluster_models.get(cluster_id)
+                
+                if cluster_model:
+                    cluster_y_pred = cluster_model.predict(cluster_X)
+                    
+                    axes[1].scatter(cluster_X, cluster_y, alpha=0.6, 
+                                   color=colors[cluster_id % len(colors)], 
+                                   label=f"Cluster {cluster_id}")
+                    
+                    x_sorted = np.sort(cluster_X, axis=0)
+                    y_pred_sorted = cluster_model.predict(x_sorted)
+                    
+                    axes[1].plot(x_sorted, y_pred_sorted, '--', 
+                                color=colors[cluster_id % len(colors)], 
+                                linewidth=2)
+                    
+                    cluster_r2 = r2_score(cluster_y, cluster_y_pred)
+                    cluster_rmse = np.sqrt(mean_squared_error(cluster_y, cluster_y_pred))
+                    
+                    handles, labels = axes[1].get_legend_handles_labels()
+                    labels = [f"{label} (R²={cluster_r2:.2f}, RMSE={cluster_rmse:.2f})" 
+                             if label == f"Cluster {cluster_id}" else label 
+                             for label in labels]
+                    axes[1].legend(handles, labels)
+            
+            # Create separate figure for cluster performance metrics
+            if 'cluster_metrics' in subset_results and subset_results['cluster_metrics']:
+                fig_metrics, ax_bars = plt.subplots(figsize=(12, 6))
+                
+                cluster_metrics = subset_results['cluster_metrics']
+                cluster_labels = [f"C{m['label']}\n(n={m['size']})" for m in cluster_metrics]
+                cv_r2 = [m['cv_r2'] for m in cluster_metrics]
+                spearman_rho = [m['spearman_rho'] for m in cluster_metrics]
+                spearman_p = [m['spearman_p'] for m in cluster_metrics]
+                mi_values = [m.get('mi', 0) for m in cluster_metrics]  # Add MI values
+                
+                x = np.arange(len(cluster_labels))
+                width = 0.2  # Make bars narrower to fit 4 bars
+                bar_colors = plt.cm.tab10(np.linspace(0, 1, 10))[:len(cluster_labels)]
+                
+                rects1 = ax_bars.bar(x - 1.5*width, cv_r2, width, label='CV R²', color=bar_colors)
+                rects2 = ax_bars.bar(x - 0.5*width, spearman_rho, width, label='Spearman ρ', 
+                                    color=[(c[0], c[1], c[2], 0.7) for c in bar_colors])
+                rects3 = ax_bars.bar(x + 0.5*width, spearman_p, width, label='Spearman p', 
+                                    color=[(c[0], c[1], c[2], 0.4) for c in bar_colors])
+                rects4 = ax_bars.bar(x + 1.5*width, mi_values, width, label='Mutual Info', 
+                                    color=[(c[0], c[1], c[2], 0.9) for c in bar_colors])
+                
+                ax_bars.set_ylabel('Score / p-value / MI')
+                ax_bars.set_title(f"Linear Regression Performance within Clusters", fontsize=14)
+                ax_bars.set_xticks(x)
+                ax_bars.set_xticklabels(cluster_labels)
+                ax_bars.legend(fontsize='small')
+                ax_bars.axhline(0, color='grey', linewidth=0.8)
+                
+                # Dynamic Y limits
+                all_values = cv_r2 + spearman_rho + mi_values
+                min_val = min([min(all_values, default=0), min(spearman_p, default=0)])
+                max_val = max([max(all_values, default=0), max(spearman_p, default=0)])
+                ax_bars.set_ylim(min(min_val * 1.1 if min_val < 0 else -0.1, -0.1),
+                               max(1.05, max_val * 1.1 if max_val > 0 else 0.1))
+                
+                # Add bar labels
+                def add_bar_labels(bars, format_str="{:.2f}"):
+                    for bar in bars:
+                        height = bar.get_height()
+                        if not np.isnan(height):
+                            ax_bars.annotate(format_str.format(height),
+                                          xy=(bar.get_x() + bar.get_width() / 2, height),
+                                          xytext=(0, 3 if height >= 0 else -12),
+                                          textcoords="offset points",
+                                          ha='center', va='bottom' if height >= 0 else 'top', fontsize=8)
+                
+                add_bar_labels(rects1)
+                add_bar_labels(rects2)
+                add_bar_labels(rects3, format_str="{:.3f}")
+                add_bar_labels(rects4, format_str="{:.3f}")
+                ax_bars.grid(True, axis='y', linestyle='--', alpha=0.6)
+                
+                plt.tight_layout()
+                plt.show()
+        else:
+            subset_y_pred = model.predict(subset_X)
+            plot_regression_relationship(
+                model_name=f"Linear Regression (Best Subset, {len(subset_X)} points)",
+                X=subset_X,
+                y=subset_y,
+                y_pred=subset_y_pred,
+                x_new=np.linspace(subset_X.min(), subset_X.max(), 100).reshape(-1, 1),
+                y_new=model.predict(np.linspace(subset_X.min(), subset_X.max(), 100).reshape(-1, 1)),
+                ax=axes[1],
+                metrics={
+                    'r2': r2_score(subset_y, subset_y_pred),
+                    'mae': mean_absolute_error(subset_y, subset_y_pred),
+                    'mse': mean_squared_error(subset_y, subset_y_pred),
+                    'rmse': np.sqrt(mean_squared_error(subset_y, subset_y_pred))
+                }
+            )
+    else:
+        x_new = np.linspace(X_filtered.min(), X_filtered.max(), 100).reshape(-1, 1)
+        y_new = model.predict(x_new)
+        axes[1].scatter(X_filtered, y_filtered, alpha=0.6)
+        axes[1].plot(x_new, y_new, 'r-', linewidth=2)
+        axes[1].set_title("Linear Regression Original Data")
+        axes[1].set_xlabel(feat1)
+        axes[1].set_ylabel(feat2)
+        axes[1].grid(True, linestyle='--', alpha=0.7)
+    
+    plt.tight_layout()
+    plt.show()
+    
+    results = {
+        'model': model,
+        'metrics': metrics,
+        'X': X_filtered,
+        'y': y_filtered,
+        'y_pred': y_pred,
+        'best_subset': best_subset,
+        'subset_results': subset_results,
+        'cluster_models': cluster_models,
+        'outlier_mask': outlier_mask,
+        'outlier_scores': outlier_scores
+    }
+    
+    print(f"Linear Regression Performance:")
+    print(f"R²: {metrics['r2']:.4f}")
+    print(f"MAE: {metrics['mae']:.4f}")
+    print(f"RMSE: {metrics['rmse']:.4f}")
+    
+    if find_subsets and subset_results:
+        best_cluster_metrics = subset_results.get('cluster_metrics', [])
+        if best_cluster_metrics:
+            print("\nPer-Cluster Model Performance:")
+            for cluster_info in best_cluster_metrics:
+                cluster_id = cluster_info['label']
+                size = cluster_info['size']
+                r2 = cluster_info.get('cv_r2', 0)
+                rmse = cluster_info.get('y_std', 0) * np.sqrt(1 - max(0, r2))
+                mi = cluster_info.get('mi', 0)
+                print(f"  Cluster {cluster_id} (size: {size}): R²={r2:.4f}, RMSE={rmse:.4f}, MI={mi:.4f}")
+    
+    return results
+
+
+def fit_pytorch_neural_net(df, feat1, feat2, hidden_layers=[10, 5], learning_rate=0.01, epochs=100, find_subsets=True, remove_outliers=True, outlier_method='influence'):
+    """
+    Fit a PyTorch neural network to model the relationship between two variables.
+    
+    Parameters:
+    -----------
+    df : DataFrame
+        The dataframe containing the data
+    feat1 : str
+        Column name for feature 1
+    feat2 : str
+        Column name for feature 2
+    hidden_layers : list
+        List of integers specifying the number of neurons in each hidden layer
+    learning_rate : float
+        Learning rate for optimizer
+    epochs : int
+        Number of training epochs
+    find_subsets : bool
+        Whether to find optimal data subsets
+    remove_outliers : bool
+        Whether to remove outliers before fitting
+    outlier_method : str
+        Method for outlier detection ('residual', 'distance', 'influence')
+        
+    Returns:
+    --------
+    dict
+        Dictionary containing model, metrics, and other results
+    """
+    import torch
+    import torch.nn as nn
+    import torch.optim as optim
+    from torch.utils.data import TensorDataset, DataLoader
+    
+    X = df[[feat1]].values
+    y = df[feat2].values.reshape(-1, 1)
+    
+    # Define neural network model
+    class NeuralNet(nn.Module):
+        def __init__(self, input_size, hidden_layers, output_size=1):
+            super(NeuralNet, self).__init__()
+            self.layers = nn.ModuleList()
+            
+            # Input layer to first hidden layer
+            self.layers.append(nn.Linear(input_size, hidden_layers[0]))
+            
+            # Hidden layers
+            for i in range(len(hidden_layers) - 1):
+                self.layers.append(nn.Linear(hidden_layers[i], hidden_layers[i+1]))
+            
+            # Last hidden layer to output layer
+            self.layers.append(nn.Linear(hidden_layers[-1], output_size))
+            
+            # Activation function
+            self.relu = nn.ReLU()
+            
+        def forward(self, x):
+            for i in range(len(self.layers) - 1):
+                x = self.relu(self.layers[i](x))
+            
+            # No activation for output layer (regression)
+            x = self.layers[-1](x)
+            return x
+    
+    # Wrapper class for integration with scikit-learn style API
+    class TorchNNWrapper:
+        def __init__(self, input_size=1, hidden_layers=[10, 5], output_size=1, lr=0.01, epochs=1000):
+            self.input_size = input_size
+            self.hidden_layers = hidden_layers
+            self.output_size = output_size
+            self.lr = lr
+            self.epochs = epochs
+            self.model = NeuralNet(input_size, hidden_layers, output_size)
+            self.scaler_X = StandardScaler()
+            self.scaler_y = StandardScaler()
+            self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+            self.model.to(self.device)
+            
+        def fit(self, X, y):
+            # Scale the data
+            X_scaled = self.scaler_X.fit_transform(X)
+            y_scaled = self.scaler_y.fit_transform(y.reshape(-1, 1))
+            
+            # Convert to PyTorch tensors
+            X_tensor = torch.FloatTensor(X_scaled).to(self.device)
+            y_tensor = torch.FloatTensor(y_scaled).to(self.device)
+            
+            # Define loss function and optimizer
+            criterion = nn.MSELoss()
+            optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
+            
+            # Training loop
+            self.model.train()
+            for epoch in range(self.epochs):
+                # Forward pass
+                outputs = self.model(X_tensor)
+                loss = criterion(outputs, y_tensor)
+                
+                # Backward and optimize
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                
+                # Print loss every 100 epochs
+                if (epoch+1) % 100 == 0:
+                    print(f'Epoch [{epoch+1}/{self.epochs}], Loss: {loss.item():.6f}')
+                    
+            return self
+            
+        def predict(self, X):
+            # Ensure X is 2D
+            if X.ndim == 1:
+                X = X.reshape(-1, 1)
+                
+            # Scale the input
+            X_scaled = self.scaler_X.transform(X)
+            X_tensor = torch.FloatTensor(X_scaled).to(self.device)
+            
+            # Switch to evaluation mode
+            self.model.eval()
+            
+            # Make predictions
+            with torch.no_grad():
+                y_scaled_pred = self.model(X_tensor).cpu().numpy()
+                
+            # Inverse transform to get predictions in original scale
+            y_pred = self.scaler_y.inverse_transform(y_scaled_pred)
+            return y_pred.flatten()
+    
+    # Detect and remove outliers if requested
+    outlier_mask = np.ones(len(X), dtype=bool)
+    outlier_scores = np.zeros(len(X))
+    
+    if remove_outliers:
+        def simple_model_factory(X_train, y_train):
+            nn_simple = TorchNNWrapper(input_size=1, hidden_layers=[5], epochs=500)
+            nn_simple.fit(X_train, y_train)
+            return nn_simple
+            
+        outlier_mask, outlier_scores = detect_outliers(
+            X, y, method=outlier_method, max_remove_percent=10, 
+            model_factory=simple_model_factory
+        )
+    
+    # Use filtered data for model fitting
+    X_filtered = X[outlier_mask]
+    y_filtered = y[outlier_mask]
+    
+    # Create and fit the PyTorch model
+    model = TorchNNWrapper(input_size=1, hidden_layers=hidden_layers, 
+                          lr=learning_rate, epochs=epochs)
+    model.fit(X_filtered, y_filtered)
+    
+    # Make predictions
+    y_pred = model.predict(X_filtered)
+    
+    # Calculate metrics
+    metrics = {
+        'r2': r2_score(y_filtered, y_pred),
+        'rmse': np.sqrt(mean_squared_error(y_filtered, y_pred)),
+        'mae': mean_absolute_error(y_filtered, y_pred),
+        'mse': mean_squared_error(y_filtered, y_pred)
+    }
+    
+    # Create prediction grid for smooth curve
+    x_new = create_prediction_grid(X.ravel())
+    y_new = model.predict(x_new)
+    
+    # Find optimal data subsets if requested
+    best_subset = None
+    subset_results = None
+    cluster_models = {}
+    
+    if find_subsets:
+        # Use only the filtered data for subset discovery
+        df_filtered = df.iloc[np.where(outlier_mask)[0]]
+        
+        # Create a model factory for NN
+        def nn_subset_factory(X_train, y_train):
+            # Create a smaller NN for each subset to avoid overfitting
+            nn_subset = TorchNNWrapper(input_size=1, hidden_layers=[max(3, hidden_layers[0]//2)], 
+                                      lr=learning_rate, epochs=min(500, epochs))
+            nn_subset.fit(X_train, y_train)
+            return nn_subset
+            
+        subset_results = find_optimal_data_subsets(
+            df_filtered, feat1, feat2, nn_subset_factory, 
+            f"Neural Network ({hidden_layers})", use_2d_clustering=True
+        )
+        
+        if subset_results:
+            # Create a best subset dataframe with cluster assignments
+            best_subset = df_filtered.copy()
+            best_subset['cluster'] = subset_results['gmm_labels']
+            
+            # Create models for each cluster
+            if 'cluster_metrics' in subset_results and subset_results['cluster_metrics']:
+                for cluster_info in subset_results['cluster_metrics']:
+                    cluster_id = cluster_info['label']
+                    cluster_mask = best_subset['cluster'] == cluster_id
+                    
+                    if np.sum(cluster_mask) >= 5:  # Only create models for clusters with sufficient data
+                        cluster_X = best_subset.loc[cluster_mask, feat1].values.reshape(-1, 1)
+                        cluster_y = best_subset.loc[cluster_mask, feat2].values
+                        cluster_models[cluster_id] = nn_subset_factory(cluster_X, cluster_y)
+    
+    # Create main visualization figure
+    fig, axes = plt.subplots(1, 2, figsize=(18, 7))
+    
+    # Plot the main model on the first axis
+    plot_regression_relationship(
+        model_name=f"Neural Network ({hidden_layers})", 
+        X=X_filtered, 
+        y=y_filtered, 
+        y_pred=y_pred,
+        x_new=x_new,
+        y_new=y_new,
+        ax=axes[0],
+        metrics=metrics
+    )
+    
+    # Show regional performance in a separate figure
+    regional_metrics = analyze_regional_performance(X_filtered, y_filtered, y_pred)
+    plot_regional_performance(regional_metrics, f"Neural Network ({hidden_layers})")
+    
+    # Plot per-cluster models on the second axis if available
+    if find_subsets and best_subset is not None:
+        subset_X = best_subset[feat1].values.reshape(-1, 1)
+        subset_y = best_subset[feat2].values
+        
+        if cluster_models:
+            axes[1].set_title(f"Neural Network (Per-Cluster Models)")
+            
+            # First plot the global model as a red line
+            axes[1].plot(x_new, y_new, color='red', linewidth=2.5, label='Global Model', zorder=10)
+            
+            colors = plt.cm.tab10(np.linspace(0, 1, 10))
+            for cluster_id, cluster_data in best_subset.groupby('cluster'):
+                cluster_X = cluster_data[feat1].values.reshape(-1, 1)
+                cluster_y = cluster_data[feat2].values
+                cluster_model = cluster_models.get(cluster_id)
+                
+                if cluster_model:
+                    cluster_y_pred = cluster_model.predict(cluster_X)
+                    
+                    axes[1].scatter(cluster_X, cluster_y, alpha=0.6, 
+                                   color=colors[cluster_id % len(colors)], 
+                                   label=f"Cluster {cluster_id}")
+                    
+                    x_sorted = np.sort(cluster_X, axis=0)
+                    y_pred_sorted = cluster_model.predict(x_sorted)
+                    
+                    axes[1].plot(x_sorted, y_pred_sorted, '--', 
+                                color=colors[cluster_id % len(colors)], 
+                                linewidth=2)
+                    
+                    cluster_r2 = r2_score(cluster_y, cluster_y_pred)
+                    cluster_rmse = np.sqrt(mean_squared_error(cluster_y, cluster_y_pred))
+                    
+                    handles, labels = axes[1].get_legend_handles_labels()
+                    labels = [f"{label} (R²={cluster_r2:.2f}, RMSE={cluster_rmse:.2f})" 
+                             if label == f"Cluster {cluster_id}" else label 
+                             for label in labels]
+                    axes[1].legend(handles, labels)
+            
+            # Create separate figure for cluster performance metrics with MI bar added
+            if 'cluster_metrics' in subset_results and subset_results['cluster_metrics']:
+                fig_metrics, ax_bars = plt.subplots(figsize=(12, 6))
+                
+                cluster_metrics = subset_results['cluster_metrics']
+                cluster_labels = [f"C{m['label']}\n(n={m['size']})" for m in cluster_metrics]
+                cv_r2 = [m['cv_r2'] for m in cluster_metrics]
+                spearman_rho = [m['spearman_rho'] for m in cluster_metrics]
+                spearman_p = [m['spearman_p'] for m in cluster_metrics]
+                mi_values = [m.get('mi', 0) for m in cluster_metrics]  # Add MI values
+                
+                x = np.arange(len(cluster_labels))
+                width = 0.2  # Make bars narrower to fit 4 bars
+                bar_colors = plt.cm.tab10(np.linspace(0, 1, 10))[:len(cluster_labels)]
+                
+                rects1 = ax_bars.bar(x - 1.5*width, cv_r2, width, label='CV R²', color=bar_colors)
+                rects2 = ax_bars.bar(x - 0.5*width, spearman_rho, width, label='Spearman ρ', 
+                                    color=[(c[0], c[1], c[2], 0.7) for c in bar_colors])
+                rects3 = ax_bars.bar(x + 0.5*width, spearman_p, width, label='Spearman p', 
+                                    color=[(c[0], c[1], c[2], 0.4) for c in bar_colors])
+                rects4 = ax_bars.bar(x + 1.5*width, mi_values, width, label='Mutual Info', 
+                                    color=[(c[0], c[1], c[2], 0.9) for c in bar_colors])
+                
+                ax_bars.set_ylabel('Score / p-value / MI')
+                ax_bars.set_title(f"Neural Network Performance within Clusters", fontsize=14)
+                ax_bars.set_xticks(x)
+                ax_bars.set_xticklabels(cluster_labels)
+                ax_bars.legend(fontsize='small')
+                ax_bars.axhline(0, color='grey', linewidth=0.8)
+                
+                # Dynamic Y limits
+                all_values = cv_r2 + spearman_rho + mi_values
+                min_val = min([min(all_values, default=0), min(spearman_p, default=0)])
+                max_val = max([max(all_values, default=0), max(spearman_p, default=0)])
+                ax_bars.set_ylim(min(min_val * 1.1 if min_val < 0 else -0.1, -0.1),
+                               max(1.05, max_val * 1.1 if max_val > 0 else 0.1))
+                
+                # Add bar labels
+                def add_bar_labels(bars, format_str="{:.2f}"):
+                    for bar in bars:
+                        height = bar.get_height()
+                        if not np.isnan(height):
+                            ax_bars.annotate(format_str.format(height),
+                                          xy=(bar.get_x() + bar.get_width() / 2, height),
+                                          xytext=(0, 3 if height >= 0 else -12),
+                                          textcoords="offset points",
+                                          ha='center', va='bottom' if height >= 0 else 'top', fontsize=8)
+                
+                add_bar_labels(rects1)
+                add_bar_labels(rects2)
+                add_bar_labels(rects3, format_str="{:.3f}")
+                add_bar_labels(rects4, format_str="{:.3f}")
+                ax_bars.grid(True, axis='y', linestyle='--', alpha=0.6)
+                
+                plt.tight_layout()
+                plt.show()
+        else:
+            # If no cluster models, just show the data with the global model
+            axes[1].scatter(X_filtered, y_filtered, color='blue', alpha=0.6, s=50, edgecolors='k')
+            axes[1].plot(x_new, y_new, color='red', linewidth=2.5, label='Global Model')
+            axes[1].set_title(f"Neural Network ({hidden_layers})")
+            axes[1].legend()
+    
+    # Configure axes general settings
+    for ax in axes:
+        ax.set_xlabel(feat1, fontsize=12)
+        ax.set_ylabel(feat2, fontsize=12)
+        ax.grid(True, linestyle='--', alpha=0.6)
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Print results
+    print(f"Neural Network ({hidden_layers}) Results:")
+    print(f"R² score: {metrics['r2']:.4f}")
+    print(f"RMSE: {metrics['rmse']:.4f}")
+    
+    # Print per-cluster performance
+    if find_subsets and subset_results:
+        best_cluster_metrics = subset_results.get('cluster_metrics', [])
+        if best_cluster_metrics:
+            print("\nPer-Cluster Model Performance:")
+            for cluster_info in best_cluster_metrics:
+                cluster_id = cluster_info['label']
+                size = cluster_info['size']
+                r2 = cluster_info.get('cv_r2', 0)
+                rmse = cluster_info.get('y_std', 0) * np.sqrt(1 - max(0, r2))
+                mi = cluster_info.get('mi', 0)
+                print(f"  Cluster {cluster_id} (size: {size}): R²={r2:.4f}, RMSE={rmse:.4f}, MI={mi:.4f}")
+    
+    # Return comprehensive results
+    results = {
+        'model': model,
+        'metrics': metrics,
+        'X': X_filtered,
+        'y': y_filtered,
+        'y_pred': y_pred,
+        'best_subset': best_subset,
+        'subset_results': subset_results,
+        'cluster_models': cluster_models,
+        'outlier_mask': outlier_mask, 
+        'outlier_scores': outlier_scores
+    }
+    
+    return results
