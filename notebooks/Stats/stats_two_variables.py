@@ -313,26 +313,27 @@ def find_optimal_threshold(X, y, threshold_range=None, step=0.1):
     return best_threshold, results_df
 
 def fit_decision_tree_regressor(df, feat1, feat2, max_depth=3, find_subsets=True, remove_outliers=True, outlier_method='influence'):
-    X = df[feat1].values.reshape(-1, 1)
+    X = df[[feat1]].values
     y = df[feat2].values
+    
+    # Detect and remove outliers if requested
+    outlier_mask = np.ones(len(X), dtype=bool)
+    if remove_outliers:
+        X_filtered, y_filtered, outlier_mask, outlier_scores = detect_outliers(
+            X, y, method=outlier_method,
+            model_factory=lambda X, y: DecisionTreeRegressor(max_depth=max_depth).fit(X, y)
+        )
+    else:
+        X_filtered = X
+        y_filtered = y
     
     # Define model factory function for consistent model creation
     def dt_factory(X_train, y_train):
         return DecisionTreeRegressor(max_depth=max_depth, random_state=42).fit(X_train, y_train)
     
-    # Detect and remove outliers if requested
-    outlier_mask = np.ones(len(X), dtype=bool)  # Default: keep all points
-    outlier_scores = np.zeros(len(X))
-    
-    if remove_outliers:
-        outlier_mask, outlier_scores = detect_outliers(
-            X, y, method=outlier_method, max_remove_percent=10, 
-            model_factory=dt_factory
-        )
-    
     # Fit model on filtered data
-    X_filtered = X[outlier_mask]
-    y_filtered = y[outlier_mask]
+    X_filtered = X_filtered
+    y_filtered = y_filtered
     
     model = dt_factory(X_filtered, y_filtered)
     
@@ -563,12 +564,46 @@ def fit_decision_tree_regressor(df, feat1, feat2, max_depth=3, find_subsets=True
     
     return model, metrics, subset_results, {'mask': outlier_mask, 'scores': outlier_scores}
 
-def fit_gaussian_process_regressor(df, feat1, feat2, find_subsets=True, remove_outliers=True, outlier_method='influence'):
-    X = df[feat1].values.reshape(-1, 1)
+def fit_gaussian_process_regressor(df, feat1, feat2, find_subsets=True, remove_outliers=True, outlier_method='influence', alpha=0.1):
+    X = df[[feat1]].values
     y = df[feat2].values
+
+    # Define a factory function to use for outlier detection
+    def gp_factory(X_train, y_train):
+        # Scale the data
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        
+        # Use a simple RBF kernel for outlier detection to avoid overfitting
+        kernel = 1.0 * RBF(length_scale=1.0)
+        gp = GaussianProcessRegressor(kernel=kernel, alpha=alpha, normalize_y=True, random_state=42)
+        gp.fit(X_train_scaled, y_train)
+        
+        # Wrapper to handle scaling
+        class GPWrapper:
+            def __init__(self, gp, scaler):
+                self.gp = gp
+                self.scaler = scaler
+            
+            def predict(self, X):
+                X_scaled = self.scaler.transform(X)
+                return self.gp.predict(X_scaled)
+                
+        return GPWrapper(gp, scaler)
+
+    # Detect and remove outliers
+    outlier_mask = np.ones(len(X), dtype=bool)
+    if remove_outliers:
+        X_filtered, y_filtered, outlier_mask, outlier_scores = detect_outliers(
+            X, y, method=outlier_method, 
+            model_factory=gp_factory
+        )
+    else:
+        X_filtered = X
+        y_filtered = y
     
     scaler_X = StandardScaler()
-    X_scaled = scaler_X.fit_transform(X)
+    X_scaled = scaler_X.fit_transform(X_filtered)
     
     # Try different kernels for better non-linear relationships
     kernels = [
@@ -585,42 +620,10 @@ def fit_gaussian_process_regressor(df, feat1, feat2, find_subsets=True, remove_o
         # Add kernels with this length scale
         kernels.append((f"RBF (ls={length_scale})", 1.0 * RBF(length_scale=length_scale)))
     
-    # Define a factory function to use for outlier detection
-    def gp_factory(X_train, y_train):
-        # Scale the data
-        scaler = StandardScaler()
-        X_train_scaled = scaler.fit_transform(X_train)
-        
-        # Use a simple RBF kernel for outlier detection to avoid overfitting
-        kernel = 1.0 * RBF(length_scale=1.0)
-        gp = GaussianProcessRegressor(kernel=kernel, alpha=0.1, normalize_y=True, random_state=42)
-        gp.fit(X_train_scaled, y_train)
-        
-        # Wrapper to handle scaling
-        class GPWrapper:
-            def __init__(self, gp, scaler):
-                self.gp = gp
-                self.scaler = scaler
-            
-            def predict(self, X):
-                X_scaled = self.scaler.transform(X)
-                return self.gp.predict(X_scaled)
-                
-        return GPWrapper(gp, scaler)
-    
-    # Detect and remove outliers if requested
-    outlier_mask = np.ones(len(X), dtype=bool)  # Default: keep all points
-    outlier_scores = np.zeros(len(X))
-    
-    if remove_outliers:
-        outlier_mask, outlier_scores = detect_outliers(
-            X, y, method=outlier_method, max_remove_percent=10, 
-            model_factory=gp_factory
-        )
     
     # Use filtered data for model fitting
-    X_filtered = X[outlier_mask]
-    y_filtered = y[outlier_mask]
+    X_filtered = X_filtered
+    y_filtered = y_filtered
     X_filtered_scaled = scaler_X.transform(X_filtered)
     
     # Find best kernel on filtered data
@@ -631,7 +634,7 @@ def fit_gaussian_process_regressor(df, feat1, feat2, find_subsets=True, remove_o
     
     # Try all kernels on filtered data
     for kernel_name, kernel in kernels:
-        model = GaussianProcessRegressor(kernel=kernel, alpha=0.1, normalize_y=True, random_state=42)
+        model = GaussianProcessRegressor(kernel=kernel, alpha=alpha, normalize_y=True, random_state=42)
         model.fit(X_filtered_scaled, y_filtered)
         
         y_pred = model.predict(X_filtered_scaled)
@@ -692,7 +695,7 @@ def fit_gaussian_process_regressor(df, feat1, feat2, find_subsets=True, remove_o
             else:
                 kernel = 1.0 * RBF(length_scale=best_length_scale)
                 
-            gp = GaussianProcessRegressor(kernel=kernel, alpha=0.1, normalize_y=True, random_state=42)
+            gp = GaussianProcessRegressor(kernel=kernel, alpha=alpha, normalize_y=True, random_state=42)
             gp.fit(X_train_scaled, y_train)
             
             # Create a wrapper that handles scaling internally
@@ -925,14 +928,14 @@ def fit_svr(df, feat1, feat2, find_subsets=True, remove_outliers=True, outlier_m
     outlier_scores = np.zeros(len(X))
     
     if remove_outliers:
-        outlier_mask, outlier_scores = detect_outliers(
+        X_filtered, y_filtered, outlier_mask, outlier_scores = detect_outliers(
             X, y, method=outlier_method, max_remove_percent=10, 
             model_factory=svr_factory
         )
+    else:
+        X_filtered = X
+        y_filtered = y
     
-    # Use filtered data for model fitting
-    X_filtered = X[outlier_mask]
-    y_filtered = y[outlier_mask]
     X_filtered_scaled = scaler_X.transform(X_filtered)
     
     # Find best parameters on filtered data
@@ -1093,7 +1096,7 @@ def fit_svr(df, feat1, feat2, find_subsets=True, remove_outliers=True, outlier_m
                 
                 x = np.arange(len(cluster_labels))
                 width = 0.2  # Make bars narrower to fit 4 bars
-                bar_colors = plt.cm.tab10(np.linspace(0, 1, 10))[:len(cluster_labels)]
+                bar_colors = distinct_colors[:len(cluster_labels)]
                 
                 rects1 = ax_bars.bar(x - 1.5*width, cv_r2, width, label='CV R²', color=bar_colors)
                 rects2 = ax_bars.bar(x - 0.5*width, spearman_rho, width, label='Spearman ρ', 
@@ -1127,15 +1130,12 @@ def fit_svr(df, feat1, feat2, find_subsets=True, remove_outliers=True, outlier_m
                                           xytext=(0, 3 if height >= 0 else -12),
                                           textcoords="offset points",
                                           ha='center', va='bottom' if height >= 0 else 'top', fontsize=8)
-                
+            
                 add_bar_labels(rects1)
                 add_bar_labels(rects2)
                 add_bar_labels(rects3, format_str="{:.3f}")
                 add_bar_labels(rects4, format_str="{:.3f}")
                 ax_bars.grid(True, axis='y', linestyle='--', alpha=0.6)
-                
-                plt.tight_layout()
-                plt.show()
         else:
             subset_y_pred = model.predict(scaler_X.transform(subset_X))
             plot_regression_relationship(
@@ -1967,6 +1967,10 @@ def detect_outliers(X, y, method='residual', max_remove_percent=10, model_factor
         
     Returns:
     --------
+    X_clean : array
+        Filtered X data with outliers removed
+    y_clean : array
+        Filtered y data with outliers removed
     mask : boolean array
         Mask for non-outlier points (True = keep, False = outlier)
     outlier_scores : array
@@ -1977,7 +1981,7 @@ def detect_outliers(X, y, method='residual', max_remove_percent=10, model_factor
     
     if max_remove < 1:
         # Nothing to remove
-        return np.ones(n, dtype=bool), np.zeros(n)
+        return X, y, np.ones(n, dtype=bool), np.zeros(n)
     
     # Default model if none provided
     if model_factory is None:
@@ -2053,10 +2057,10 @@ def detect_outliers(X, y, method='residual', max_remove_percent=10, model_factor
     
     # If no improvement was found, keep all points
     if best_n_removed == 0:
-        return np.ones(n, dtype=bool), outlier_scores
+        return X, y, np.ones(n, dtype=bool), outlier_scores
     
     print(f"Outlier removal: removed {best_n_removed} points ({best_n_removed/n*100:.1f}%), R² improved from {initial_r2:.4f} to {best_r2:.4f}")
-    return best_mask, outlier_scores
+    return X[best_mask], y[best_mask], best_mask, outlier_scores
 
 def fit_linear_regression(df, feat1, feat2, find_subsets=True, remove_outliers=True, outlier_method='influence'):
     X = df[[feat1]].values
@@ -2064,9 +2068,7 @@ def fit_linear_regression(df, feat1, feat2, find_subsets=True, remove_outliers=T
     
     outlier_mask = np.ones(len(df), dtype=bool)
     if remove_outliers:
-        outlier_mask, outlier_scores = detect_outliers(X, y, method=outlier_method, model_factory=lambda X, y: LinearRegression().fit(X, y))
-        X_filtered = X[outlier_mask]
-        y_filtered = y[outlier_mask]
+        X_filtered, y_filtered, outlier_mask, outlier_scores = detect_outliers(X, y, method=outlier_method, model_factory=lambda X, y: LinearRegression().fit(X, y))
     else:
         X_filtered = X
         y_filtered = y
@@ -2695,3 +2697,462 @@ def fit_pytorch_neural_net(df, feat1, feat2, hidden_layers=[10, 5], learning_rat
     }
     
     return results
+
+def fit_rulefit(df, feat1, feat2, find_subsets=True, remove_outliers=True, outlier_method='influence'):
+    try:
+        from rulefit import RuleFit
+    except ImportError:
+        print("RuleFit not installed. Please install with: pip install rulefit")
+        return None
+        
+    X = df[[feat1]].values
+    y = df[feat2].values
+    
+    outlier_mask = np.ones(len(X), dtype=bool)
+    if remove_outliers:
+        X_filtered, y_filtered, outlier_mask, outlier_scores = detect_outliers(
+            X, y, method=outlier_method,
+            model_factory=lambda X, y: LinearRegression().fit(X, y)
+        )
+    else:
+        X_filtered = X
+        y_filtered = y
+    
+    def rulefit_factory(X_train, y_train):
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        
+        rf = RuleFit(tree_size=3, rfmode='regress')
+        rf.fit(X_train_scaled, y_train, feature_names=[feat1])
+        
+        class RuleFitWrapper:
+            def __init__(self, rf, scaler):
+                self.rf = rf
+                self.scaler = scaler
+            
+            def predict(self, X):
+                if X.ndim == 1:
+                    X = X.reshape(-1, 1)
+                X_scaled = self.scaler.transform(X)
+                return self.rf.predict(X_scaled)
+        
+        return RuleFitWrapper(rf, scaler)
+    
+    scaler_X = StandardScaler()
+    X_filtered_scaled = scaler_X.fit_transform(X_filtered)
+    
+    try:
+        model = rulefit_factory(X_filtered, y_filtered)
+        
+        y_pred_filtered = model.predict(X_filtered)
+        errors_filtered = np.abs(y_filtered - y_pred_filtered)
+        
+        metrics = {
+            'r2': r2_score(y_filtered, y_pred_filtered),
+            'rmse': np.sqrt(mean_squared_error(y_filtered, y_pred_filtered)),
+            'mae': mean_absolute_error(y_filtered, y_pred_filtered),
+            'mse': mean_squared_error(y_filtered, y_pred_filtered)
+        }
+        
+        x_new = create_prediction_grid(X.ravel())
+        y_new = model.predict(x_new)
+        
+        best_subset = None
+        subset_results = None
+        cluster_models = {}
+        
+        if find_subsets:
+            df_filtered = df.iloc[np.where(outlier_mask)[0]]
+            
+            def rulefit_subset_factory(X_train, y_train):
+                scaler_subset = StandardScaler()
+                X_train_scaled = scaler_subset.fit_transform(X_train)
+                
+                rf_model = RuleFit(tree_size=2, rfmode='regress')
+                rf_model.fit(X_train_scaled, y_train, feature_names=[feat1])
+                
+                class RuleFitWrapper:
+                    def __init__(self, rf, scaler):
+                        self.rf = rf
+                        self.scaler = scaler
+                    
+                    def predict(self, X):
+                        if X.ndim == 1:
+                            X = X.reshape(-1, 1)
+                        X_scaled = self.scaler.transform(X)
+                        return self.rf.predict(X_scaled)
+                
+                return RuleFitWrapper(rf_model, scaler_subset)
+                
+            subset_results = find_optimal_data_subsets(
+                df_filtered, feat1, feat2, rulefit_subset_factory, 
+                "RuleFit", use_2d_clustering=True
+            )
+            
+            if subset_results:
+                best_subset = df_filtered.copy()
+                best_subset['cluster'] = subset_results['gmm_labels']
+                
+                if 'cluster_metrics' in subset_results and subset_results['cluster_metrics']:
+                    for cluster_info in subset_results['cluster_metrics']:
+                        cluster_id = cluster_info['label']
+                        cluster_mask = best_subset['cluster'] == cluster_id
+                        
+                        if np.sum(cluster_mask) >= 5:
+                            cluster_X = best_subset.loc[cluster_mask, feat1].values.reshape(-1, 1)
+                            cluster_y = best_subset.loc[cluster_mask, feat2].values
+                            cluster_models[cluster_id] = rulefit_subset_factory(cluster_X, cluster_y)
+    
+        fig, axes = plt.subplots(1, 2, figsize=(18, 7))
+        
+        plot_regression_relationship(
+            model_name="RuleFit", 
+            X=X_filtered, 
+            y=y_filtered, 
+            y_pred=y_pred_filtered,
+            x_new=x_new,
+            y_new=y_new,
+            ax=axes[0],
+            metrics=metrics
+        )
+        
+        if find_subsets and best_subset is not None:
+            subset_X = best_subset[feat1].values.reshape(-1, 1)
+            subset_y = best_subset[feat2].values
+            
+            if cluster_models:
+                axes[1].set_title("RuleFit (Per-Cluster Models)")
+                
+                axes[1].plot(x_new, y_new, color='red', linewidth=2.5, label='Global Model', zorder=10)
+                
+                colors = plt.cm.tab10(np.linspace(0, 1, 10))
+                for cluster_id, cluster_data in best_subset.groupby('cluster'):
+                    cluster_X = cluster_data[feat1].values.reshape(-1, 1)
+                    cluster_y = cluster_data[feat2].values
+                    cluster_model = cluster_models.get(cluster_id)
+                    
+                    if cluster_model:
+                        cluster_y_pred = cluster_model.predict(cluster_X)
+                        
+                        axes[1].scatter(cluster_X, cluster_y, alpha=0.6, 
+                                       color=colors[cluster_id % len(colors)], 
+                                       label=f"Cluster {cluster_id}")
+                        
+                        x_sorted = np.sort(cluster_X, axis=0)
+                        y_pred_sorted = cluster_model.predict(x_sorted)
+                        
+                        axes[1].plot(x_sorted, y_pred_sorted, '--', 
+                                    color=colors[cluster_id % len(colors)], 
+                                    linewidth=2)
+                        
+                        cluster_r2 = r2_score(cluster_y, cluster_y_pred)
+                        cluster_rmse = np.sqrt(mean_squared_error(cluster_y, cluster_y_pred))
+                        
+                        handles, labels = axes[1].get_legend_handles_labels()
+                        labels = [f"{label} (R²={cluster_r2:.2f}, RMSE={cluster_rmse:.2f})" 
+                                 if label == f"Cluster {cluster_id}" else label 
+                                 for label in labels]
+                        axes[1].legend(handles, labels)
+                
+                if 'cluster_metrics' in subset_results and subset_results['cluster_metrics']:
+                    fig_metrics, ax_bars = plt.subplots(figsize=(12, 6))
+                    
+                    cluster_metrics = subset_results['cluster_metrics']
+                    cluster_labels = [f"C{m['label']}\n(n={m['size']})" for m in cluster_metrics]
+                    cv_r2 = [m['cv_r2'] for m in cluster_metrics]
+                    cv_rmse = [m['cv_rmse'] for m in cluster_metrics]
+                    train_r2 = [m['train_r2'] for m in cluster_metrics]
+                    train_rmse = [m['train_rmse'] for m in cluster_metrics]
+                    
+                    x = np.arange(len(cluster_labels))
+                    width = 0.2
+                    bar_colors = plt.cm.tab10(np.linspace(0, 1, 10))[:len(cluster_labels)]
+                    
+                    rects1 = ax_bars.bar(x - 1.5*width, cv_r2, width, label='CV R²', color=bar_colors)
+                    rects2 = ax_bars.bar(x - 0.5*width, train_r2, width, label='Train R²', color=bar_colors, alpha=0.7)
+                    rects3 = ax_bars.bar(x + 0.5*width, cv_rmse, width, label='CV RMSE', color=bar_colors, hatch='///', alpha=0.9)
+                    rects4 = ax_bars.bar(x + 1.5*width, train_rmse, width, label='Train RMSE', color=bar_colors, hatch='///', alpha=0.6)
+                    
+                    ax_bars.set_xlabel('Clusters')
+                    ax_bars.set_title('RuleFit Performance Across Clusters')
+                    ax_bars.set_xticks(x)
+                    ax_bars.set_xticklabels(cluster_labels)
+                    ax_bars.legend()
+                    
+                    def add_bar_labels(bars, format_str="{:.2f}"):
+                        for bar in bars:
+                            height = bar.get_height()
+                            ax_bars.annotate(format_str.format(height),
+                                            xy=(bar.get_x() + bar.get_width() / 2, height),
+                                            xytext=(0, 3),
+                                            textcoords="offset points",
+                                            ha='center', va='bottom' if height >= 0 else 'top', fontsize=8)
+                    
+                    add_bar_labels(rects1)
+                    add_bar_labels(rects2)
+                    add_bar_labels(rects3, format_str="{:.3f}")
+                    add_bar_labels(rects4, format_str="{:.3f}")
+                    ax_bars.grid(True, axis='y', linestyle='--', alpha=0.6)
+                    
+                    plt.tight_layout()
+                    plt.show()
+            else:
+                subset_y_pred = model.predict(subset_X)
+                axes[1].scatter(subset_X, subset_y, alpha=0.6)
+                axes[1].plot(x_new, y_new, 'r-', linewidth=2)
+                axes[1].set_title(f"RuleFit (Single Model)")
+                axes[1].set_xlabel(feat1)
+                axes[1].set_ylabel(feat2)
+                axes[1].grid(True)
+        
+        plt.tight_layout()
+        plt.show()
+        
+        results = {
+            'model': model,
+            'metrics': metrics,
+            'filtered_mask': outlier_mask,
+            'subset_results': subset_results,
+            'cluster_models': cluster_models,
+            'best_subset': best_subset
+        }
+        
+        return results
+        
+    except Exception as e:
+        print(f"Error in RuleFit fitting: {e}")
+        return None
+
+def fit_ripper(df, feat1, feat2, find_subsets=True, remove_outliers=True, outlier_method='influence'):
+    try:
+        from wittgenstein import RIPPER
+    except ImportError:
+        print("Wittgenstein (RIPPER) not installed. Please install with: pip install wittgenstein")
+        return None
+        
+    X = df[[feat1]].values
+    y = df[feat2].values
+    
+    from sklearn.preprocessing import KBinsDiscretizer
+    
+    outlier_mask = np.ones(len(X), dtype=bool)
+    if remove_outliers:
+        X_filtered, y_filtered, outlier_mask, outlier_scores = detect_outliers(
+            X, y, method=outlier_method,
+            model_factory=lambda X, y: LinearRegression().fit(X, y)
+        )
+    else:
+        X_filtered = X
+        y_filtered = y
+    
+    def ripper_factory(X_train, y_train):
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        
+        disc = KBinsDiscretizer(n_bins=5, encode='ordinal', strategy='quantile')
+        y_train_binned = disc.fit_transform(y_train.reshape(-1, 1)).ravel().astype(int)
+        
+        df_train = pd.DataFrame(X_train_scaled, columns=[feat1])
+        df_train['target'] = y_train_binned
+        
+        rip = RIPPER()
+        rip.fit(df_train, class_feat='target', pos_class=None)
+        
+        class RIPPERWrapper:
+            def __init__(self, ripper, scaler, disc, input_feat, orig_y):
+                self.ripper = ripper
+                self.scaler = scaler
+                self.disc = disc
+                self.input_feat = input_feat
+                
+                self.bin_to_value = {}
+                binned = disc.transform(orig_y.reshape(-1, 1)).ravel().astype(int)
+                for bin_val in np.unique(binned):
+                    mask = binned == bin_val
+                    self.bin_to_value[bin_val] = np.mean(orig_y[mask])
+            
+            def predict(self, X):
+                if X.ndim == 1:
+                    X = X.reshape(-1, 1)
+                X_scaled = self.scaler.transform(X)
+                
+                df_pred = pd.DataFrame(X_scaled, columns=[self.input_feat])
+                
+                y_pred_binned = self.ripper.predict(df_pred)
+                
+                y_pred = np.array([self.bin_to_value.get(int(p), np.mean(list(self.bin_to_value.values()))) 
+                                  for p in y_pred_binned])
+                return y_pred
+        
+        return RIPPERWrapper(rip, scaler, disc, feat1, y_train)
+    
+    try:
+        model = ripper_factory(X_filtered, y_filtered)
+        
+        y_pred_filtered = model.predict(X_filtered)
+        errors_filtered = np.abs(y_filtered - y_pred_filtered)
+        
+        metrics = {
+            'r2': r2_score(y_filtered, y_pred_filtered),
+            'rmse': np.sqrt(mean_squared_error(y_filtered, y_pred_filtered)),
+            'mae': mean_absolute_error(y_filtered, y_pred_filtered),
+            'mse': mean_squared_error(y_filtered, y_pred_filtered)
+        }
+        
+        x_new = create_prediction_grid(X.ravel())
+        y_new = model.predict(x_new)
+        
+        best_subset = None
+        subset_results = None
+        cluster_models = {}
+        
+        if find_subsets:
+            df_filtered = df.iloc[np.where(outlier_mask)[0]]
+            
+            def ripper_subset_factory(X_train, y_train):
+                return ripper_factory(X_train, y_train)
+                
+            subset_results = find_optimal_data_subsets(
+                df_filtered, feat1, feat2, ripper_subset_factory, 
+                "RIPPER", use_2d_clustering=True
+            )
+            
+            if subset_results:
+                best_subset = df_filtered.copy()
+                best_subset['cluster'] = subset_results['gmm_labels']
+                
+                if 'cluster_metrics' in subset_results and subset_results['cluster_metrics']:
+                    for cluster_info in subset_results['cluster_metrics']:
+                        cluster_id = cluster_info['label']
+                        cluster_mask = best_subset['cluster'] == cluster_id
+                        
+                        if np.sum(cluster_mask) >= 5:
+                            cluster_X = best_subset.loc[cluster_mask, feat1].values.reshape(-1, 1)
+                            cluster_y = best_subset.loc[cluster_mask, feat2].values
+                            cluster_models[cluster_id] = ripper_subset_factory(cluster_X, cluster_y)
+    
+        fig, axes = plt.subplots(1, 2, figsize=(18, 7))
+        
+        plot_regression_relationship(
+            model_name="RIPPER", 
+            X=X_filtered, 
+            y=y_filtered, 
+            y_pred=y_pred_filtered,
+            x_new=x_new,
+            y_new=y_new,
+            ax=axes[0],
+            metrics=metrics
+        )
+        
+        try:
+            print("RIPPER Rules:")
+            print(model.ripper.ruleset_)
+        except:
+            print("Could not access RIPPER ruleset")
+        
+        if find_subsets and best_subset is not None:
+            subset_X = best_subset[feat1].values.reshape(-1, 1)
+            subset_y = best_subset[feat2].values
+            
+            if cluster_models:
+                axes[1].set_title("RIPPER (Per-Cluster Models)")
+                
+                axes[1].plot(x_new, y_new, color='red', linewidth=2.5, label='Global Model', zorder=10)
+                
+                colors = plt.cm.tab10(np.linspace(0, 1, 10))
+                for cluster_id, cluster_data in best_subset.groupby('cluster'):
+                    cluster_X = cluster_data[feat1].values.reshape(-1, 1)
+                    cluster_y = cluster_data[feat2].values
+                    cluster_model = cluster_models.get(cluster_id)
+                    
+                    if cluster_model:
+                        cluster_y_pred = cluster_model.predict(cluster_X)
+                        
+                        axes[1].scatter(cluster_X, cluster_y, alpha=0.6, 
+                                       color=colors[cluster_id % len(colors)], 
+                                       label=f"Cluster {cluster_id}")
+                        
+                        x_sorted = np.sort(cluster_X, axis=0)
+                        y_pred_sorted = cluster_model.predict(x_sorted)
+                        
+                        axes[1].plot(x_sorted, y_pred_sorted, '--', 
+                                    color=colors[cluster_id % len(colors)], 
+                                    linewidth=2)
+                        
+                        cluster_r2 = r2_score(cluster_y, cluster_y_pred)
+                        cluster_rmse = np.sqrt(mean_squared_error(cluster_y, cluster_y_pred))
+                        
+                        handles, labels = axes[1].get_legend_handles_labels()
+                        labels = [f"{label} (R²={cluster_r2:.2f}, RMSE={cluster_rmse:.2f})" 
+                                 if label == f"Cluster {cluster_id}" else label 
+                                 for label in labels]
+                        axes[1].legend(handles, labels)
+                
+                if 'cluster_metrics' in subset_results and subset_results['cluster_metrics']:
+                    fig_metrics, ax_bars = plt.subplots(figsize=(12, 6))
+                    
+                    cluster_metrics = subset_results['cluster_metrics']
+                    cluster_labels = [f"C{m['label']}\n(n={m['size']})" for m in cluster_metrics]
+                    cv_r2 = [m['cv_r2'] for m in cluster_metrics]
+                    cv_rmse = [m['cv_rmse'] for m in cluster_metrics]
+                    train_r2 = [m['train_r2'] for m in cluster_metrics]
+                    train_rmse = [m['train_rmse'] for m in cluster_metrics]
+                    
+                    x = np.arange(len(cluster_labels))
+                    width = 0.2
+                    bar_colors = plt.cm.tab10(np.linspace(0, 1, 10))[:len(cluster_labels)]
+                    
+                    rects1 = ax_bars.bar(x - 1.5*width, cv_r2, width, label='CV R²', color=bar_colors)
+                    rects2 = ax_bars.bar(x - 0.5*width, train_r2, width, label='Train R²', color=bar_colors, alpha=0.7)
+                    rects3 = ax_bars.bar(x + 0.5*width, cv_rmse, width, label='CV RMSE', color=bar_colors, hatch='///', alpha=0.9)
+                    rects4 = ax_bars.bar(x + 1.5*width, train_rmse, width, label='Train RMSE', color=bar_colors, hatch='///', alpha=0.6)
+                    
+                    ax_bars.set_xlabel('Clusters')
+                    ax_bars.set_title('RIPPER Performance Across Clusters')
+                    ax_bars.set_xticks(x)
+                    ax_bars.set_xticklabels(cluster_labels)
+                    ax_bars.legend()
+                    
+                    def add_bar_labels(bars, format_str="{:.2f}"):
+                        for bar in bars:
+                            height = bar.get_height()
+                            ax_bars.annotate(format_str.format(height),
+                                            xy=(bar.get_x() + bar.get_width() / 2, height),
+                                            xytext=(0, 3),
+                                            textcoords="offset points",
+                                            ha='center', va='bottom' if height >= 0 else 'top', fontsize=8)
+                    
+                    add_bar_labels(rects1)
+                    add_bar_labels(rects2)
+                    add_bar_labels(rects3, format_str="{:.3f}")
+                    add_bar_labels(rects4, format_str="{:.3f}")
+                    ax_bars.grid(True, axis='y', linestyle='--', alpha=0.6)
+                    
+                    plt.tight_layout()
+                    plt.show()
+            else:
+                subset_y_pred = model.predict(subset_X)
+                axes[1].scatter(subset_X, subset_y, alpha=0.6)
+                axes[1].plot(x_new, y_new, 'r-', linewidth=2)
+                axes[1].set_title(f"RIPPER (Single Model)")
+                axes[1].set_xlabel(feat1)
+                axes[1].set_ylabel(feat2)
+                axes[1].grid(True)
+        
+        plt.tight_layout()
+        plt.show()
+        
+        results = {
+            'model': model,
+            'metrics': metrics,
+            'filtered_mask': outlier_mask,
+            'subset_results': subset_results,
+            'cluster_models': cluster_models,
+            'best_subset': best_subset
+        }
+        
+        return results
+        
+    except Exception as e:
+        print(f"Error in RIPPER fitting: {e}")
+        return None
