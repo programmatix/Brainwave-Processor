@@ -19,6 +19,8 @@ from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import KBinsDiscretizer
 from matplotlib.colors import ListedColormap, BoundaryNorm
 import matplotlib.gridspec as gridspec
+from matplotlib.patches import Patch
+from matplotlib.patches import Ellipse
 
 # Set a seed for reproducibility
 np.random.seed(42)
@@ -928,7 +930,7 @@ def compare_model_performance(models_results):
     
     return performance_df
 
-def find_optimal_data_subsets(df, shower_var, lep_var, model_factory, model_name, n_clusters=3, min_subset_size=10):
+def find_optimal_data_subsets(df, shower_var, lep_var, model_factory, model_name, n_clusters=3, min_subset_size=10, use_2d_clustering=True):
     """
     Find data subsets where a model performs particularly well using clustering and local validation.
     
@@ -948,15 +950,24 @@ def find_optimal_data_subsets(df, shower_var, lep_var, model_factory, model_name
         Number of clusters to try
     min_subset_size : int
         Minimum number of points required in a subset
+    use_2d_clustering : bool
+        Whether to cluster based on both X and Y (True) or just X (False)
         
     Returns:
     --------
     dict with performance metrics for the best subset
     """
-    X = df[shower_var].values.reshape(-1, 1)
+    X_1d = df[shower_var].values.reshape(-1, 1)
     y = df[lep_var].values
     
-    # First approach: Clustering the input space
+    # For 2D clustering, include both variables
+    if use_2d_clustering:
+        X_2d = np.column_stack((df[shower_var].values, df[lep_var].values))
+        print(f"Using 2D clustering on both {shower_var} and {lep_var}")
+    else:
+        X_2d = X_1d
+        print(f"Using 1D clustering on {shower_var} only")
+    
     print(f"Finding optimal subsets for {model_name}...")
     
     # Try different clustering approaches
@@ -964,29 +975,34 @@ def find_optimal_data_subsets(df, shower_var, lep_var, model_factory, model_name
     
     # 1. K-Means clustering
     kmeans = KMeans(n_clusters=n_clusters, random_state=42)
-    cluster_labels = kmeans.fit_predict(X)
+    cluster_labels = kmeans.fit_predict(X_2d)
     clustering_methods.append(("K-Means", cluster_labels))
     
     # 2. DBSCAN for density-based clustering (finds outliers too)
     # Estimate eps parameter based on nearest neighbors
-    nn = NearestNeighbors(n_neighbors=3).fit(X)
-    distances, _ = nn.kneighbors(X)
-    distances = np.sort(distances[:, 2])  # Distances to 3rd nearest neighbor
+    nn = NearestNeighbors(n_neighbors=min(5, len(X_2d)-1)).fit(X_2d)
+    distances, _ = nn.kneighbors(X_2d)
+    distances = np.sort(distances[:, min(3, len(X_2d)-2)])  # Distances to 3rd nearest neighbor
     eps = np.percentile(distances, 80)  # Try using 80th percentile as eps
     
-    dbscan = DBSCAN(eps=eps, min_samples=3)
-    dbscan_labels = dbscan.fit_predict(X)
+    dbscan = DBSCAN(eps=eps, min_samples=min(5, len(X_2d)-1))
+    dbscan_labels = dbscan.fit_predict(X_2d)
     clustering_methods.append(("DBSCAN", dbscan_labels))
     
-    # 3. Gaussian Mixture Model (GMM)
+    # 3. Gaussian Mixture Model (GMM) with fuzzy assignment
     gmm = GaussianMixture(n_components=n_clusters, random_state=42)
-    gmm_labels = gmm.fit_predict(X)
+    gmm.fit(X_2d)
+    
+    # Get both hard labels and probabilities
+    gmm_labels = gmm.predict(X_2d)
+    gmm_probs = gmm.predict_proba(X_2d)
+    
     clustering_methods.append(("GMM", gmm_labels))
     
     # 4. Simple quantile-based clustering
-    n_bins = min(5, len(X) // min_subset_size)
+    n_bins = min(5, len(X_1d) // min_subset_size)
     kb = KBinsDiscretizer(n_bins=n_bins, encode='ordinal', strategy='quantile')
-    quantiles = kb.fit_transform(X).astype(int).flatten()
+    quantiles = kb.fit_transform(X_1d).astype(int).flatten()
     clustering_methods.append(("Quantiles", quantiles))
     
     # Evaluate model performance in each cluster
@@ -997,15 +1013,17 @@ def find_optimal_data_subsets(df, shower_var, lep_var, model_factory, model_name
     
     # Create a discrete colormap for the clusters
     n_max_clusters = max([len(np.unique(labels)) for _, labels in clustering_methods])
-    distinct_colors = plt.cm.tab20(np.linspace(0, 1, n_max_clusters))
+    distinct_colors = plt.cm.tab20(np.linspace(0, 1, max(n_max_clusters, n_clusters)))
     
     # Create a more compact multi-panel figure
     n_methods = len(clustering_methods)
-    n_cols = min(4, n_methods)  # Up to 4 methods per row
+    n_cols = min(2, n_methods)  # 2 methods per row for better visualization
     n_rows = (n_methods + n_cols - 1) // n_cols  # Ceiling division
     
-    fig = plt.figure(figsize=(5*n_cols, 4*n_rows))
+    fig = plt.figure(figsize=(14, 4*n_rows))
     gs = gridspec.GridSpec(n_rows, n_cols*2)  # Double the columns for scatter+bar pairs
+    
+    debug_info = {}  # Store debugging information
     
     for i, (method_name, labels) in enumerate(clustering_methods):
         # Calculate row and column for this method
@@ -1013,10 +1031,10 @@ def find_optimal_data_subsets(df, shower_var, lep_var, model_factory, model_name
         col = i % n_cols
         
         # Skip if only one cluster or all points are noise (-1)
-        if len(np.unique(labels)) <= 1 or (len(np.unique(labels)) == 2 and -1 in labels):
-            continue
-            
         unique_labels = np.unique(labels)
+        if len(unique_labels) <= 1 or (len(unique_labels) == 2 and -1 in unique_labels):
+            print(f"WARNING: {method_name} produced only {len(unique_labels)} unique clusters. Skipping.")
+            continue
         
         # Create a colormap that matches the cluster labels
         if method_name == "DBSCAN":
@@ -1031,19 +1049,68 @@ def find_optimal_data_subsets(df, shower_var, lep_var, model_factory, model_name
         ax1 = plt.subplot(gs[row, col*2])
         ax2 = plt.subplot(gs[row, col*2+1])
         
-        # Plot the clusters
-        scatter = ax1.scatter(X, y, c=labels, cmap=cmap, norm=norm, s=50, edgecolor='k')
+        # Use special coloring for GMM to show fuzzy assignments
+        if method_name == "GMM":
+            # Blend colors based on membership probabilities
+            blended_colors = np.zeros((len(X_1d), 3))
+            for point_idx in range(len(X_1d)):
+                for cluster_idx in range(n_clusters):
+                    if cluster_idx < len(distinct_colors):
+                        weight = gmm_probs[point_idx, cluster_idx]
+                        color = distinct_colors[cluster_idx][:3]  # Get RGB without alpha
+                        blended_colors[point_idx] += weight * np.array(color)
+            
+            # Plot the clusters with blended colors
+            scatter = ax1.scatter(X_1d, y, c=blended_colors, s=50, edgecolor='k')
+            
+            # Draw ellipses to show GMM components
+            for j in range(n_clusters):
+                if use_2d_clustering:
+                    # For 2D, draw the actual covariance ellipses
+                    mean = gmm.means_[j]
+                    covar = gmm.covariances_[j]
+                    v, w = np.linalg.eigh(covar)
+                    angle = np.arctan2(w[1, 0], w[0, 0])
+                    angle = 180 * angle / np.pi  # Convert to degrees
+                    v = 2.0 * np.sqrt(2.0) * np.sqrt(v)
+                    
+                    ell = Ellipse(xy=(mean[0], mean[1]),
+                                  width=v[0], height=v[1],
+                                  angle=angle, 
+                                  color=distinct_colors[j])
+                    ell.set_clip_box(ax1.bbox)
+                    ell.set_alpha(0.3)
+                    ax1.add_artist(ell)
+                else:
+                    # For 1D, just draw vertical lines at means
+                    ax1.axvline(x=gmm.means_[j][0], color=distinct_colors[j], linestyle='--', alpha=0.7)
+        else:
+            # Plot with discrete colors for other methods
+            scatter = ax1.scatter(X_1d, y, c=labels, cmap=cmap, norm=norm, s=50, edgecolor='k')
+        
         ax1.set_title(f"Clusters using {method_name}")
         ax1.set_xlabel(shower_var)
         ax1.set_ylabel(lep_var)
-        legend1 = ax1.legend(*scatter.legend_elements(), title="Clusters", loc="best", fontsize='small')
-        ax1.add_artist(legend1)
+        
+        # Add legend for clusters
+        if method_name == "GMM":
+            legend_elements = [Patch(facecolor=distinct_colors[i], edgecolor='black', alpha=0.7, 
+                                     label=f'Cluster {i} (n={np.sum(labels==i)})')
+                              for i in range(n_clusters)]
+            ax1.legend(handles=legend_elements, loc="best", fontsize='small')
+        else:
+            legend1 = ax1.legend(*scatter.legend_elements(), title="Clusters", loc="best", fontsize='small')
+            ax1.add_artist(legend1)
         
         # Set up for bar chart
         cluster_r2 = []
+        cluster_spearman = []  # Add Spearman's correlation
+        cluster_mi = []        # Add Mutual Information
         cluster_sizes = []
         cluster_names = []
         cluster_colors = []
+        
+        debug_info[method_name] = {}
         
         # Evaluate each cluster
         for idx, label in enumerate(unique_labels):
@@ -1054,8 +1121,23 @@ def find_optimal_data_subsets(df, shower_var, lep_var, model_factory, model_name
             if np.sum(mask) < min_subset_size:  # Skip clusters with too few points
                 continue
                 
-            X_cluster = X[mask]
+            X_cluster = X_1d[mask]
             y_cluster = y[mask]
+            
+            # Save diagnostics
+            cluster_info = {
+                'size': int(np.sum(mask)),
+                'X_range': (float(X_cluster.min()), float(X_cluster.max())),
+                'y_range': (float(y_cluster.min()), float(y_cluster.max())),
+                'X_std': float(X_cluster.std()),
+                'y_std': float(y_cluster.std())
+            }
+            
+            # Debug: Print cluster stats
+            print(f"\n{method_name} - Cluster {label}:")
+            print(f"  Size: {cluster_info['size']} points")
+            print(f"  {shower_var} range: {cluster_info['X_range'][0]:.2f} to {cluster_info['X_range'][1]:.2f} (std={cluster_info['X_std']:.2f})")
+            print(f"  {lep_var} range: {cluster_info['y_range'][0]:.2f} to {cluster_info['y_range'][1]:.2f} (std={cluster_info['y_std']:.2f})")
             
             # Use cross-validation if enough data
             if len(X_cluster) >= min_subset_size:
@@ -1068,19 +1150,62 @@ def find_optimal_data_subsets(df, shower_var, lep_var, model_factory, model_name
                     y_train, y_test = y_cluster[train_idx], y_cluster[test_idx]
                     
                     # Fit model on this fold
-                    model = model_factory(X_train, y_train)
-                    y_pred = model.predict(X_test)
-                    
-                    # Calculate score
-                    score = r2_score(y_test, y_pred)
-                    cv_scores.append(score)
+                    try:
+                        model = model_factory(X_train, y_train)
+                        y_pred = model.predict(X_test)
+                        
+                        # Calculate score
+                        score = r2_score(y_test, y_pred)
+                        cv_scores.append(score)
+                        cluster_info[f'fold_scores'] = [float(s) for s in cv_scores]
+                    except Exception as e:
+                        print(f"  ERROR in CV fold: {str(e)}")
+                        cluster_info['error'] = str(e)
                 
-                avg_score = np.mean(cv_scores)
+                if cv_scores:
+                    avg_score = np.mean(cv_scores)
+                    cluster_info['avg_r2'] = float(avg_score)
+                    print(f"  CV R² Score: {avg_score:.4f}")
+                else:
+                    avg_score = -float('inf')
+                    cluster_info['avg_r2'] = float(avg_score)
+                    print("  Failed to calculate CV R² score")
             else:
                 # For small clusters, use the full dataset but don't consider for best subset
-                model = model_factory(X_cluster, y_cluster)
-                y_pred = model.predict(X_cluster)
-                avg_score = r2_score(y_cluster, y_pred)
+                try:
+                    model = model_factory(X_cluster, y_cluster)
+                    y_pred = model.predict(X_cluster)
+                    avg_score = r2_score(y_cluster, y_pred)
+                    cluster_info['avg_r2'] = float(avg_score)
+                    print(f"  R² Score: {avg_score:.4f} (not cross-validated)")
+                except Exception as e:
+                    avg_score = -float('inf')
+                    cluster_info['avg_r2'] = float(avg_score)
+                    cluster_info['error'] = str(e)
+                    print(f"  ERROR: {str(e)}")
+            
+            # Calculate Spearman correlation
+            try:
+                spearman = stats.spearmanr(X_cluster.flatten(), y_cluster).correlation
+                cluster_info['spearman'] = float(spearman)
+                print(f"  Spearman's correlation: {spearman:.4f}")
+            except Exception as e:
+                spearman = 0
+                cluster_info['spearman_error'] = str(e)
+                print(f"  ERROR calculating Spearman: {str(e)}")
+            
+            # Calculate Mutual Information
+            try:
+                # Bin the data to estimate MI (continuous MI is challenging)
+                X_binned = KBinsDiscretizer(n_bins=min(10, len(X_cluster)//5), encode='ordinal', strategy='uniform').fit_transform(X_cluster)
+                y_binned = KBinsDiscretizer(n_bins=min(10, len(y_cluster)//5), encode='ordinal', strategy='uniform').fit_transform(y_cluster.reshape(-1, 1))
+                mi = mutual_info_score(X_binned.flatten(), y_binned.flatten())
+                cluster_info['mi'] = float(mi)
+                print(f"  Mutual Information: {mi:.4f}")
+            except Exception as e:
+                mi = 0
+                cluster_info['mi_error'] = str(e)
+                print(f"  ERROR calculating MI: {str(e)}")
             
             # Get color for this cluster (same as scatter plot)
             if method_name == "DBSCAN" and label == -1:
@@ -1090,9 +1215,14 @@ def find_optimal_data_subsets(df, shower_var, lep_var, model_factory, model_name
             
             # Save for bar chart
             cluster_r2.append(avg_score)
+            cluster_spearman.append(spearman)
+            cluster_mi.append(mi)
             cluster_sizes.append(np.sum(mask))
             cluster_names.append(f"{label}\n(n={np.sum(mask)})")
             cluster_colors.append(color)
+            
+            # Store in debug info
+            debug_info[method_name][f'cluster_{label}'] = cluster_info
             
             # Track best performing cluster
             if avg_score > best_score and np.sum(mask) >= min_subset_size:
@@ -1113,50 +1243,158 @@ def find_optimal_data_subsets(df, shower_var, lep_var, model_factory, model_name
                     'cluster': label,
                     'r2': avg_score,
                     'rmse': rmse,
+                    'spearman': spearman,
+                    'mi': mi,
                     'size': np.sum(mask),
                     'x_range': (x_min, x_max),
                     'subset_mask': mask
                 }
         
         # Plot bar chart of cluster performance with matching colors
-        bars = ax2.bar(cluster_names, cluster_r2, color=cluster_colors)
-        ax2.set_title(f"{method_name}: R² Score by Cluster")
+        x = np.arange(len(cluster_names))
+        width = 0.25  # width of the bars
+        
+        # Plot R², Spearman, and MI side by side
+        bars1 = ax2.bar(x - width, cluster_r2, width, color=cluster_colors, alpha=0.7, label='R²')
+        bars2 = ax2.bar(x, cluster_spearman, width, color=cluster_colors, alpha=0.5, hatch='///', label='Spearman')
+        bars3 = ax2.bar(x + width, cluster_mi, width, color=cluster_colors, alpha=0.5, hatch='...', label='MI')
+        
+        ax2.set_title(f"{method_name}: Performance by Cluster")
+        ax2.set_xticks(x)
+        ax2.set_xticklabels(cluster_names)
         ax2.set_ylim(-0.1, 1.0)
         ax2.axhline(y=0, color='r', linestyle='-')
         ax2.tick_params(axis='x', rotation=45, labelsize=8)
         ax2.tick_params(axis='y', labelsize=8)
+        ax2.legend()
+        
+        # Add value labels on bars
+        def add_labels(bars):
+            for bar in bars:
+                height = bar.get_height()
+                if not np.isnan(height) and height != 0:
+                    value_text = f"{height:.2f}" if abs(height) < 10 else f"{int(height)}"
+                    ax2.text(bar.get_x() + bar.get_width()/2., height + 0.02,
+                            value_text, ha='center', va='bottom', rotation=90, fontsize=7)
+        
+        add_labels(bars1)
+        add_labels(bars2)
+        add_labels(bars3)
     
     plt.tight_layout()
     plt.show()
     
-    # If we found a good subset, visualize it
+    # Save debug info to file
+    import json
+    with open('cluster_debug_info.json', 'w') as f:
+        json.dump(debug_info, f, indent=2)
+    print("Debugging information saved to 'cluster_debug_info.json'")
+    
+    # If we found a good subset, visualize it with decision boundaries
     if best_subset is not None:
-        X_best = X[best_subset]
+        X_best = X_1d[best_subset]
         y_best = y[best_subset]
         
         model = model_factory(X_best, y_best)
-        y_pred = model.predict(X_best)
         
-        plt.figure(figsize=(10, 6))
-        plt.scatter(X, y, color='lightgray', label='All data')
+        # Create a more detailed visualization for decision boundaries
+        plt.figure(figsize=(12, 8))
+        
+        # Plot 1: Original data with subset highlighted
+        plt.subplot(2, 1, 1)
+        plt.scatter(X_1d, y, color='lightgray', label='All data')
         plt.scatter(X_best, y_best, color='blue', label=f'Best subset (n={len(X_best)})')
         
         # Sort points for line plotting
         sort_idx = np.argsort(X_best.flatten())
         X_sorted = X_best[sort_idx]
-        y_pred_sorted = model.predict(X_sorted)
         
-        plt.plot(X_sorted, y_pred_sorted, 'r-', linewidth=2, label='Model prediction')
-        plt.title(f"Best Subset for {model_name}: R² = {best_performance['r2']:.4f}, RMSE = {best_performance['rmse']:.4f}")
+        # Generate a finer grid for smoother prediction line
+        X_fine = np.linspace(X_sorted.min(), X_sorted.max(), 100).reshape(-1, 1)
+        try:
+            y_pred_fine = model.predict(X_fine)
+            plt.plot(X_fine, y_pred_fine, 'r-', linewidth=2, label='Model prediction')
+        except Exception as e:
+            print(f"Error generating prediction line: {str(e)}")
+            y_pred_sorted = model.predict(X_sorted)
+            plt.plot(X_sorted, y_pred_sorted, 'r-', linewidth=2, label='Model prediction')
+        
+        plt.title(f"Best Subset for {model_name} (using {best_method})")
         plt.xlabel(shower_var)
         plt.ylabel(lep_var)
         plt.legend()
+        
+        # Plot 2: Model visualization with uncertainty (if possible)
+        plt.subplot(2, 1, 2)
+        
+        # Set range with padding
+        x_range = X_best.max() - X_best.min()
+        x_min, x_max = X_best.min() - 0.1 * x_range, X_best.max() + 0.1 * x_range
+        
+        # Create meshgrid for detailed visualization
+        xx = np.linspace(x_min, x_max, 100).reshape(-1, 1)
+        
+        # Try to get prediction with std deviation if model supports it
+        try:
+            if hasattr(model, 'predict_with_std') or (hasattr(model, 'predict') and model.__class__.__name__ == 'GaussianProcessRegressor'):
+                if hasattr(model, 'predict_with_std'):
+                    y_pred, y_std = model.predict_with_std(xx)
+                else:
+                    y_pred, y_std = model.predict(xx, return_std=True)
+                
+                # Plot mean prediction
+                plt.plot(xx, y_pred, 'r-', lw=2, label='Prediction')
+                
+                # Plot uncertainty bands
+                plt.fill_between(xx.ravel(), y_pred - 1.96 * y_std, y_pred + 1.96 * y_std,
+                                alpha=0.2, color='r', label='95% confidence interval')
+            else:
+                # For tree-based models, show decision boundaries if possible
+                if hasattr(model, 'tree_') or (hasattr(model, 'estimators_') and len(model.estimators_) > 0):
+                    y_pred = model.predict(xx)
+                    plt.plot(xx, y_pred, 'r-', lw=2, label='Prediction')
+                    
+                    # For decision trees, show the actual decision boundaries
+                    if hasattr(model, 'tree_'):
+                        # Find unique decision thresholds
+                        thresholds = []
+                        tree = model.tree_
+                        for i in range(tree.node_count):
+                            if tree.children_left[i] != tree.children_right[i]:  # it's a split node
+                                threshold = tree.threshold[i]
+                                if tree.feature[i] == 0:  # Only if it's our feature
+                                    thresholds.append(threshold)
+                        
+                        # Plot vertical lines at split points
+                        for threshold in np.unique(thresholds):
+                            plt.axvline(x=threshold, color='g', linestyle='--', alpha=0.5)
+                            plt.text(threshold, plt.ylim()[0], f"{threshold:.2f}", 
+                                   rotation=90, verticalalignment='bottom', color='g')
+                else:
+                    # Generic approach for any model
+                    y_pred = model.predict(xx)
+                    plt.plot(xx, y_pred, 'r-', lw=2, label='Prediction')
+        except Exception as e:
+            print(f"Error visualizing model: {str(e)}")
+            # Fallback to simple visualization
+            y_pred = model.predict(xx)
+            plt.plot(xx, y_pred, 'r-', lw=2, label='Prediction')
+        
+        plt.scatter(X_best, y_best, c='blue', alpha=0.6, label='Data points')
+        plt.title(f"Model Details - R² = {best_performance['r2']:.4f}, RMSE = {best_performance['rmse']:.4f}")
+        plt.xlabel(shower_var)
+        plt.ylabel(lep_var)
+        plt.legend()
+        
+        plt.tight_layout()
         plt.show()
         
-        print(f"Best subset found using {best_method}:")
+        print(f"\nBest subset found using {best_method}:")
         print(f"R² score: {best_performance['r2']:.4f}")
         print(f"RMSE: {best_performance['rmse']:.4f}")
-        print(f"Subset size: {best_performance['size']} points ({best_performance['size']/len(X)*100:.1f}% of data)")
+        print(f"Spearman's correlation: {best_performance['spearman']:.4f}")
+        print(f"Mutual Information: {best_performance['mi']:.4f}")
+        print(f"Subset size: {best_performance['size']} points ({best_performance['size']/len(X_1d)*100:.1f}% of data)")
         print(f"{shower_var} range: {best_performance['x_range'][0]:.2f} to {best_performance['x_range'][1]:.2f}")
     else:
         print("No good subsets found with the minimum required size.")
