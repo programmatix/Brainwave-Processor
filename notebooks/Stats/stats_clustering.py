@@ -13,8 +13,8 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error, r2_score, mutual_info_score, mean_absolute_error
 from sklearn.feature_selection import mutual_info_regression
 from sklearn.model_selection import KFold, cross_val_score
-from sklearn.cluster import KMeans, DBSCAN
-from sklearn.mixture import GaussianMixture
+from sklearn.cluster import KMeans, DBSCAN, SpectralClustering, AgglomerativeClustering
+from sklearn.mixture import GaussianMixture, BayesianGaussianMixture
 from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import KBinsDiscretizer
 from matplotlib.colors import ListedColormap, BoundaryNorm
@@ -25,6 +25,13 @@ from sklearn.linear_model import LinearRegression
 from sklearn.metrics import silhouette_score
 from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional, Tuple
+from scipy.spatial.distance import pdist, squareform
+from scipy.sparse.linalg import eigsh
+from sklearn.decomposition import PCA
+from scipy.stats import f_oneway, ttest_ind
+import time
+import warnings
+from collections import defaultdict
 
 # Set a seed for reproducibility
 np.random.seed(42)
@@ -552,23 +559,53 @@ def sort_clusters_by_position(result, df, feat1):
     # Remap the cluster labels
     new_labels = np.array([cluster_mapping[label] for label in result.labels])
     
-    # Remap the probabilities matrix
-    new_probs = np.zeros_like(result.probs)
-    for old_label, new_label in cluster_mapping.items():
-        new_probs[:, new_label] = result.probs[:, old_label]
+    # Remap the probabilities matrix - handle case where dims might not match
+    n_samples = len(df)
+    n_clusters = len(unique_labels)
+    new_probs = np.zeros((n_samples, n_clusters))
+    
+    # Map old probabilities to new positions based on cluster mapping
+    if hasattr(result, 'probs') and result.probs is not None:
+        old_probs = result.probs
+        
+        # Case 1: Simple remapping when dimensions match
+        if old_probs.shape[1] == n_clusters:
+            for old_label, new_label in cluster_mapping.items():
+                old_idx = np.where(unique_labels == old_label)[0][0]
+                if old_idx < old_probs.shape[1]:
+                    new_probs[:, new_label] = old_probs[:, old_idx]
+        # Case 2: If probs matrix has different dimensions, fall back to one-hot
+        else:
+            for old_label, new_label in cluster_mapping.items():
+                mask = result.labels == old_label
+                new_probs[mask, new_label] = 1.0
+                
+        # Normalize rows to sum to 1
+        row_sums = new_probs.sum(axis=1)
+        for i in range(n_samples):
+            if row_sums[i] > 0:
+                new_probs[i, :] = new_probs[i, :] / row_sums[i]
+    else:
+        # If no probs, create one-hot encoding
+        for i, label in enumerate(new_labels):
+            new_probs[i, label] = 1.0
     
     # Remap means and covariances (if present)
-    new_means = np.zeros_like(result.means)
-    for old_label, new_label in cluster_mapping.items():
-        if old_label < len(result.means) and new_label < len(result.means):
-            new_means[new_label] = result.means[old_label]
-    
+    new_means = np.zeros_like(result.means) if result.means is not None else np.zeros((n_clusters, 2))
     new_covariances = None
+    
+    if result.means is not None:
+        for old_label, new_label in cluster_mapping.items():
+            old_idx = np.where(unique_labels == old_label)[0][0]
+            if old_idx < len(result.means) and new_label < len(new_means):
+                new_means[new_label] = result.means[old_idx]
+    
     if result.covariances is not None:
         new_covariances = np.zeros_like(result.covariances)
         for old_label, new_label in cluster_mapping.items():
-            if old_label < len(result.covariances) and new_label < len(result.covariances):
-                new_covariances[new_label] = result.covariances[old_label]
+            old_idx = np.where(unique_labels == old_label)[0][0]
+            if old_idx < len(result.covariances) and new_label < len(new_covariances):
+                new_covariances[new_label] = result.covariances[old_idx]
     
     # Create updated result
     updated_result = ClusteringResult(
@@ -987,130 +1024,138 @@ def cluster_fuzzy_cmeans(df, feat1, feat2, n_clusters=3, m=2, random_state=42):
 
 def cluster_spectral_prob(df, feat1, feat2, n_clusters=3, sigma=1.0, random_state=42):
     """
-    Perform clustering using Spectral Clustering with probabilistic assignments.
+    Spectral clustering with probabilistic assignments.
+    
+    This method applies spectral clustering to the data and then uses the distance to cluster 
+    centers to compute soft assignments.
     
     Parameters:
     -----------
     df : DataFrame
         The dataframe containing the data
     feat1 : str
-        Column name for first feature
+        Column name for first feature (x-axis)
     feat2 : str
-        Column name for second feature
+        Column name for second feature (y-axis)
     n_clusters : int
-        Number of clusters
+        Number of clusters to form
     sigma : float
-        Parameter for Gaussian kernel
+        Width of the Gaussian kernel
     random_state : int
         Random seed for reproducibility
         
     Returns:
     --------
     ClusteringResult
-        Standardized clustering result object
+        Object containing cluster labels, probabilities, etc.
     """
-    from sklearn.cluster import SpectralClustering
-    from sklearn.neighbors import kneighbors_graph
-    from scipy.spatial.distance import pdist, squareform
-    import time
-    
     start_time = time.time()
     
-    # Extract features
+    # Extract data
     X = np.column_stack((df[feat1].values, df[feat2].values))
     
-    # Scale the data
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-    
-    # Compute affinity matrix (RBF kernel)
-    distances = squareform(pdist(X_scaled, 'euclidean'))
-    affinity = np.exp(-distances**2 / (2 * sigma**2))
-    
-    # Perform spectral clustering
-    model = SpectralClustering(
-        n_clusters=n_clusters,
-        affinity='precomputed',
-        random_state=random_state
-    )
-    labels = model.fit_predict(affinity)
-    
-    # Compute normalized Laplacian
-    D = np.diag(np.sum(affinity, axis=1))
-    L = D - affinity
-    D_inv_sqrt = np.diag(1.0 / np.sqrt(np.sum(affinity, axis=1)))
-    L_norm = np.dot(np.dot(D_inv_sqrt, L), D_inv_sqrt)
-    
-    # Get eigenvectors
-    eigenvalues, eigenvectors = np.linalg.eigh(L_norm)
-    # Sort by eigenvalues
-    idx = np.argsort(eigenvalues)
-    eigenvalues = eigenvalues[idx]
-    eigenvectors = eigenvectors[:, idx]
-    
-    # Get embedding (skip 0th eigenvector)
-    embedding = eigenvectors[:, 1:n_clusters+1]
-    
-    # Calculate probabilistic assignments
-    from sklearn.decomposition import PCA
-    
-    # Use PCA to find cluster centers in the embedded space
-    pca = PCA(n_components=2).fit(embedding)
-    X_pca = pca.transform(embedding)
-    
-    # Calculate cluster centers
-    centers = np.zeros((n_clusters, 2))
-    for i in range(n_clusters):
-        cluster_points = X_pca[labels == i]
-        centers[i] = np.mean(cluster_points, axis=0)
-    
-    # Calculate distances to each center in embedded space
-    distances = np.zeros((len(X_pca), n_clusters))
-    for i in range(n_clusters):
-        distances[:, i] = np.linalg.norm(X_pca - centers[i], axis=1)
-    
-    # Convert distances to probabilities using softmax
-    def softmax(x):
-        e_x = np.exp(-x)  # Negative for inverting distance
-        return e_x / e_x.sum(axis=1, keepdims=True)
-    
-    probs = softmax(distances)
-    
-    # Map centers back to original space (approximate)
-    # We can't directly map back, but we can estimate the centers
-    original_centers = np.zeros((n_clusters, 2))
-    for i in range(n_clusters):
-        mask = labels == i
-        if np.sum(mask) > 0:
-            original_centers[i] = np.mean(X[mask], axis=0)
-    
-    # Calculate pseudo-covariances for visualization
-    covariances = np.zeros((n_clusters, 2, 2))
-    for i in range(n_clusters):
-        cluster_mask = labels == i
-        if np.sum(cluster_mask) > 1:
-            cluster_points = X[cluster_mask]
-            covariances[i] = np.cov(cluster_points.T)
+    try:
+        # Compute similarity matrix (RBF kernel)
+        similarity = np.exp(-pdist(X, 'sqeuclidean') / (2 * sigma**2))
+        similarity_matrix = squareform(similarity)
+        np.fill_diagonal(similarity_matrix, 1.0)
+        
+        # Compute normalized Laplacian
+        D = np.diag(np.sum(similarity_matrix, axis=1))
+        L = D - similarity_matrix
+        D_sqrt_inv = np.diag(1.0 / np.sqrt(np.sum(similarity_matrix, axis=1)))
+        L_norm = D_sqrt_inv @ L @ D_sqrt_inv
+        
+        # Compute eigenvectors of normalized Laplacian
+        eigenvalues, eigenvectors = eigsh(L_norm, k=min(n_clusters + 1, X.shape[0] - 1), which='SM')
+        
+        # Use n_clusters eigenvectors corresponding to the smallest eigenvalues
+        # (excluding the first one)
+        embedding = eigenvectors[:, 1:n_clusters+1]
+        
+        # Check dimensionality for PCA
+        n_components = min(2, embedding.shape[1])
+        
+        # Only apply PCA if we have multiple dimensions
+        if n_components > 1 and embedding.shape[1] > 1:
+            # Use PCA to reduce to 2D if needed
+            pca = PCA(n_components=n_components).fit(embedding)
+            embedding_2d = pca.transform(embedding)
         else:
-            covariances[i] = np.eye(2)
-    
-    computation_time = time.time() - start_time
-    
-    result = ClusteringResult(
-        name='Spectral Clustering with Probabilistic Assignments',
-        labels=labels,
-        probs=probs,
-        means=original_centers,
-        covariances=covariances,
-        model={'spectral': model, 'embedding': embedding},
-        computation_time=computation_time,
-        additional_info={'sigma': sigma, 'eigenvalues': eigenvalues[:n_clusters+1]}
-    )
-    
-    # Sort clusters from left to right
-    result = sort_clusters_by_position(result, df, feat1)
-    
-    return result
+            # If only one dimension, duplicate it to create a 2D representation
+            embedding_2d = np.column_stack((embedding, np.zeros_like(embedding)))
+        
+        # Apply k-means to the embedding
+        kmeans = KMeans(n_clusters=n_clusters, random_state=random_state, n_init=10)
+        labels = kmeans.fit_predict(embedding)
+        
+        # Compute distances to centroids
+        centers = kmeans.cluster_centers_
+        distances = np.zeros((X.shape[0], n_clusters))
+        
+        for i in range(n_clusters):
+            # Compute Euclidean distance in the embedding space
+            distances[:, i] = np.linalg.norm(embedding - centers[i], axis=1)
+        
+        # Convert distances to probabilities using softmax
+        def softmax(x):
+            # Invert distances (smaller distance = higher probability)
+            x_inv = -x
+            # Shift for numerical stability
+            x_inv = x_inv - np.max(x_inv, axis=1, keepdims=True)
+            # Calculate softmax
+            exp_x = np.exp(x_inv)
+            return exp_x / np.sum(exp_x, axis=1, keepdims=True)
+        
+        # Compute probabilities
+        probs = softmax(distances)
+        
+        # Compute cluster means and covariances
+        means = np.zeros((n_clusters, 2))
+        covariances = np.zeros((n_clusters, 2, 2))
+        
+        for i in range(n_clusters):
+            mask = labels == i
+            if np.sum(mask) > 0:
+                means[i] = np.mean(X[mask], axis=0)
+                if np.sum(mask) > 1:  # Need at least 2 points to compute covariance
+                    covariances[i] = np.cov(X[mask].T)
+                else:
+                    covariances[i] = np.eye(2)  # Identity matrix as fallback
+        
+        # Create result object
+        result = ClusteringResult(
+            name="Spectral Prob",
+            labels=labels,
+            probs=probs,
+            means=means,
+            covariances=covariances,
+            model=kmeans,
+            computation_time=time.time() - start_time
+        )
+        
+        # Sort clusters from left to right
+        result = sort_clusters_by_position(result, df, feat1)
+        
+        return result
+        
+    except Exception as e:
+        print(f"  Spectral Prob failed: {str(e)}")
+        # Create a simple single-cluster fallback
+        n = len(df)
+        labels = np.zeros(n, dtype=int)
+        probs = np.ones((n, 1))
+        means = np.array([np.mean(X, axis=0)])
+        covs = np.array([np.cov(X.T)]) if n > 1 else np.array([np.eye(2)])
+        
+        return ClusteringResult(
+            name="Spectral Prob (Fallback)",
+            labels=labels,
+            probs=probs,
+            means=means,
+            covariances=covs,
+            computation_time=time.time() - start_time
+        )
 
 def cluster_gmm_wrapper(df, feat1, feat2, n_clusters=3, random_state=42):
     """
@@ -1714,7 +1759,7 @@ def cluster_variational_dpmm(df, feat1, feat2, n_components=10, alpha=1.0, max_i
     
     return result
 
-def evaluate_cluster_quality(df, feat2, labels, min_effect_size=0.1):
+def evaluate_cluster_quality(df, feat2, labels, min_effect_size=0.3):
     """
     Evaluate the quality of clustering based on the separation of clusters 
     along the y-axis (feat2).
@@ -1804,7 +1849,7 @@ def evaluate_cluster_quality(df, feat2, labels, min_effect_size=0.1):
     }
 
 def find_optimal_k(df, feat1, feat2, clustering_func, param_name='n_clusters', min_k=1, max_k=3, 
-                  min_effect_size=0.1, random_state=42, **kwargs):
+                  min_effect_size=0.3, random_state=42, **kwargs):
     """
     Find the optimal number of clusters by trying different values of k
     and evaluating cluster quality.
@@ -1949,11 +1994,238 @@ def find_optimal_k(df, feat1, feat2, clustering_func, param_name='n_clusters', m
     print(f"\n  Selected optimal {param_name}={best_k} with meaningful cluster separation")
     return results[best_idx]
 
+def cluster_with_merging(df, feat1, feat2, clustering_func, param_name='n_clusters', effect_size_threshold=0.3, random_state=42, **kwargs):
+    """
+    Generate 3 clusters and then merge those that aren't significantly different.
+    
+    Parameters:
+    -----------
+    df : DataFrame
+        The dataframe containing the data
+    feat1 : str
+        Column name for first feature
+    feat2 : str
+        Column name for second feature
+    clustering_func : function
+        Clustering function to call
+    param_name : str
+        Name of the parameter that controls the number of clusters
+    effect_size_threshold : float
+        Minimum Cohen's d to consider clusters as significantly different
+    random_state : int
+        Random seed for reproducibility
+    **kwargs : dict
+        Additional parameters to pass to the clustering function
+        
+    Returns:
+    --------
+    ClusteringResult
+        Clustering result with merged clusters
+    """
+    print(f"\n  === Generate 3 clusters and merge similar ones ===")
+    print(f"  Using effect size threshold: {effect_size_threshold}")
+    
+    # Set clustering parameters
+    params = kwargs.copy()
+    params[param_name] = 3  # Start with 3 clusters
+    params['random_state'] = random_state
+    
+    # Run initial clustering
+    try:
+        result = clustering_func(df, feat1, feat2, **params)
+        
+        print(f"\n  Initial clustering with {param_name}=3")
+        
+        # Get unique labels
+        unique_labels = np.unique(result.labels)
+        n_clusters = len(unique_labels)
+        
+        # If we already have fewer than 3 clusters, just return the result
+        if n_clusters < 3:
+            print(f"  Only {n_clusters} clusters found initially, no merging needed")
+            return result
+        
+        # Display detailed cluster statistics
+        print(f"  Initial cluster statistics for {feat2}:")
+        for i, label in enumerate(unique_labels):
+            mask = result.labels == label
+            values = df.loc[mask, feat2].values
+            size = len(values)
+            
+            if size > 0:
+                mean = np.mean(values)
+                std = np.std(values) if size > 1 else 0
+                min_val = np.min(values)
+                max_val = np.max(values)
+                x_min = df.loc[mask, feat1].min()
+                x_max = df.loc[mask, feat1].max()
+                
+                print(f"  Cluster {label}: size={size}, mean={mean:.2f}, std={std:.2f}, range=[{min_val:.2f}, {max_val:.2f}]")
+                print(f"           {feat1} range=[{x_min:.2f}, {x_max:.2f}]")
+        
+        # Compute effect sizes between all pairs of clusters
+        print(f"\n  Calculating pairwise effect sizes:")
+        effect_sizes = []
+        merge_candidates = []
+        
+        for i in range(n_clusters):
+            for j in range(i+1, n_clusters):
+                label_i, label_j = unique_labels[i], unique_labels[j]
+                mask_i = result.labels == label_i
+                mask_j = result.labels == label_j
+                
+                values_i = df.loc[mask_i, feat2].values
+                values_j = df.loc[mask_j, feat2].values
+                
+                # Calculate Cohen's d
+                mean_i, std_i, n_i = np.mean(values_i), np.std(values_i), len(values_i)
+                mean_j, std_j, n_j = np.mean(values_j), np.std(values_j), len(values_j)
+                
+                # Pooled standard deviation
+                pooled_std = np.sqrt(
+                    ((n_i - 1) * std_i**2 + (n_j - 1) * std_j**2) / 
+                    (n_i + n_j - 2)
+                ) if n_i > 1 and n_j > 1 else max(std_i, std_j)
+                
+                # Handle division by zero
+                if pooled_std > 0:
+                    d = abs(mean_i - mean_j) / pooled_std
+                else:
+                    d = float('inf') if mean_i != mean_j else 0
+                
+                judgment = ""
+                if d < 0.2:
+                    judgment = "negligible difference"
+                elif d < 0.5:
+                    judgment = "small difference"
+                elif d < 0.8:
+                    judgment = "medium difference"
+                else:
+                    judgment = "large difference"
+                    
+                significance = "SIGNIFICANT" if d >= effect_size_threshold else "NOT SIGNIFICANT"
+                print(f"  Clusters {label_i}-{label_j}: d={d:.2f} ({judgment}) - {significance}")
+                
+                effect_sizes.append((label_i, label_j, d))
+                
+                # If effect size is below threshold, mark for merging
+                if d < effect_size_threshold:
+                    merge_candidates.append((label_i, label_j))
+        
+        # If no clusters need to be merged, return original result
+        if not merge_candidates:
+            print("\n  All clusters are significantly different (no merging needed)")
+            return result
+        
+        # Identify clusters to merge
+        print("\n  Determining which clusters to merge:")
+        
+        # Create a mapping for merged clusters
+        # Start with identity mapping
+        new_labels_map = {label: label for label in unique_labels}
+        
+        # Process merge candidates
+        for c1, c2 in merge_candidates:
+            print(f"  Merging clusters {c1} and {c2} (effect size < {effect_size_threshold})")
+            # Always merge into the lower-numbered cluster
+            target = min(c1, c2)
+            # Update all clusters that map to c1 or c2 to map to target
+            for label in unique_labels:
+                if new_labels_map[label] == c1 or new_labels_map[label] == c2:
+                    new_labels_map[label] = target
+        
+        # Create new labels array
+        new_labels = np.array([new_labels_map[label] for label in result.labels])
+        
+        # Get the new unique labels after merging
+        new_unique_labels = np.unique(new_labels)
+        remaining_clusters = len(new_unique_labels)
+        print(f"\n  Result: {n_clusters} clusters merged into {remaining_clusters} clusters")
+        
+        # Create new one-hot encoded probabilities for the merged clusters
+        n_samples = len(df)
+        new_probs = np.zeros((n_samples, remaining_clusters))
+        
+        # For each sample, set probability 1.0 for its cluster
+        for i, label in enumerate(new_labels):
+            # Find the index of this label in the unique labels list
+            idx = np.where(new_unique_labels == label)[0][0]
+            new_probs[i, idx] = 1.0
+        
+        # Calculate new statistics for each merged cluster
+        new_means = np.zeros((remaining_clusters, 2))
+        new_covariances = np.zeros((remaining_clusters, 2, 2))
+        
+        for i, label in enumerate(new_unique_labels):
+            mask = new_labels == label
+            if np.sum(mask) > 0:
+                # Get points in this cluster
+                X_cluster = np.column_stack((df.loc[mask, feat1].values, df.loc[mask, feat2].values))
+                # Update mean
+                new_means[i] = np.mean(X_cluster, axis=0)
+                # Update covariance
+                if len(X_cluster) > 1:
+                    new_covariances[i] = np.cov(X_cluster.T)
+                else:
+                    new_covariances[i] = np.eye(2)  # Default for single point
+        
+        # Create new result with merged clusters
+        new_result = ClusteringResult(
+            name=f"{result.name} (Merged)",
+            labels=new_labels,
+            probs=new_probs,
+            means=new_means,
+            covariances=new_covariances,
+            model=result.model,
+            computation_time=result.computation_time,
+            weights=None,  # Can't easily update weights
+            active_components=None,
+            additional_info={
+                'original_labels': result.labels,
+                'merging_threshold': effect_size_threshold,
+                'merged_pairs': merge_candidates
+            }
+        )
+        
+        # Display final cluster statistics
+        print(f"\n  Final cluster statistics after merging:")
+        final_unique_labels = np.unique(new_result.labels)
+        for i, label in enumerate(final_unique_labels):
+            mask = new_result.labels == label
+            values = df.loc[mask, feat2].values
+            size = len(values)
+            
+            if size > 0:
+                mean = np.mean(values)
+                std = np.std(values) if size > 1 else 0
+                min_val = np.min(values)
+                max_val = np.max(values)
+                x_min = df.loc[mask, feat1].min()
+                x_max = df.loc[mask, feat1].max()
+                
+                print(f"  Cluster {label}: size={size}, mean={mean:.2f}, std={std:.2f}, range=[{min_val:.2f}, {max_val:.2f}]")
+                print(f"           {feat1} range=[{x_min:.2f}, {x_max:.2f}]")
+        
+        # Return the merged result - no need to sort again
+        return new_result
+        
+    except Exception as e:
+        print(f"  Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        
+        # Fall back to default with k=1
+        print("\n  Error occurred, falling back to k=1")
+        params = kwargs.copy()
+        params[param_name] = 1
+        params['random_state'] = random_state
+        return clustering_func(df, feat1, feat2, **params)
+
 def compare_all_clustering_methods(df, feat1, feat2, n_clusters=3, random_state=42):
     """
     Compare all clustering methods on the given data with visualizations and ANOVA analysis.
-    For methods that don't automatically find optimal clusters, try k=1,2,3 and select
-    the best based on y-axis separation.
+    For methods that don't automatically find optimal clusters, start with 3 clusters and
+    merge those that aren't significantly different.
     
     Parameters:
     -----------
@@ -2062,21 +2334,20 @@ def compare_all_clustering_methods(df, feat1, feat2, n_clusters=3, random_state=
                 result = func(df, feat1, feat2, **params)
                 print(f"  Method automatically determines optimal clusters")
             else:
-                # For methods that need help finding optimal clusters
-                # Find optimal k by testing and evaluating different values
+                # Use the new approach: Start with 3 clusters and merge if needed
                 param_name = next((k for k in params.keys() if 'cluster' in k), 'n_clusters')
-                print(f"  Finding optimal number of clusters using {param_name}...")
-                result = find_optimal_k(
+                print(f"  Using {param_name}=3 and merging similar clusters...")
+                result = cluster_with_merging(
                     df, feat1, feat2, func, 
                     param_name=param_name, 
-                    min_k=1, max_k=3, 
+                    effect_size_threshold=0.3,  # Use 0.3 as requested by the user
                     random_state=random_state, 
                     **{k: v for k, v in params.items() if k != param_name}
                 )
             
             # Display number of clusters found
             actual_clusters = len(np.unique(result.labels))
-            print(f"  Found {actual_clusters} clusters")
+            print(f"  Found {actual_clusters} final clusters")
             
             results[name] = result
             
