@@ -24,6 +24,7 @@ from matplotlib.patches import Ellipse
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import silhouette_score
 from stats_outliers import detect_outliers
+from stats_clustering import find_optimal_data_subsets
 
 # Set a seed for reproducibility
 np.random.seed(42)
