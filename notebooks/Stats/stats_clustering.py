@@ -1168,6 +1168,552 @@ def cluster_gmm_wrapper(df, feat1, feat2, n_clusters=3, random_state=42):
     
     return result
 
+def cluster_xmeans(df, feat1, feat2, max_clusters=10, min_clusters=2, random_state=42):
+    """
+    Perform clustering using X-means, which automatically determines the optimal 
+    number of clusters using BIC (Bayesian Information Criterion).
+    
+    Parameters:
+    -----------
+    df : DataFrame
+        The dataframe containing the data
+    feat1 : str
+        Column name for first feature
+    feat2 : str
+        Column name for second feature
+    max_clusters : int
+        Maximum number of clusters to consider
+    min_clusters : int
+        Minimum number of clusters to consider
+    random_state : int
+        Random seed for reproducibility
+        
+    Returns:
+    --------
+    ClusteringResult
+        Standardized clustering result object
+    """
+    from sklearn.cluster import KMeans
+    import time
+    import numpy as np
+    from scipy.spatial.distance import cdist
+    
+    start_time = time.time()
+    
+    # Extract features
+    X = np.column_stack((df[feat1].values, df[feat2].values))
+    
+    # Scale the data for better clustering
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    n_samples, n_features = X_scaled.shape
+    
+    # Function to calculate BIC score
+    def compute_bic(kmeans, X):
+        """
+        Computes the BIC score for a given k-means model.
+        Lower BIC values indicate better models.
+        """
+        # Get cluster centers and labels
+        centers = kmeans.cluster_centers_
+        labels = kmeans.labels_
+        n_clusters = kmeans.n_clusters
+        n_samples, n_features = X.shape
+        
+        # Calculate log-likelihood
+        dist = np.min(cdist(X, centers, 'euclidean'), axis=1)
+        log_likelihood = -0.5 * np.sum(dist**2)
+        
+        # Calculate BIC: -2 * log-likelihood + k * log(n)
+        # where k is the number of parameters: n_clusters * (n_features + 1)
+        # n_features for each center coordinate + 1 for the variance
+        k = n_clusters * (n_features + 1)
+        bic = -2 * log_likelihood + k * np.log(n_samples)
+        
+        return bic
+    
+    # BIC scores for different k values
+    bic_scores = []
+    models = []
+    
+    # Try different k values
+    for k in range(min_clusters, max_clusters + 1):
+        kmeans = KMeans(n_clusters=k, random_state=random_state, n_init=10)
+        kmeans.fit(X_scaled)
+        bic = compute_bic(kmeans, X_scaled)
+        bic_scores.append(bic)
+        models.append(kmeans)
+    
+    # Find the best model (lowest BIC)
+    best_idx = np.argmin(bic_scores)
+    best_k = best_idx + min_clusters
+    best_model = models[best_idx]
+    
+    # Get hard labels
+    labels = best_model.labels_
+    centers = best_model.cluster_centers_
+    
+    # Convert centers back to original scale
+    centers_original = scaler.inverse_transform(centers)
+    
+    # Calculate distances to each center for soft assignments
+    distances = cdist(X_scaled, centers, 'euclidean')
+    
+    # Convert distances to probabilities using softmax
+    def softmax(x):
+        e_x = np.exp(-x)  # Negative for inverting distance
+        return e_x / e_x.sum(axis=1, keepdims=True)
+    
+    probs = softmax(distances)
+    
+    # Create fake covariances based on within-cluster variances
+    covariances = []
+    for i in range(best_k):
+        cluster_points = X_scaled[labels == i]
+        if len(cluster_points) > 1:
+            # Calculate empirical covariance matrix
+            cov = np.cov(cluster_points.T)
+            if cov.shape == ():  # Handle 1D case
+                cov = np.array([[cov]])
+            # Transform back to original scale
+            scale_factors = np.diag(scaler.scale_)
+            cov_original = np.dot(np.dot(scale_factors, cov), scale_factors)
+            covariances.append(cov_original)
+        else:
+            # Use identity matrix if only one point in cluster
+            covariances.append(np.eye(n_features))
+    
+    covariances = np.array(covariances)
+    
+    computation_time = time.time() - start_time
+    
+    result = ClusteringResult(
+        name='X-means (BIC-optimized)',
+        labels=labels,
+        probs=probs,
+        means=centers_original,
+        covariances=covariances,
+        model=best_model,
+        computation_time=computation_time,
+        additional_info={
+            'bic_scores': bic_scores,
+            'optimal_clusters': best_k,
+            'scaler': scaler
+        }
+    )
+    
+    # Sort clusters from left to right
+    result = sort_clusters_by_position(result, df, feat1)
+    
+    return result
+
+def cluster_hdbscan(df, feat1, feat2, min_cluster_size=5, min_samples=None, random_state=42):
+    """
+    Perform clustering using HDBSCAN (Hierarchical Density-Based Spatial Clustering 
+    of Applications with Noise), which automatically determines the number of clusters.
+    
+    Parameters:
+    -----------
+    df : DataFrame
+        The dataframe containing the data
+    feat1 : str
+        Column name for first feature
+    feat2 : str
+        Column name for second feature
+    min_cluster_size : int
+        Minimum size of clusters
+    min_samples : int or None
+        Number of samples in a neighborhood for a point to be a core point
+    random_state : int
+        Random seed for reproducibility
+        
+    Returns:
+    --------
+    ClusteringResult
+        Standardized clustering result object
+    """
+    try:
+        import hdbscan
+    except ImportError:
+        raise ImportError("HDBSCAN package is required. Install it using: pip install hdbscan")
+    
+    import time
+    import numpy as np
+    from sklearn.preprocessing import StandardScaler
+    
+    start_time = time.time()
+    
+    # Extract features
+    X = np.column_stack((df[feat1].values, df[feat2].values))
+    
+    # Scale the data for better clustering
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    
+    # Set default min_samples if not provided
+    if min_samples is None:
+        min_samples = min_cluster_size
+    
+    # Create and fit HDBSCAN
+    clusterer = hdbscan.HDBSCAN(
+        min_cluster_size=min_cluster_size,
+        min_samples=min_samples,
+        prediction_data=True,  # Enable soft clustering
+        gen_min_span_tree=True,  # Required for membership vectors
+        core_dist_n_jobs=-1  # Use all processors
+    )
+    clusterer.fit(X_scaled)
+    
+    # Get hard labels (noise points get label -1)
+    labels = clusterer.labels_.copy()
+    
+    # Get unique non-noise cluster labels
+    unique_clusters = np.unique(labels)
+    unique_clusters = unique_clusters[unique_clusters >= 0]
+    
+    # If no clusters found, make all points one cluster
+    if len(unique_clusters) == 0:
+        labels = np.zeros(len(X), dtype=int)
+        unique_clusters = np.array([0])
+    
+    # Remap labels to be consecutive integers starting from 0
+    label_map = {old_label: new_label for new_label, old_label in enumerate(unique_clusters)}
+    # Remap -1 (noise) to the highest cluster number or to 0 if no clusters
+    if -1 in labels:
+        if len(unique_clusters) > 0:
+            label_map[-1] = len(unique_clusters)
+        else:
+            label_map[-1] = 0
+            
+    # Apply the mapping
+    new_labels = np.array([label_map.get(label, 0) for label in labels])
+    
+    # Get probabilities using membership_vector_ if available, otherwise approximate
+    n_clusters = len(np.unique(new_labels))
+    
+    # Try to get soft assignments from HDBSCAN
+    try:
+        # Get soft cluster memberships
+        all_probabilities = hdbscan.all_points_membership_vectors(clusterer)
+        
+        # Adjust probability matrix to match our remapped labels
+        probs = np.zeros((len(X), n_clusters))
+        for old_label, new_label in label_map.items():
+            if old_label >= 0:  # Skip noise label for now
+                probs[:, new_label] = all_probabilities[:, old_label]
+                
+        # Handle noise points (distribute their probability across clusters)
+        if -1 in labels:
+            noise_idx = labels == -1
+            if np.any(noise_idx):
+                # For noise points, assign uniform probability across all clusters
+                noise_probs = np.ones((np.sum(noise_idx), n_clusters)) / n_clusters
+                probs[noise_idx] = noise_probs
+    except:
+        # Fallback: use one-hot encoding for hard assignments
+        probs = np.zeros((len(X), n_clusters))
+        for i, label in enumerate(new_labels):
+            probs[i, label] = 1.0
+    
+    # Calculate cluster centers and covariances
+    means = np.zeros((n_clusters, 2))
+    covariances = np.zeros((n_clusters, 2, 2))
+    
+    for i in range(n_clusters):
+        mask = new_labels == i
+        if np.sum(mask) > 1:
+            means[i] = np.mean(X[mask], axis=0)
+            covariances[i] = np.cov(X[mask].T)
+        elif np.sum(mask) == 1:
+            means[i] = X[mask][0]
+            covariances[i] = np.eye(2)  # Use identity for single point clusters
+        else:
+            # Fallback for empty clusters (shouldn't happen due to the remapping)
+            means[i] = np.mean(X, axis=0)
+            covariances[i] = np.eye(2)
+    
+    computation_time = time.time() - start_time
+    
+    result = ClusteringResult(
+        name='HDBSCAN',
+        labels=new_labels,
+        probs=probs,
+        means=means,
+        covariances=covariances,
+        model=clusterer,
+        computation_time=computation_time,
+        additional_info={
+            'min_cluster_size': min_cluster_size,
+            'min_samples': min_samples,
+            'original_labels': labels,  # Keep original labels for reference
+            'noise_count': np.sum(labels == -1) if -1 in labels else 0
+        }
+    )
+    
+    # Sort clusters from left to right
+    result = sort_clusters_by_position(result, df, feat1)
+    
+    return result
+
+def cluster_affinity_propagation(df, feat1, feat2, damping=0.9, preference=None, random_state=42):
+    """
+    Perform clustering using Affinity Propagation, which automatically determines 
+    the number of clusters based on message passing between data points.
+    
+    Parameters:
+    -----------
+    df : DataFrame
+        The dataframe containing the data
+    feat1 : str
+        Column name for first feature
+    feat2 : str
+        Column name for second feature
+    damping : float
+        Damping factor for message passing (0.5 < damping <= 1.0)
+    preference : float or None
+        Controls the number of clusters. If None, use the median of input similarities.
+    random_state : int
+        Random seed for reproducibility
+        
+    Returns:
+    --------
+    ClusteringResult
+        Standardized clustering result object
+    """
+    from sklearn.cluster import AffinityPropagation
+    from sklearn.metrics import pairwise_distances
+    import time
+    import numpy as np
+    
+    start_time = time.time()
+    
+    # Extract features
+    X = np.column_stack((df[feat1].values, df[feat2].values))
+    
+    # Scale the data for better clustering
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    
+    # If preference is not provided, try different values to get sensible number of clusters
+    if preference is None:
+        # Calculate pairwise negative euclidean distances
+        S = -pairwise_distances(X_scaled, metric='euclidean')
+        preference = np.median(S)  # Default in sklearn
+    
+    # Create and fit Affinity Propagation
+    ap = AffinityPropagation(
+        damping=damping,
+        preference=preference,
+        random_state=random_state,
+        max_iter=1000,
+        convergence_iter=50
+    )
+    
+    try:
+        ap.fit(X_scaled)
+        labels = ap.labels_
+        cluster_centers_indices = ap.cluster_centers_indices_
+        n_clusters = len(cluster_centers_indices)
+        
+        # If too many clusters (>20), try to reduce by lowering preference
+        if n_clusters > 20:
+            preference_lower = preference - abs(preference) * 0.5
+            ap = AffinityPropagation(
+                damping=damping,
+                preference=preference_lower,
+                random_state=random_state,
+                max_iter=1000,
+                convergence_iter=50
+            )
+            ap.fit(X_scaled)
+            labels = ap.labels_
+            cluster_centers_indices = ap.cluster_centers_indices_
+            n_clusters = len(cluster_centers_indices)
+            
+            # If still too many, try one more time
+            if n_clusters > 10:
+                preference_much_lower = preference - abs(preference) * 0.9
+                ap = AffinityPropagation(
+                    damping=damping,
+                    preference=preference_much_lower,
+                    random_state=random_state,
+                    max_iter=1000,
+                    convergence_iter=50
+                )
+                ap.fit(X_scaled)
+                labels = ap.labels_
+                cluster_centers_indices = ap.cluster_centers_indices_
+                n_clusters = len(cluster_centers_indices)
+    except Exception as e:
+        # If convergence fails, fall back to a simpler KMeans
+        print(f"Affinity Propagation failed: {str(e)}")
+        print("Falling back to KMeans with 3 clusters")
+        from sklearn.cluster import KMeans
+        kmeans = KMeans(n_clusters=3, random_state=random_state)
+        kmeans.fit(X_scaled)
+        labels = kmeans.labels_
+        n_clusters = 3
+        cluster_centers_indices = None
+    
+    # Extract cluster centers
+    if cluster_centers_indices is not None:
+        centers_scaled = X_scaled[cluster_centers_indices]
+    else:
+        # Compute centers manually if we used the fallback
+        centers_scaled = np.array([X_scaled[labels == i].mean(axis=0) for i in range(n_clusters)])
+    
+    # Transform back to original scale
+    centers_original = scaler.inverse_transform(centers_scaled)
+    
+    # Compute soft assignments based on negative distance to each center
+    distances = pairwise_distances(X_scaled, centers_scaled)
+    
+    # Convert distances to probabilities using softmax
+    def softmax(x):
+        e_x = np.exp(-x)  # Negative for inverting distance
+        return e_x / e_x.sum(axis=1, keepdims=True)
+    
+    probs = softmax(distances)
+    
+    # Calculate covariances for each cluster
+    covariances = np.zeros((n_clusters, 2, 2))
+    for i in range(n_clusters):
+        mask = labels == i
+        if np.sum(mask) > 1:
+            covariances[i] = np.cov(X[mask].T)
+        else:
+            covariances[i] = np.eye(2)  # Identity matrix for singleton clusters
+    
+    computation_time = time.time() - start_time
+    
+    result = ClusteringResult(
+        name='Affinity Propagation',
+        labels=labels,
+        probs=probs,
+        means=centers_original,
+        covariances=covariances,
+        model=ap,
+        computation_time=computation_time,
+        additional_info={
+            'damping': damping,
+            'preference': preference,
+            'n_clusters': n_clusters,
+            'cluster_centers_indices': cluster_centers_indices
+        }
+    )
+    
+    # Sort clusters from left to right
+    result = sort_clusters_by_position(result, df, feat1)
+    
+    return result
+
+def cluster_variational_dpmm(df, feat1, feat2, n_components=10, alpha=1.0, max_iter=100, random_state=42):
+    """
+    Perform clustering using Variational Inference DPMM, a faster approximation of DPMM.
+    
+    Parameters:
+    -----------
+    df : DataFrame
+        The dataframe containing the data
+    feat1 : str
+        Column name for first feature
+    feat2 : str
+        Column name for second feature
+    n_components : int
+        Maximum number of components (truncation level)
+    alpha : float
+        Concentration parameter for the Dirichlet Process
+    max_iter : int
+        Maximum number of iterations
+    random_state : int
+        Random seed for reproducibility
+        
+    Returns:
+    --------
+    ClusteringResult
+        Standardized clustering result object
+    """
+    import time
+    from sklearn.mixture import BayesianGaussianMixture
+    
+    start_time = time.time()
+    
+    # Extract features
+    X = np.column_stack((df[feat1].values, df[feat2].values))
+    
+    # Use sklearn's BayesianGaussianMixture with variational inference
+    model = BayesianGaussianMixture(
+        n_components=n_components,
+        weight_concentration_prior_type='dirichlet_process',
+        weight_concentration_prior=alpha,
+        covariance_type='full',
+        max_iter=max_iter,
+        n_init=3,
+        random_state=random_state
+    )
+    
+    model.fit(X)
+    
+    # Get cluster probabilities
+    probs = model.predict_proba(X)
+    
+    # Get hard cluster assignments
+    labels = model.predict(X)
+    
+    # Count actual components with non-zero weights
+    active_components = np.sum(model.weights_ > 0.01)
+    
+    # Trim components that are essentially unused
+    significant_indices = np.where(model.weights_ > 0.01)[0]
+    
+    # If no significant components found, keep at least one
+    if len(significant_indices) == 0:
+        significant_indices = np.array([0])
+    
+    # Create a mapping from original indices to new indices
+    label_map = {old_idx: new_idx for new_idx, old_idx in enumerate(significant_indices)}
+    
+    # Remap labels to only include significant components
+    new_labels = np.array([label_map.get(label, 0) for label in labels])
+    
+    # Extract only the significant means and covariances
+    significant_means = model.means_[significant_indices]
+    significant_covs = model.covariances_[significant_indices]
+    significant_weights = model.weights_[significant_indices]
+    
+    # Create trimmed probability matrix
+    new_probs = np.zeros((len(X), len(significant_indices)))
+    for i, idx in enumerate(significant_indices):
+        new_probs[:, i] = probs[:, idx]
+    
+    # Normalize probabilities to sum to 1
+    row_sums = new_probs.sum(axis=1, keepdims=True)
+    new_probs = new_probs / row_sums
+    
+    computation_time = time.time() - start_time
+    
+    result = ClusteringResult(
+        name='Variational DPMM',
+        labels=new_labels,
+        probs=new_probs,
+        means=significant_means,
+        covariances=significant_covs,
+        model=model,
+        computation_time=computation_time,
+        weights=significant_weights,
+        active_components=active_components,
+        additional_info={
+            'alpha': alpha,
+            'n_components': n_components,
+            'significant_components': len(significant_indices)
+        }
+    )
+    
+    # Sort clusters from left to right
+    result = sort_clusters_by_position(result, df, feat1)
+    
+    return result
+
 def compare_all_clustering_methods(df, feat1, feat2, n_clusters=3, random_state=42):
     """
     Compare all clustering methods on the given data with visualizations and ANOVA analysis.
@@ -1192,14 +1738,58 @@ def compare_all_clustering_methods(df, feat1, feat2, n_clusters=3, random_state=
     """
     print(f"\n--- Comparing clustering methods on {feat1} vs {feat2} ---")
     
-    # List of clustering methods to compare
+    # List of clustering methods with appropriate parameter mappings
     clustering_methods = [
-        ('GMM', cluster_gmm_wrapper),
-        ('Mixture of t', cluster_mixture_t),
-        ('DPMM', cluster_dpmm),
-        ('KDE-Based', cluster_kde_based),
-        ('Fuzzy C-Means', cluster_fuzzy_cmeans),
-        ('Spectral Prob', cluster_spectral_prob)
+        {
+            'name': 'GMM',
+            'function': cluster_gmm_wrapper,
+            'params': {'n_clusters': n_clusters}
+        },
+        {
+            'name': 'Mixture of t',
+            'function': cluster_mixture_t,
+            'params': {'n_clusters': n_clusters}
+        },
+        {
+            'name': 'DPMM',
+            'function': cluster_dpmm,
+            'params': {'n_clusters': n_clusters}
+        },
+        {
+            'name': 'Variational DPMM',
+            'function': cluster_variational_dpmm,
+            'params': {'n_components': n_clusters * 2}
+        },
+        {
+            'name': 'X-means',
+            'function': cluster_xmeans,
+            'params': {'max_clusters': n_clusters * 2, 'min_clusters': 2}
+        },
+        {
+            'name': 'HDBSCAN',
+            'function': cluster_hdbscan,
+            'params': {'min_cluster_size': 5}
+        },
+        {
+            'name': 'Affinity Prop.',
+            'function': cluster_affinity_propagation,
+            'params': {'damping': 0.9}
+        },
+        {
+            'name': 'KDE-Based',
+            'function': cluster_kde_based,
+            'params': {'n_clusters': n_clusters}
+        },
+        {
+            'name': 'Fuzzy C-Means',
+            'function': cluster_fuzzy_cmeans,
+            'params': {'n_clusters': n_clusters}
+        },
+        {
+            'name': 'Spectral Prob',
+            'function': cluster_spectral_prob,
+            'params': {'n_clusters': n_clusters}
+        }
     ]
     
     # Run all methods and collect results
@@ -1207,11 +1797,18 @@ def compare_all_clustering_methods(df, feat1, feat2, n_clusters=3, random_state=
     computation_times = []
     anova_results = {}
     
-    for name, method in clustering_methods:
+    for method_info in clustering_methods:
+        name = method_info['name']
+        func = method_info['function']
+        params = method_info['params'].copy()  # Copy to avoid modifying the original
+        
+        # Always add random_state
+        params['random_state'] = random_state
+        
         print(f"\nRunning {name}...")
         try:
-            # Special case for DPMM which can determine its own number of clusters
-            result = method(df, feat1, feat2, n_clusters=n_clusters, random_state=random_state)
+            # Call the clustering method with appropriate parameters
+            result = func(df, feat1, feat2, **params)
             
             # Display number of clusters found
             actual_clusters = len(np.unique(result.labels))
