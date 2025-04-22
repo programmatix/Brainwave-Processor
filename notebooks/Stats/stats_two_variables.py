@@ -1699,369 +1699,6 @@ def fit_random_forest_regressor(df, feat1, feat2, find_subsets=True):
     
     return model, metrics, subset_results
 
-def compare_model_performance(models_results):
-    model_names = []
-    r2_scores = []
-    rmse_scores = []
-    thresholds = []
-    
-    for name, results in models_results.items():
-        model_names.append(name)
-        metrics = results['metrics']
-        r2_scores.append(metrics['r2'])
-        rmse_scores.append(metrics['rmse'])
-        thresholds.append(results['threshold'] if 'threshold' in results else None)
-    
-    performance_df = pd.DataFrame({
-        'Model': model_names,
-        'R² Score': r2_scores,
-        'RMSE': rmse_scores,
-        'Threshold': thresholds
-    })
-    
-    performance_df = performance_df.sort_values('R² Score', ascending=False)
-    print("\nModel Performance Comparison:")
-    print(performance_df)
-    
-    # Plot performance comparison
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
-    
-    sns.barplot(x='Model', y='R² Score', data=performance_df, ax=ax1)
-    ax1.set_title('R² Score Comparison (higher is better)')
-    ax1.set_ylim(0, 1)
-    ax1.tick_params(axis='x', rotation=45)
-    
-    sns.barplot(x='Model', y='RMSE', data=performance_df, ax=ax2)
-    ax2.set_title('RMSE Comparison (lower is better)')
-    ax2.tick_params(axis='x', rotation=45)
-    
-    plt.tight_layout()
-    plt.show()
-    
-    return performance_df
-
-def find_optimal_data_subsets(df, feat1, feat2, model_factory, model_name, n_clusters=3, use_2d_clustering=True):
-    """
-    Find data subsets where a model performs particularly well using GMM clustering and local validation.
-    
-    Parameters:
-    -----------
-    df : DataFrame
-        The dataframe containing the data
-    feat1 : str
-        Column name for shower time
-    feat2 : str
-        Column name for LEP time
-    model_factory : function
-        A function that takes X and y and returns a fitted model
-    model_name : str
-        Name of the model for display purposes
-    n_clusters : int
-        Number of clusters to try
-    use_2d_clustering : bool
-        Whether to cluster based on both X and Y (True) or just X (False)
-        
-    Returns:
-    --------
-    None (prints results and plots charts)
-    dict or None:
-        A dictionary containing clustering results and metrics if successful,
-        otherwise None. Keys include:
-        - 'gmm_labels': Cluster assignment for each point in df.
-        - 'gmm_probs': Cluster membership probabilities for each point.
-        - 'gmm_means': Mean of each GMM component.
-        - 'gmm_covariances': Covariance of each GMM component.
-        - 'cluster_metrics': List of dicts, one per cluster, with performance metrics.
-        - 'n_clusters': The actual number of clusters found.
-        - 'use_2d_clustering': Boolean flag indicating clustering dimension.
-        - 'model_name': Name of the model analyzed.
-        - 'feat1': Name of the independent variable.
-        - 'feat2': Name of the dependent variable.
-    """
-    if len(df) < n_clusters * 2: # Ensure enough data for clustering and CV
-        print(f"Skipping subset analysis for {model_name}: Insufficient data points ({len(df)}) for {n_clusters} clusters.")
-        return None
-        
-    X_1d = df[feat1].values.reshape(-1, 1)
-    y = df[feat2].values
-    
-    # For 2D clustering, include both variables
-    if use_2d_clustering:
-        X_2d = np.column_stack((df[feat1].values, df[feat2].values))
-        print(f"Using 2D GMM clustering on both {feat1} and {feat2}")
-    else:
-        X_2d = X_1d
-        if len(np.unique(X_1d)) < n_clusters:
-            print(f"Skipping subset analysis for {model_name}: Not enough unique X values for {n_clusters} clusters in 1D.")
-            return None
-        print(f"Using 1D GMM clustering on {feat1} only")
-    
-    print(f"Finding GMM subsets for {model_name}...")
-    
-    # Use only Gaussian Mixture Model (GMM)
-    gmm = GaussianMixture(n_components=n_clusters, random_state=42)
-    gmm.fit(X_2d)
-    gmm_labels = gmm.predict(X_2d)
-    gmm_probs = gmm.predict_proba(X_2d)
-    
-    # Check if GMM converged and produced the expected number of clusters
-    actual_n_clusters = len(np.unique(gmm_labels))
-    if actual_n_clusters < 2: # Need at least 2 clusters to be meaningful
-        print(f"Warning: GMM clustering resulted in only {actual_n_clusters} cluster(s). Skipping detailed subset analysis.")
-        return None
-    elif actual_n_clusters < n_clusters:
-        print(f"Warning: GMM clustering resulted in {actual_n_clusters} clusters, fewer than the requested {n_clusters}.")
-        # Proceeding with the clusters found
-        
-    # Get component details (handle potential differences in attribute names across sklearn versions)
-    gmm_means = gmm.means_
-    gmm_covariances = gmm.covariances_
-        
-    # Create a discrete colormap for the clusters
-    # distinct_colors = plt.cm.tab10(np.linspace(0, 1, actual_n_clusters))
-    
-    # -- No plotting directly in this function anymore --
-    # fig = plt.figure(figsize=(16, 10))
-    # gs = gridspec.GridSpec(2, 2, height_ratios=[2, 1])
-    # ax_scatter = plt.subplot(gs[0, :])
-    # ax_bars = plt.subplot(gs[1, :])
-    
-    cluster_results = [] # Store results for each cluster
-    debug_info = {"GMM": {}}
-    
-    unique_labels = np.unique(gmm_labels)
-    cluster_map = {label: idx for idx, label in enumerate(unique_labels)}
-    
-    # Evaluate each cluster
-    print(f"\n--- {model_name} Performance within GMM Clusters ---")
-    for label in unique_labels:
-        mask = gmm_labels == label
-        X_cluster = X_1d[mask]
-        y_cluster = y[mask]
-        cluster_idx = cluster_map[label] # Consistent index 0 to k-1
-        
-        # Skip if cluster is too small for meaningful evaluation
-        if len(X_cluster) < 5: 
-            print(f"Skipping GMM cluster {label} due to insufficient data points ({len(X_cluster)} < 5)")
-            continue
-            
-        cluster_info = {
-            'label': int(label), # Original GMM label
-            'size': int(np.sum(mask)),
-            'X_range': (float(X_cluster.min()), float(X_cluster.max())),
-            'y_range': (float(y_cluster.min()), float(y_cluster.max())),
-            'X_std': float(X_cluster.std()) if len(X_cluster) > 1 else 0.0,
-            'y_std': float(y_cluster.std()) if len(y_cluster) > 1 else 0.0,
-        }
-        
-        # Evaluate model performance within this cluster using Cross-Validation
-        kf = KFold(n_splits=min(3, len(X_cluster)), shuffle=True, random_state=42)
-        scores = []
-        
-        for train_idx, test_idx in kf.split(X_cluster):
-            # Ensure enough data points for the model factory
-            if len(train_idx) < 2 or len(test_idx) < 1: 
-                continue
-            
-            # Need to handle potential errors in model fitting (e.g., convergence)
-            try:
-                model = model_factory(X_cluster[train_idx], y_cluster[train_idx])
-                y_pred_cv = model.predict(X_cluster[test_idx])
-            except Exception as e:
-                print(f"  Warning: Model fitting/prediction failed for CV fold in cluster {label}: {e}")
-                # Assign NaN score if prediction fails for a fold
-                scores.append(float('nan')) 
-                continue
-
-            # Check if y_true_cv has variance before calculating r2
-            if len(np.unique(y_cluster[test_idx])) > 1:
-                scores.append(r2_score(y_cluster[test_idx], y_pred_cv))
-            else:
-                # Handle cases with no variance in test set
-                # If prediction matches the constant value, R2 is 1, else it can be considered 0 or negative infinity
-                # We'll use 0 as a more stable value than -inf
-                score = 1.0 if np.allclose(y_cluster[test_idx], y_pred_cv) else 0.0
-                scores.append(score)
-        
-        # Calculate average score, handling potential NaNs from failed folds
-        valid_scores = [s for s in scores if not np.isnan(s)]
-        avg_score = np.mean(valid_scores) if valid_scores else float('nan')
-        
-        # Calculate Spearman correlation and p-value within the cluster
-        if len(X_cluster) > 1:
-            try:
-                spearman_rho, spearman_p = stats.spearmanr(X_cluster.flatten(), y_cluster)
-            except ValueError:
-                # Handle cases where spearmanr might fail (e.g., constant data)
-                spearman_rho, spearman_p = float('nan'), float('nan')
-        else:
-             spearman_rho, spearman_p = float('nan'), float('nan')
-
-        # Calculate Mutual Information within the cluster
-        if len(X_cluster) > 1:
-            # Ensure y_cluster is not constant for MI calculation
-            if len(np.unique(y_cluster)) > 1:
-                 mi = mutual_info_regression(X_cluster, y_cluster, random_state=42)[0]
-            else:
-                 mi = 0.0 # MI is 0 if one variable is constant
-        else:
-             mi = float('nan')
-        
-        # Add results to cluster info
-        cluster_info['cv_r2'] = float(avg_score)
-        cluster_info['spearman_rho'] = float(spearman_rho)
-        cluster_info['spearman_p'] = float(spearman_p)
-        cluster_info['mi'] = float(mi)
-        
-        print(f"  GMM - Cluster {label} (Index {cluster_idx}):")
-        print(f"    Size: {cluster_info['size']} points")
-        print(f"    {feat1} range: {cluster_info['X_range'][0]:.2f} to {cluster_info['X_range'][1]:.2f} (std={cluster_info['X_std']:.2f})")
-        print(f"    {feat2} range: {cluster_info['y_range'][0]:.2f} to {cluster_info['y_range'][1]:.2f} (std={cluster_info['y_std']:.2f})")
-        print(f"    CV R² Score: {cluster_info['cv_r2']:.4f}" + (" (Note: Negative R² indicates model performs worse than predicting the mean)" if cluster_info['cv_r2'] < 0 else ""))
-        print(f"    Spearman Correlation (ρ): {cluster_info['spearman_rho']:.4f}")
-        print(f"    Spearman p-value: {cluster_info['spearman_p']:.4f}")
-        print(f"    Mutual Information: {cluster_info['mi']:.4f}")
-        
-        # Add results to the list
-        cluster_results.append(cluster_info)
-        debug_info["GMM"][f"cluster_{label}"] = cluster_info
-    
-    # --- Remove plotting from this function --- 
-    # # Plot bar chart of cluster performance with matching colors
-    # ... (bar chart plotting code removed)
-    
-    # fig.tight_layout(rect=[0, 0.03, 1, 0.97]) 
-    # plt.show()
-    
-    # Return the collected data
-    return {
-        'gmm_labels': gmm_labels,
-        'gmm_probs': gmm_probs,
-        'gmm_means': gmm_means,
-        'gmm_covariances': gmm_covariances,
-        'cluster_metrics': cluster_results, # List of dicts for each valid cluster
-        'n_clusters': actual_n_clusters, # Actual number of clusters analyzed
-        'use_2d_clustering': use_2d_clustering,
-        'model_name': model_name,
-        'feat1': feat1,
-        'feat2': feat2,
-        # 'debug_info': debug_info # Optionally return debug info
-    }
-
-def detect_outliers(X, y, method='residual', max_remove_percent=10, model_factory=None):
-    """
-    Detect outliers in the data that if removed would improve model performance.
-    
-    Parameters:
-    -----------
-    X : array-like
-        Feature values
-    y : array-like
-        Target values
-    method : str
-        Method to detect outliers: 'residual', 'distance', 'influence'
-    max_remove_percent : float
-        Maximum percentage of points to remove (0-100)
-    model_factory : function
-        Function that takes X and y and returns a fitted model
-        
-    Returns:
-    --------
-    X_clean : array
-        Filtered X data with outliers removed
-    y_clean : array
-        Filtered y data with outliers removed
-    mask : boolean array
-        Mask for non-outlier points (True = keep, False = outlier)
-    outlier_scores : array
-        Scores for each point indicating how much of an outlier it is
-    """
-    n = len(X)
-    max_remove = int(n * max_remove_percent / 100)
-    
-    if max_remove < 1:
-        # Nothing to remove
-        return X, y, np.ones(n, dtype=bool), np.zeros(n)
-    
-    # Default model if none provided
-    if model_factory is None:
-        def model_factory(X_train, y_train):
-            model = KNeighborsRegressor(n_neighbors=min(5, len(X_train)-1))
-            model.fit(X_train, y_train)
-            return model
-    
-    # Initial model on all data
-    model = model_factory(X, y)
-    y_pred = model.predict(X)
-    initial_r2 = r2_score(y, y_pred)
-    
-    # Calculate outlier scores based on selected method
-    if method == 'residual':
-        # Simple method: largest residuals
-        outlier_scores = np.abs(y - y_pred)
-    
-    elif method == 'distance':
-        # Distance-based method for X-space outliers
-        from sklearn.neighbors import NearestNeighbors
-        nbrs = NearestNeighbors(n_neighbors=min(5, n-1)).fit(X)
-        distances, _ = nbrs.kneighbors(X)
-        outlier_scores = distances.mean(axis=1)
-        
-    elif method == 'influence':
-        # Influence-based: how much does removing each point improve the model
-        outlier_scores = np.zeros(n)
-        
-        for i in range(n):
-            # Create a mask excluding this point
-            mask = np.ones(n, dtype=bool)
-            mask[i] = False
-            
-            # Fit model without this point
-            leave_one_out_model = model_factory(X[mask], y[mask])
-            y_loo_pred = leave_one_out_model.predict(X[mask])
-            loo_r2 = r2_score(y[mask], y_loo_pred)
-            
-            # Improvement in R² is the outlier score
-            outlier_scores[i] = max(0, loo_r2 - initial_r2)
-    
-    else:
-        raise ValueError(f"Unknown outlier detection method: {method}")
-    
-    # Sort points by outlier score
-    sorted_idx = np.argsort(outlier_scores)[::-1]  # Descending order
-    
-    # Try removing points one by one until we reach max_remove
-    best_r2 = initial_r2
-    best_mask = np.ones(n, dtype=bool)
-    best_n_removed = 0
-    
-    for i in range(1, min(max_remove + 1, n)):
-        # Create mask with top i outliers removed
-        mask = np.ones(n, dtype=bool)
-        mask[sorted_idx[:i]] = False
-        
-        # Skip if removing too many points
-        if np.sum(mask) < 3:  # Need at least 3 points for meaningful model
-            break
-            
-        # Fit model on remaining points
-        model_i = model_factory(X[mask], y[mask])
-        y_pred_i = model_i.predict(X[mask])
-        r2_i = r2_score(y[mask], y_pred_i)
-        
-        # Keep track of best model
-        if r2_i > best_r2:
-            best_r2 = r2_i
-            best_mask = mask.copy()
-            best_n_removed = i
-    
-    # If no improvement was found, keep all points
-    if best_n_removed == 0:
-        return X, y, np.ones(n, dtype=bool), outlier_scores
-    
-    print(f"Outlier removal: removed {best_n_removed} points ({best_n_removed/n*100:.1f}%), R² improved from {initial_r2:.4f} to {best_r2:.4f}")
-    return X[best_mask], y[best_mask], best_mask, outlier_scores
-
 def fit_linear_regression(df, feat1, feat2, find_subsets=True, remove_outliers=True, outlier_method='influence'):
     X = df[[feat1]].values
     y = df[feat2].values
@@ -2744,6 +2381,15 @@ def fit_rulefit(df, feat1, feat2, find_subsets=True, remove_outliers=True, outli
     try:
         model = rulefit_factory(X_filtered, y_filtered)
         
+        # Print the rules from RuleFit
+        print("RuleFit Rules:")
+        try:
+            rules = model.rf.get_rules()
+            rules = rules[rules.coef != 0].sort_values("importance", ascending=False)
+            print(rules.head(10)[["rule", "coef", "importance"]])
+        except Exception as rule_error:
+            print(f"Could not extract rules: {rule_error}")
+        
         y_pred_filtered = model.predict(X_filtered)
         errors_filtered = np.abs(y_filtered - y_pred_filtered)
         
@@ -2859,10 +2505,12 @@ def fit_rulefit(df, feat1, feat2, find_subsets=True, remove_outliers=True, outli
                     
                     cluster_metrics = subset_results['cluster_metrics']
                     cluster_labels = [f"C{m['label']}\n(n={m['size']})" for m in cluster_metrics]
-                    cv_r2 = [m['cv_r2'] for m in cluster_metrics]
-                    cv_rmse = [m['cv_rmse'] for m in cluster_metrics]
-                    train_r2 = [m['train_r2'] for m in cluster_metrics]
-                    train_rmse = [m['train_rmse'] for m in cluster_metrics]
+                    
+                    # Safely get metrics with .get() method
+                    cv_r2 = [m.get('cv_r2', 0) for m in cluster_metrics]
+                    train_r2 = [m.get('train_r2', 0) for m in cluster_metrics]
+                    cv_rmse = [m.get('cv_rmse', 0) for m in cluster_metrics]
+                    train_rmse = [m.get('train_rmse', 0) for m in cluster_metrics]
                     
                     x = np.arange(len(cluster_labels))
                     width = 0.2
@@ -2955,8 +2603,11 @@ def fit_ripper(df, feat1, feat2, find_subsets=True, remove_outliers=True, outlie
         df_train = pd.DataFrame(X_train_scaled, columns=[feat1])
         df_train['target'] = y_train_binned
         
+        # Find max bin value to use as positive class
+        max_bin = np.max(y_train_binned)
+        
         rip = RIPPER()
-        rip.fit(df_train, class_feat='target', pos_class=None)
+        rip.fit(df_train, class_feat='target', pos_class=max_bin)
         
         class RIPPERWrapper:
             def __init__(self, ripper, scaler, disc, input_feat, orig_y):
@@ -2988,6 +2639,13 @@ def fit_ripper(df, feat1, feat2, find_subsets=True, remove_outliers=True, outlie
     
     try:
         model = ripper_factory(X_filtered, y_filtered)
+        
+        # Print the rules from RIPPER
+        print("RIPPER Rules:")
+        try:
+            print(model.ripper.ruleset_)
+        except Exception as rule_error:
+            print(f"Could not access RIPPER ruleset: {rule_error}")
         
         y_pred_filtered = model.predict(X_filtered)
         errors_filtered = np.abs(y_filtered - y_pred_filtered)
@@ -3044,12 +2702,6 @@ def fit_ripper(df, feat1, feat2, find_subsets=True, remove_outliers=True, outlie
             metrics=metrics
         )
         
-        try:
-            print("RIPPER Rules:")
-            print(model.ripper.ruleset_)
-        except:
-            print("Could not access RIPPER ruleset")
-        
         if find_subsets and best_subset is not None:
             subset_X = best_subset[feat1].values.reshape(-1, 1)
             subset_y = best_subset[feat2].values
@@ -3093,10 +2745,12 @@ def fit_ripper(df, feat1, feat2, find_subsets=True, remove_outliers=True, outlie
                     
                     cluster_metrics = subset_results['cluster_metrics']
                     cluster_labels = [f"C{m['label']}\n(n={m['size']})" for m in cluster_metrics]
-                    cv_r2 = [m['cv_r2'] for m in cluster_metrics]
-                    cv_rmse = [m['cv_rmse'] for m in cluster_metrics]
-                    train_r2 = [m['train_r2'] for m in cluster_metrics]
-                    train_rmse = [m['train_rmse'] for m in cluster_metrics]
+                    
+                    # Safely get metrics with .get() method
+                    cv_r2 = [m.get('cv_r2', 0) for m in cluster_metrics]
+                    train_r2 = [m.get('train_r2', 0) for m in cluster_metrics]
+                    cv_rmse = [m.get('cv_rmse', 0) for m in cluster_metrics]
+                    train_rmse = [m.get('train_rmse', 0) for m in cluster_metrics]
                     
                     x = np.arange(len(cluster_labels))
                     width = 0.2
