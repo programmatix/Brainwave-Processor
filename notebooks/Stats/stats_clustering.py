@@ -450,7 +450,7 @@ def analyze_clusters_with_anova(df, feat1, feat2, model_factory=None, model_name
         
         ax_box.text(
             i, ax_box.get_ylim()[0], 
-            f'μ={mean_val:.2f}\nσ={std_val:.2f}\nn={len(group)}\n{feat1}:\n{x_min:.2f}-{x_max:.2f}',
+            f'μ={mean_val:.2f}\nσ={std_val:.2f}\nn={len(group)}\nX:\n{x_min:.2f}-{x_max:.2f}',
             ha='center', va='bottom',
             fontsize=9
         )
@@ -1714,9 +1714,246 @@ def cluster_variational_dpmm(df, feat1, feat2, n_components=10, alpha=1.0, max_i
     
     return result
 
+def evaluate_cluster_quality(df, feat2, labels, min_effect_size=0.1):
+    """
+    Evaluate the quality of clustering based on the separation of clusters 
+    along the y-axis (feat2).
+    
+    Parameters:
+    -----------
+    df : DataFrame
+        The dataframe containing the data
+    feat2 : str
+        Column name for y-axis feature
+    labels : array-like
+        Cluster assignments
+    min_effect_size : float
+        Minimum Cohen's d effect size to consider clusters as meaningfully different
+        
+    Returns:
+    --------
+    dict
+        Dictionary containing quality metrics
+    """
+    # Get unique clusters
+    unique_clusters = np.unique(labels)
+    n_clusters = len(unique_clusters)
+    
+    # If only one cluster, return basic metrics
+    if n_clusters <= 1:
+        return {
+            'n_clusters': n_clusters,
+            'meaningful_clusters': False,
+            'effect_sizes': [],
+            'cluster_means': [],
+            'cluster_stds': [],
+            'cluster_sizes': []
+        }
+    
+    # Collect statistics for each cluster
+    cluster_stats = []
+    for label in unique_clusters:
+        values = df.loc[labels == label, feat2].values
+        if len(values) > 0:
+            cluster_stats.append({
+                'label': label,
+                'mean': np.mean(values),
+                'std': np.std(values) if len(values) > 1 else 0,
+                'size': len(values)
+            })
+    
+    # Calculate pairwise effect sizes (Cohen's d)
+    effect_sizes = []
+    for i, stats1 in enumerate(cluster_stats):
+        for j, stats2 in enumerate(cluster_stats):
+            if i < j:  # Only compute for unique pairs
+                # Get stats
+                mean1, std1, n1 = stats1['mean'], stats1['std'], stats1['size']
+                mean2, std2, n2 = stats2['mean'], stats2['std'], stats2['size']
+                
+                # Calculate pooled standard deviation
+                pooled_std = np.sqrt(
+                    ((n1 - 1) * std1**2 + (n2 - 1) * std2**2) / 
+                    (n1 + n2 - 2)
+                ) if n1 > 1 and n2 > 1 else max(std1, std2)
+                
+                # Calculate Cohen's d (handle division by zero)
+                if pooled_std > 0:
+                    d = abs(mean1 - mean2) / pooled_std
+                else:
+                    # If std is 0, check if means are different
+                    d = float('inf') if mean1 != mean2 else 0
+                
+                effect_sizes.append({
+                    'cluster1': stats1['label'],
+                    'cluster2': stats2['label'],
+                    'effect_size': d
+                })
+    
+    # Check if all pairs have a meaningful effect size
+    all_meaningful = all(e['effect_size'] >= min_effect_size for e in effect_sizes)
+    
+    # Return results
+    return {
+        'n_clusters': n_clusters,
+        'meaningful_clusters': all_meaningful,
+        'effect_sizes': effect_sizes,
+        'cluster_means': [stats['mean'] for stats in cluster_stats],
+        'cluster_stds': [stats['std'] for stats in cluster_stats],
+        'cluster_sizes': [stats['size'] for stats in cluster_stats]
+    }
+
+def find_optimal_k(df, feat1, feat2, clustering_func, param_name='n_clusters', min_k=1, max_k=3, 
+                  min_effect_size=0.1, random_state=42, **kwargs):
+    """
+    Find the optimal number of clusters by trying different values of k
+    and evaluating cluster quality.
+    
+    Parameters:
+    -----------
+    df : DataFrame
+        The dataframe containing the data
+    feat1 : str
+        Column name for first feature
+    feat2 : str
+        Column name for second feature
+    clustering_func : function
+        Clustering function to call
+    param_name : str
+        Name of the parameter that controls the number of clusters
+    min_k : int
+        Minimum number of clusters to try
+    max_k : int
+        Maximum number of clusters to try
+    min_effect_size : float
+        Minimum effect size to consider clusters as meaningfully different
+    random_state : int
+        Random seed for reproducibility
+    **kwargs : dict
+        Additional parameters to pass to the clustering function
+        
+    Returns:
+    --------
+    ClusteringResult
+        Best clustering result
+    """
+    results = []
+    evaluations = []
+    
+    print(f"\n  === Testing {param_name} values from {min_k} to {max_k} ===")
+    print(f"  Using minimum effect size threshold: {min_effect_size}")
+    
+    # Try different values of k
+    for k in range(min_k, max_k + 1):
+        # Set clustering parameters
+        params = kwargs.copy()
+        params[param_name] = k
+        params['random_state'] = random_state
+        
+        # Run clustering
+        try:
+            result = clustering_func(df, feat1, feat2, **params)
+            
+            # Evaluate cluster quality
+            eval_result = evaluate_cluster_quality(df, feat2, result.labels, min_effect_size)
+            
+            # Store results
+            results.append(result)
+            evaluations.append(eval_result)
+            
+            print(f"\n  *** Tried {param_name}={k}, found {eval_result['n_clusters']} clusters ***")
+            
+            # Display detailed cluster statistics
+            unique_labels = np.unique(result.labels)
+            print(f"  Cluster statistics for {feat2}:")
+            for i, label in enumerate(unique_labels):
+                mask = result.labels == label
+                values = df.loc[mask, feat2].values
+                size = len(values)
+                
+                if size > 0:
+                    mean = np.mean(values)
+                    std = np.std(values) if size > 1 else 0
+                    min_val = np.min(values)
+                    max_val = np.max(values)
+                    x_min = df.loc[mask, feat1].min()
+                    x_max = df.loc[mask, feat1].max()
+                    
+                    print(f"  Cluster {label}: size={size}, mean={mean:.2f}, std={std:.2f}, range=[{min_val:.2f}, {max_val:.2f}]")
+                    print(f"           {feat1} range=[{x_min:.2f}, {x_max:.2f}]")
+            
+            # Display effect sizes between clusters
+            if eval_result['effect_sizes']:
+                print(f"\n  Pairwise effect sizes (Cohen's d):")
+                for e in eval_result['effect_sizes']:
+                    c1, c2, es = e['cluster1'], e['cluster2'], e['effect_size']
+                    judgment = ""
+                    if es < 0.2:
+                        judgment = "negligible difference"
+                    elif es < 0.5:
+                        judgment = "small difference"
+                    elif es < 0.8:
+                        judgment = "medium difference"
+                    else:
+                        judgment = "large difference"
+                        
+                    significance = "SIGNIFICANT" if es >= min_effect_size else "NOT SIGNIFICANT"
+                    print(f"  Clusters {c1}-{c2}: d={es:.2f} ({judgment}) - {significance}")
+            
+            # Overall assessment
+            if eval_result['meaningful_clusters']:
+                print(f"\n  Assessment: All clusters show meaningful differences (effect size ≥ {min_effect_size})")
+            else:
+                print(f"\n  Assessment: Not all clusters show meaningful differences (effect size ≥ {min_effect_size})")
+                # Find which pairs don't meet the threshold
+                if eval_result['effect_sizes']:
+                    problematic_pairs = [(e['cluster1'], e['cluster2']) for e in eval_result['effect_sizes'] if e['effect_size'] < min_effect_size]
+                    if problematic_pairs:
+                        pairs_str = ", ".join([f"{c1}-{c2}" for c1, c2 in problematic_pairs])
+                        print(f"  Problem: Clusters {pairs_str} are too similar and should be merged")
+            
+        except Exception as e:
+            print(f"  Error with {param_name}={k}: {str(e)}")
+    
+    # Find the best result (highest k with meaningful clusters)
+    best_idx = None
+    best_k = 0
+    
+    print("\n  === Decision Process ===")
+    
+    for i, eval_result in enumerate(evaluations):
+        k = i + min_k
+        if eval_result['meaningful_clusters']:
+            print(f"  k={k}: All clusters are meaningfully different")
+            if k > best_k:
+                best_idx = i
+                best_k = k
+                print(f"  --> This is better than previous best k={best_k if best_k > 0 else 'None'}")
+        else:
+            print(f"  k={k}: Not all clusters are meaningfully different")
+    
+    # If no meaningful clusters were found, return the result with k=1
+    if best_idx is None:
+        print("\n  No meaningful multi-cluster solution found, using k=1")
+        print("  Reason: None of the tested values of k produced clusters with sufficient separation")
+        if results:
+            return results[0]  # Return k=1 result if available
+        else:
+            # If all clustering attempts failed, try once more with k=1
+            print("  All clustering attempts failed, trying once more with k=1")
+            params = kwargs.copy()
+            params[param_name] = 1
+            params['random_state'] = random_state
+            return clustering_func(df, feat1, feat2, **params)
+    
+    print(f"\n  Selected optimal {param_name}={best_k} with meaningful cluster separation")
+    return results[best_idx]
+
 def compare_all_clustering_methods(df, feat1, feat2, n_clusters=3, random_state=42):
     """
     Compare all clustering methods on the given data with visualizations and ANOVA analysis.
+    For methods that don't automatically find optimal clusters, try k=1,2,3 and select
+    the best based on y-axis separation.
     
     Parameters:
     -----------
@@ -1738,57 +1975,70 @@ def compare_all_clustering_methods(df, feat1, feat2, n_clusters=3, random_state=
     """
     print(f"\n--- Comparing clustering methods on {feat1} vs {feat2} ---")
     
+    # Define which methods automatically determine optimal clusters
+    auto_optimal_methods = ['DPMM', 'Variational DPMM', 'X-means', 'HDBSCAN', 'Affinity Prop.']
+    
     # List of clustering methods with appropriate parameter mappings
     clustering_methods = [
         {
             'name': 'GMM',
             'function': cluster_gmm_wrapper,
-            'params': {'n_clusters': n_clusters}
+            'params': {'n_clusters': n_clusters},
+            'auto_optimal': False
         },
         {
             'name': 'Mixture of t',
             'function': cluster_mixture_t,
-            'params': {'n_clusters': n_clusters}
+            'params': {'n_clusters': n_clusters},
+            'auto_optimal': False
         },
         {
             'name': 'DPMM',
             'function': cluster_dpmm,
-            'params': {'n_clusters': n_clusters}
+            'params': {'n_clusters': n_clusters},
+            'auto_optimal': True
         },
         {
             'name': 'Variational DPMM',
             'function': cluster_variational_dpmm,
-            'params': {'n_components': n_clusters * 2}
+            'params': {'n_components': n_clusters * 2},
+            'auto_optimal': True
         },
         {
             'name': 'X-means',
             'function': cluster_xmeans,
-            'params': {'max_clusters': n_clusters * 2, 'min_clusters': 2}
+            'params': {'max_clusters': n_clusters * 2, 'min_clusters': 2},
+            'auto_optimal': True
         },
         {
             'name': 'HDBSCAN',
             'function': cluster_hdbscan,
-            'params': {'min_cluster_size': 5}
+            'params': {'min_cluster_size': 5},
+            'auto_optimal': True
         },
         {
             'name': 'Affinity Prop.',
             'function': cluster_affinity_propagation,
-            'params': {'damping': 0.9}
+            'params': {'damping': 0.9},
+            'auto_optimal': True
         },
         {
             'name': 'KDE-Based',
             'function': cluster_kde_based,
-            'params': {'n_clusters': n_clusters}
+            'params': {'n_clusters': n_clusters},
+            'auto_optimal': False
         },
         {
             'name': 'Fuzzy C-Means',
             'function': cluster_fuzzy_cmeans,
-            'params': {'n_clusters': n_clusters}
+            'params': {'n_clusters': n_clusters},
+            'auto_optimal': False
         },
         {
             'name': 'Spectral Prob',
             'function': cluster_spectral_prob,
-            'params': {'n_clusters': n_clusters}
+            'params': {'n_clusters': n_clusters},
+            'auto_optimal': False
         }
     ]
     
@@ -1801,14 +2051,28 @@ def compare_all_clustering_methods(df, feat1, feat2, n_clusters=3, random_state=
         name = method_info['name']
         func = method_info['function']
         params = method_info['params'].copy()  # Copy to avoid modifying the original
-        
-        # Always add random_state
-        params['random_state'] = random_state
+        auto_optimal = method_info['auto_optimal']
         
         print(f"\nRunning {name}...")
         try:
-            # Call the clustering method with appropriate parameters
-            result = func(df, feat1, feat2, **params)
+            if auto_optimal:
+                # For methods that already determine optimal clusters
+                # Always add random_state
+                params['random_state'] = random_state
+                result = func(df, feat1, feat2, **params)
+                print(f"  Method automatically determines optimal clusters")
+            else:
+                # For methods that need help finding optimal clusters
+                # Find optimal k by testing and evaluating different values
+                param_name = next((k for k in params.keys() if 'cluster' in k), 'n_clusters')
+                print(f"  Finding optimal number of clusters using {param_name}...")
+                result = find_optimal_k(
+                    df, feat1, feat2, func, 
+                    param_name=param_name, 
+                    min_k=1, max_k=3, 
+                    random_state=random_state, 
+                    **{k: v for k, v in params.items() if k != param_name}
+                )
             
             # Display number of clusters found
             actual_clusters = len(np.unique(result.labels))
