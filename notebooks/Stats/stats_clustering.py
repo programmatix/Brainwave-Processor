@@ -396,6 +396,60 @@ def analyze_clusters_with_anova(df, feat1, feat2, model_factory=None, model_name
             label=f'Cluster {label} (n={np.sum(mask)})',
             alpha=0.7, s=50, edgecolors='k'
         )
+        
+        # Perform linear regression for this cluster
+        cluster_X = clean_df.loc[mask, feat1].values.reshape(-1, 1)
+        cluster_y = clean_df.loc[mask, feat2].values
+        
+        # Only proceed if we have enough data points
+        if len(cluster_X) > 2:
+            # Linear regression
+            reg = LinearRegression()
+            reg.fit(cluster_X, cluster_y)
+            
+            # Calculate Spearman correlation
+            spearman_corr, spearman_p = stats.spearmanr(
+                clean_df.loc[mask, feat1].values, 
+                clean_df.loc[mask, feat2].values
+            )
+            
+            # Plot regression line
+            x_range = np.linspace(
+                np.min(cluster_X), 
+                np.max(cluster_X), 
+                100
+            ).reshape(-1, 1)
+            y_pred = reg.predict(x_range)
+            
+            # Add regression line
+            ax_scatter.plot(
+                x_range, y_pred, '-', 
+                color=distinct_colors[label], 
+                linewidth=2
+            )
+            
+            # Add correlation stats on the regression line (at the middle point)
+            mid_idx = len(x_range) // 2
+            text_x = x_range[mid_idx][0]
+            text_y = y_pred[mid_idx]
+            
+            # Format text with correlation information
+            coef = reg.coef_[0]
+            intercept = reg.intercept_
+            r2 = r2_score(cluster_y, reg.predict(cluster_X))
+            
+            # Position text slightly above or below the line based on slope
+            offset = 0.05 * (np.max(clean_df[feat2]) - np.min(clean_df[feat2]))
+            text_offset = offset if coef >= 0 else -offset
+            
+            ax_scatter.text(
+                text_x, text_y + text_offset,
+                f"r={spearman_corr:.2f}, p={spearman_p:.3f}\ny={coef:.2f}x+{intercept:.2f}, R²={r2:.2f}",
+                ha='center', va='center',
+                bbox=dict(facecolor='white', alpha=0.7, boxstyle='round'),
+                fontsize=8,
+                color=distinct_colors[label]
+            )
     
     # Plot GMM ellipses if 2D clustering was used
     if use_2d_clustering:
@@ -2417,4 +2471,207 @@ def compare_all_clustering_methods(df, feat1, feat2, n_clusters=3, random_state=
         'anova_results': anova_results,
         'computation_times': computation_times
     }
+
+def visualize_clustering_with_anova(df, feat1, feat2, cluster_result):
+    """
+    Visualize clustering results with scatter plots and perform ANOVA analysis.
+    Also adds linear regression and Spearman correlation for each cluster.
+    
+    Parameters:
+    -----------
+    df : DataFrame
+        The dataframe containing the data
+    feat1 : str
+        Column name for first feature (x-axis)
+    feat2 : str
+        Column name for second feature (y-axis)
+    cluster_result : ClusteringResult
+        Clustering result object
+        
+    Returns:
+    --------
+    tuple
+        (fig, anova_results) - figure handle and dictionary with ANOVA results
+    """
+    # Extract cluster labels and counts
+    labels = cluster_result.labels
+    unique_labels = np.unique(labels)
+    n_clusters = len(unique_labels)
+    
+    # Create a color map for the clusters
+    distinct_colors = plt.cm.viridis(np.linspace(0, 1, n_clusters))
+    
+    # Create visualization
+    fig = plt.figure(figsize=(16, 8))
+    gs = gridspec.GridSpec(1, 2)
+    
+    # Plot 1: Scatter plot with clusters
+    ax_scatter = plt.subplot(gs[0, 0])
+    for i, label in enumerate(unique_labels):
+        mask = labels == label
+        ax_scatter.scatter(
+            df.loc[mask, feat1],
+            df.loc[mask, feat2],
+            c=[distinct_colors[i]],
+            label=f'Cluster {label} (n={np.sum(mask)})',
+            alpha=0.7, s=50, edgecolors='k'
+        )
+        
+        # Perform linear regression for this cluster
+        cluster_X = df.loc[mask, feat1].values.reshape(-1, 1)
+        cluster_y = df.loc[mask, feat2].values
+        
+        # Only proceed if we have enough data points
+        if len(cluster_X) > 2:
+            # Linear regression
+            reg = LinearRegression()
+            reg.fit(cluster_X, cluster_y)
+            
+            # Calculate Spearman correlation
+            spearman_corr, spearman_p = stats.spearmanr(
+                df.loc[mask, feat1].values, 
+                df.loc[mask, feat2].values
+            )
+            
+            # Plot regression line
+            x_range = np.linspace(
+                np.min(cluster_X), 
+                np.max(cluster_X), 
+                100
+            ).reshape(-1, 1)
+            y_pred = reg.predict(x_range)
+            
+            # Add regression line
+            ax_scatter.plot(
+                x_range, y_pred, '-', 
+                color=distinct_colors[i], 
+                linewidth=2
+            )
+            
+            # Add correlation stats on the regression line (at the middle point)
+            mid_idx = len(x_range) // 2
+            text_x = x_range[mid_idx][0]
+            text_y = y_pred[mid_idx]
+            
+            # Format text with correlation information
+            coef = reg.coef_[0]
+            intercept = reg.intercept_
+            r2 = r2_score(cluster_y, reg.predict(cluster_X))
+            
+            # Position text slightly above or below the line based on slope
+            offset = 0.05 * (np.max(df[feat2]) - np.min(df[feat2]))
+            text_offset = offset if coef >= 0 else -offset
+            
+            ax_scatter.text(
+                text_x, text_y + text_offset,
+                f"r={spearman_corr:.2f}, p={spearman_p:.3f}\ny={coef:.2f}x+{intercept:.2f}, R²={r2:.2f}",
+                ha='center', va='center',
+                bbox=dict(facecolor='white', alpha=0.7, boxstyle='round'),
+                fontsize=8,
+                color=distinct_colors[i]
+            )
+    
+    # Plot means/ellipses if available
+    if cluster_result.means is not None and cluster_result.covariances is not None:
+        for i, (mean, covar) in enumerate(zip(cluster_result.means, cluster_result.covariances)):
+            if i < len(unique_labels) and np.all(np.linalg.eigvalsh(covar) > 1e-6):
+                try:
+                    v, w = np.linalg.eigh(covar)
+                    angle = np.arctan2(w[1, 0], w[0, 0])
+                    angle = 180 * angle / np.pi
+                    v = 2.0 * np.sqrt(2.0) * np.sqrt(v)
+                    ell = Ellipse(
+                        xy=(mean[0], mean[1]),
+                        width=v[0], height=v[1],
+                        angle=angle,
+                        color=distinct_colors[i],
+                        alpha=0.25, zorder=1
+                    )
+                    ax_scatter.add_artist(ell)
+                    ax_scatter.scatter(
+                        mean[0], mean[1],
+                        marker='X', s=100,
+                        c=[distinct_colors[i]],
+                        edgecolors='black', zorder=11
+                    )
+                except np.linalg.LinAlgError:
+                    print(f"Warning: Could not draw ellipse for cluster {i}.")
+            elif i < len(unique_labels):
+                print(f"Warning: Skipping ellipse for cluster {i} due to non-positive definite covariance.")
+    
+    ax_scatter.set_xlabel(feat1)
+    ax_scatter.set_ylabel(feat2)
+    ax_scatter.set_title(f"{cluster_result.name} Clusters for {feat1} vs {feat2}")
+    ax_scatter.legend(loc='best')
+    ax_scatter.grid(True, linestyle='--', alpha=0.6)
+    
+    # Plot 2: Box plot for feat2 across clusters
+    ax_box = plt.subplot(gs[0, 1])
+    
+    # Convert to a dataframe for seaborn boxplot
+    plot_df = pd.DataFrame({
+        'cluster': labels,
+        feat2: df[feat2].values
+    })
+    
+    sns.boxplot(x='cluster', y=feat2, data=plot_df, ax=ax_box, palette=distinct_colors)
+    
+    # ANOVA analysis across clusters
+    groups = [df.loc[labels == c, feat2].values for c in unique_labels]
+    
+    # Add cluster means and std to the box plot
+    for i, label in enumerate(unique_labels):
+        mask = labels == label
+        mean_val = np.mean(df.loc[mask, feat2].values)
+        std_val = np.std(df.loc[mask, feat2].values)
+        
+        # Get X range for this cluster
+        x_min = df.loc[mask, feat1].min()
+        x_max = df.loc[mask, feat1].max()
+        
+        ax_box.text(
+            i, ax_box.get_ylim()[0], 
+            f'μ={mean_val:.2f}\nσ={std_val:.2f}\nn={np.sum(mask)}\nX:\n{x_min:.2f}-{x_max:.2f}',
+            ha='center', va='bottom',
+            fontsize=9
+        )
+    
+    # Only perform ANOVA if we have at least 2 clusters
+    anova_results = {}
+    if len(groups) >= 2:
+        try:
+            f_val, p_val = stats.f_oneway(*groups)
+            sig_text = "significant" if p_val < 0.05 else "not significant"
+            ax_box.set_title(f"Distribution of {feat2} across clusters\nANOVA: F={f_val:.2f}, p={p_val:.4f} ({sig_text})")
+            
+            anova_results = {
+                'f_value': f_val,
+                'p_value': p_val,
+                'significant': p_val < 0.05,
+                'cluster_means': {str(c): np.mean(g) for c, g in zip(unique_labels, groups)},
+                'cluster_stds': {str(c): np.std(g) for c, g in zip(unique_labels, groups)},
+                'tukey_results': None
+            }
+            
+            # Post-hoc Tukey HSD test for pairwise comparisons if ANOVA is significant
+            if p_val < 0.05:
+                try:
+                    from statsmodels.stats.multicomp import pairwise_tukeyhsd
+                    tukey = pairwise_tukeyhsd(
+                        plot_df[feat2].values,
+                        plot_df['cluster'].values,
+                        alpha=0.05
+                    )
+                    anova_results['tukey_results'] = str(tukey)
+                except ImportError:
+                    pass
+        except Exception as e:
+            print(f"ANOVA failed: {str(e)}")
+            ax_box.set_title(f"Distribution of {feat2} across clusters")
+    else:
+        ax_box.set_title(f"Distribution of {feat2} (only one cluster)")
+    
+    fig.tight_layout()
+    
+    return fig, anova_results
 
