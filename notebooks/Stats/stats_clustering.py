@@ -23,9 +23,25 @@ from matplotlib.patches import Patch
 from matplotlib.patches import Ellipse
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import silhouette_score
+from dataclasses import dataclass, field
+from typing import Dict, List, Any, Optional, Tuple
 
 # Set a seed for reproducibility
 np.random.seed(42)
+
+@dataclass
+class ClusteringResult:
+    """Standard container for clustering results to ensure consistency across methods."""
+    name: str
+    labels: np.ndarray
+    probs: np.ndarray
+    means: np.ndarray
+    covariances: Optional[np.ndarray] = None
+    model: Any = None
+    computation_time: float = 0.0
+    weights: Optional[np.ndarray] = None
+    active_components: Optional[int] = None
+    additional_info: Dict[str, Any] = field(default_factory=dict)
 
 def find_optimal_data_subsets(df, feat1, feat2, model_factory, model_name, n_clusters=3, use_2d_clustering=True):
     """
@@ -500,4 +516,773 @@ def analyze_clusters_with_anova(df, feat1, feat2, model_factory=None, model_name
     }
     
     return results
+
+def sort_clusters_by_position(result, df, feat1):
+    """
+    Sort cluster labels from left to right along the x-axis.
+    
+    Parameters:
+    -----------
+    result : ClusteringResult
+        The clustering result object
+    df : DataFrame
+        The dataframe with the data
+    feat1 : str
+        Column name for the x-axis feature
+        
+    Returns:
+    --------
+    ClusteringResult
+        Updated result with remapped cluster labels
+    """
+    unique_labels = np.unique(result.labels)
+    
+    # Calculate mean position of each cluster along feat1 axis
+    cluster_means_x = {}
+    for label in unique_labels:
+        mask = result.labels == label
+        cluster_means_x[label] = df.loc[mask, feat1].mean()
+    
+    # Sort clusters by their mean x position
+    sorted_clusters = sorted(cluster_means_x.items(), key=lambda x: x[1])
+    
+    # Create mapping from original labels to sorted labels (0, 1, 2, ...)
+    cluster_mapping = {old_label: new_label for new_label, (old_label, _) in enumerate(sorted_clusters)}
+    
+    # Remap the cluster labels
+    new_labels = np.array([cluster_mapping[label] for label in result.labels])
+    
+    # Remap the probabilities matrix
+    new_probs = np.zeros_like(result.probs)
+    for old_label, new_label in cluster_mapping.items():
+        new_probs[:, new_label] = result.probs[:, old_label]
+    
+    # Remap means and covariances (if present)
+    new_means = np.zeros_like(result.means)
+    for old_label, new_label in cluster_mapping.items():
+        if old_label < len(result.means) and new_label < len(result.means):
+            new_means[new_label] = result.means[old_label]
+    
+    new_covariances = None
+    if result.covariances is not None:
+        new_covariances = np.zeros_like(result.covariances)
+        for old_label, new_label in cluster_mapping.items():
+            if old_label < len(result.covariances) and new_label < len(result.covariances):
+                new_covariances[new_label] = result.covariances[old_label]
+    
+    # Create updated result
+    updated_result = ClusteringResult(
+        name=result.name,
+        labels=new_labels,
+        probs=new_probs,
+        means=new_means,
+        covariances=new_covariances,
+        model=result.model,
+        computation_time=result.computation_time,
+        weights=result.weights,
+        active_components=result.active_components,
+        additional_info=result.additional_info
+    )
+    
+    return updated_result
+
+def cluster_mixture_t(df, feat1, feat2, n_clusters=3, random_state=42):
+    """
+    Perform clustering using Mixture of Student's t-distributions.
+    
+    Parameters:
+    -----------
+    df : DataFrame
+        The dataframe containing the data
+    feat1 : str
+        Column name for first feature
+    feat2 : str
+        Column name for second feature
+    n_clusters : int
+        Number of clusters
+    random_state : int
+        Random seed for reproducibility
+        
+    Returns:
+    --------
+    ClusteringResult
+        Standardized clustering result object
+    """
+    from sklearn.mixture import GaussianMixture
+    from scipy import stats
+    import time
+    
+    start_time = time.time()
+    
+    # Extract features
+    X = np.column_stack((df[feat1].values, df[feat2].values))
+    
+    # Since sklearn doesn't have a Student's t-distribution mixture model,
+    # we'll use a GaussianMixture as a base and adjust for heavier tails
+    gmm = GaussianMixture(
+        n_components=n_clusters, 
+        covariance_type='full', 
+        random_state=random_state
+    )
+    gmm.fit(X)
+    
+    # Get cluster probabilities (soft assignments)
+    probs = gmm.predict_proba(X)
+    
+    # Get hard cluster assignments
+    labels = gmm.predict(X)
+    
+    # Student's t adjustment - we simulate heavier tails by adjusting probabilities
+    # This is an approximation, not a true t-mixture model
+    df_freedom = 5  # Degrees of freedom for t-distribution (lower = heavier tails)
+    adjusted_probs = np.zeros_like(probs)
+    
+    for i in range(n_clusters):
+        # Get cluster center and covariance
+        mean = gmm.means_[i]
+        cov = gmm.covariances_[i]
+        
+        # Calculate Mahalanobis distances
+        inv_cov = np.linalg.inv(cov)
+        for j in range(len(X)):
+            diff = X[j] - mean
+            m_dist = np.sqrt(diff.dot(inv_cov).dot(diff.T))
+            
+            # Adjust probability using t-distribution cdf vs normal cdf
+            # This gives more weight to points far from the center
+            norm_prob = stats.norm.cdf(m_dist)
+            t_prob = stats.t.cdf(m_dist, df=df_freedom)
+            
+            # Adjust original probability
+            adjustment = (t_prob / norm_prob) if norm_prob > 0 else 1.0
+            adjusted_probs[j, i] = probs[j, i] * adjustment
+    
+    # Normalize adjusted probabilities
+    row_sums = adjusted_probs.sum(axis=1)
+    adjusted_probs = adjusted_probs / row_sums[:, np.newaxis]
+    
+    # Get the most likely cluster for each point
+    adjusted_labels = np.argmax(adjusted_probs, axis=1)
+    
+    computation_time = time.time() - start_time
+    
+    result = ClusteringResult(
+        name='Mixture of Student\'s t-distributions',
+        labels=adjusted_labels,
+        probs=adjusted_probs,
+        means=gmm.means_,
+        covariances=gmm.covariances_,
+        model=gmm,
+        computation_time=computation_time
+    )
+    
+    # Sort clusters from left to right
+    result = sort_clusters_by_position(result, df, feat1)
+    
+    return result
+
+def cluster_dpmm(df, feat1, feat2, n_clusters=3, random_state=42):
+    """
+    Perform clustering using Dirichlet Process Mixture Model.
+    Automatically determines the optimal number of clusters.
+    
+    Parameters:
+    -----------
+    df : DataFrame
+        The dataframe containing the data
+    feat1 : str
+        Column name for first feature
+    feat2 : str
+        Column name for second feature
+    n_clusters : int
+        Maximum number of clusters to consider
+    random_state : int
+        Random seed for reproducibility
+        
+    Returns:
+    --------
+    ClusteringResult
+        Standardized clustering result object
+    """
+    from sklearn.mixture import BayesianGaussianMixture
+    import time
+    
+    start_time = time.time()
+    
+    # Extract features
+    X = np.column_stack((df[feat1].values, df[feat2].values))
+    
+    # Use Bayesian Gaussian Mixture as an approximation to DPMM
+    # Start with more components than needed, model will determine actual number
+    max_components = max(n_clusters * 2, 10)  # Use more potential components
+    
+    model = BayesianGaussianMixture(
+        n_components=max_components,
+        weight_concentration_prior=0.1,  # Lower value encourages sparsity
+        covariance_type='full',
+        random_state=random_state,
+        max_iter=200,
+        n_init=3
+    )
+    model.fit(X)
+    
+    # Get cluster probabilities
+    probs = model.predict_proba(X)
+    
+    # Get hard cluster assignments
+    labels = model.predict(X)
+    
+    # Count actual components with non-zero weights
+    active_components = np.sum(model.weights_ > 0.01)
+    
+    # Trim components that are essentially unused
+    # This step removes empty clusters
+    significant_indices = np.where(model.weights_ > 0.01)[0]
+    
+    # Remap labels to only include significant components
+    label_map = {old_idx: new_idx for new_idx, old_idx in enumerate(significant_indices)}
+    new_labels = np.array([label_map.get(label, 0) for label in labels])
+    
+    # Extract only the significant means and covariances
+    significant_means = model.means_[significant_indices]
+    significant_covs = model.covariances_[significant_indices]
+    significant_weights = model.weights_[significant_indices]
+    
+    # Create trimmed probability matrix
+    new_probs = np.zeros((len(X), len(significant_indices)))
+    for i, idx in enumerate(significant_indices):
+        new_probs[:, i] = probs[:, idx]
+    
+    computation_time = time.time() - start_time
+    
+    result = ClusteringResult(
+        name='Dirichlet Process Mixture Model',
+        labels=new_labels,
+        probs=new_probs,
+        means=significant_means,
+        covariances=significant_covs,
+        model=model,
+        computation_time=computation_time,
+        weights=significant_weights,
+        active_components=active_components,
+        additional_info={'max_components': max_components, 'significant_components': len(significant_indices)}
+    )
+    
+    # Sort clusters from left to right
+    result = sort_clusters_by_position(result, df, feat1)
+    
+    return result
+
+def cluster_kde_based(df, feat1, feat2, n_clusters=3, bandwidth=None, random_state=42):
+    """
+    Perform clustering using Kernel Density-Based approach.
+    
+    Parameters:
+    -----------
+    df : DataFrame
+        The dataframe containing the data
+    feat1 : str
+        Column name for first feature
+    feat2 : str
+        Column name for second feature
+    n_clusters : int
+        Number of clusters
+    bandwidth : float or None
+        Kernel bandwidth for KDE, if None it's estimated
+    random_state : int
+        Random seed for reproducibility
+        
+    Returns:
+    --------
+    ClusteringResult
+        Standardized clustering result object
+    """
+    from sklearn.neighbors import KernelDensity
+    from sklearn.cluster import KMeans
+    import time
+    
+    start_time = time.time()
+    
+    # Extract features
+    X = np.column_stack((df[feat1].values, df[feat2].values))
+    
+    # Scale the data
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    
+    # Estimate bandwidth if not provided
+    if bandwidth is None:
+        # Scott's rule of thumb
+        bandwidth = X_scaled.shape[0] ** (-1 / (X_scaled.shape[1] + 4))
+    
+    # Initialize KDE
+    kde = KernelDensity(kernel='gaussian', bandwidth=bandwidth)
+    kde.fit(X_scaled)
+    
+    # Get density estimates for each point
+    log_density = kde.score_samples(X_scaled)
+    
+    # Use KMeans to find cluster centers in the density space
+    X_with_density = np.column_stack((X_scaled, log_density))
+    kmeans = KMeans(n_clusters=n_clusters, random_state=random_state)
+    kmeans.fit(X_with_density)
+    
+    # Get cluster centers
+    centers = kmeans.cluster_centers_[:, :2]  # Remove density dimension
+    
+    # Calculate distances to each center
+    distances = np.zeros((len(X_scaled), n_clusters))
+    for i in range(n_clusters):
+        distances[:, i] = np.linalg.norm(X_scaled - centers[i], axis=1)
+    
+    # Convert distances to probabilities using softmax
+    def softmax(x):
+        e_x = np.exp(-x)  # Negative for inverting distance
+        return e_x / e_x.sum(axis=1, keepdims=True)
+    
+    probs = softmax(distances)
+    
+    # Get hard cluster assignments
+    labels = np.argmax(probs, axis=1)
+    
+    # Transform centers back to original scale
+    centers_original = scaler.inverse_transform(centers)
+    
+    # Create fake covariances (identity matrices) for visualization consistency
+    fake_covariances = np.array([np.eye(2) for _ in range(n_clusters)])
+    
+    computation_time = time.time() - start_time
+    
+    result = ClusteringResult(
+        name='Kernel Density-Based Clustering',
+        labels=labels,
+        probs=probs,
+        means=centers_original,
+        covariances=fake_covariances,
+        model={'kde': kde, 'kmeans': kmeans},
+        computation_time=computation_time,
+        additional_info={'bandwidth': bandwidth, 'scaler': scaler}
+    )
+    
+    # Sort clusters from left to right
+    result = sort_clusters_by_position(result, df, feat1)
+    
+    return result
+
+def cluster_fuzzy_cmeans(df, feat1, feat2, n_clusters=3, m=2, random_state=42):
+    """
+    Perform clustering using Fuzzy C-Means.
+    
+    Parameters:
+    -----------
+    df : DataFrame
+        The dataframe containing the data
+    feat1 : str
+        Column name for first feature
+    feat2 : str
+        Column name for second feature
+    n_clusters : int
+        Number of clusters
+    m : float
+        Fuzziness parameter (m > 1, higher values = fuzzier clusters)
+    random_state : int
+        Random seed for reproducibility
+        
+    Returns:
+    --------
+    ClusteringResult
+        Standardized clustering result object
+    """
+    import time
+    import numpy.random as rnd
+    
+    start_time = time.time()
+    
+    # Extract features
+    X = np.column_stack((df[feat1].values, df[feat2].values))
+    
+    # Number of data points and dimensions
+    n_samples, n_features = X.shape
+    
+    # Set random seed
+    rnd.seed(random_state)
+    
+    # Initialize cluster centers using random points from the dataset
+    idx = rnd.choice(n_samples, n_clusters, replace=False)
+    centers = X[idx].copy()
+    
+    # Initialize membership matrix U
+    U = np.zeros((n_samples, n_clusters))
+    
+    # Maximum number of iterations
+    max_iter = 100
+    
+    # Convergence threshold
+    epsilon = 1e-4
+    
+    # Optimization loop
+    for iteration in range(max_iter):
+        # Calculate distances to cluster centers
+        distances = np.zeros((n_samples, n_clusters))
+        for i in range(n_clusters):
+            distances[:, i] = np.linalg.norm(X - centers[i], axis=1)**2
+        
+        # Update membership matrix
+        U_old = U.copy()
+        
+        # Handle points exactly at cluster centers
+        zero_distances = (distances == 0)
+        if np.any(zero_distances):
+            for i in range(n_samples):
+                if np.any(zero_distances[i]):
+                    U[i] = zero_distances[i] / np.sum(zero_distances[i])
+                else:
+                    for j in range(n_clusters):
+                        U[i, j] = 1 / np.sum((distances[i, j] / distances[i]) ** (1 / (m - 1)))
+        else:
+            for i in range(n_samples):
+                for j in range(n_clusters):
+                    U[i, j] = 1 / np.sum((distances[i, j] / distances[i]) ** (1 / (m - 1)))
+        
+        # Update cluster centers
+        for j in range(n_clusters):
+            U_j_m = U[:, j] ** m
+            if np.sum(U_j_m) > 0:
+                centers[j] = np.sum(U_j_m.reshape(-1, 1) * X, axis=0) / np.sum(U_j_m)
+        
+        # Check for convergence
+        if np.linalg.norm(U - U_old) < epsilon:
+            break
+    
+    # Get hard cluster assignments
+    labels = np.argmax(U, axis=1)
+    
+    # Calculate pseudo-covariances for visualization
+    covariances = np.zeros((n_clusters, 2, 2))
+    for i in range(n_clusters):
+        cluster_mask = labels == i
+        if np.sum(cluster_mask) > 1:
+            cluster_points = X[cluster_mask]
+            covariances[i] = np.cov(cluster_points.T)
+        else:
+            covariances[i] = np.eye(2)
+    
+    computation_time = time.time() - start_time
+    
+    result = ClusteringResult(
+        name='Fuzzy C-Means',
+        labels=labels,
+        probs=U,
+        means=centers,
+        covariances=covariances,
+        model={'centers': centers, 'memberships': U},
+        computation_time=computation_time,
+        additional_info={'fuzziness': m, 'iterations': iteration + 1}
+    )
+    
+    # Sort clusters from left to right
+    result = sort_clusters_by_position(result, df, feat1)
+    
+    return result
+
+def cluster_spectral_prob(df, feat1, feat2, n_clusters=3, sigma=1.0, random_state=42):
+    """
+    Perform clustering using Spectral Clustering with probabilistic assignments.
+    
+    Parameters:
+    -----------
+    df : DataFrame
+        The dataframe containing the data
+    feat1 : str
+        Column name for first feature
+    feat2 : str
+        Column name for second feature
+    n_clusters : int
+        Number of clusters
+    sigma : float
+        Parameter for Gaussian kernel
+    random_state : int
+        Random seed for reproducibility
+        
+    Returns:
+    --------
+    ClusteringResult
+        Standardized clustering result object
+    """
+    from sklearn.cluster import SpectralClustering
+    from sklearn.neighbors import kneighbors_graph
+    from scipy.spatial.distance import pdist, squareform
+    import time
+    
+    start_time = time.time()
+    
+    # Extract features
+    X = np.column_stack((df[feat1].values, df[feat2].values))
+    
+    # Scale the data
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    
+    # Compute affinity matrix (RBF kernel)
+    distances = squareform(pdist(X_scaled, 'euclidean'))
+    affinity = np.exp(-distances**2 / (2 * sigma**2))
+    
+    # Perform spectral clustering
+    model = SpectralClustering(
+        n_clusters=n_clusters,
+        affinity='precomputed',
+        random_state=random_state
+    )
+    labels = model.fit_predict(affinity)
+    
+    # Compute normalized Laplacian
+    D = np.diag(np.sum(affinity, axis=1))
+    L = D - affinity
+    D_inv_sqrt = np.diag(1.0 / np.sqrt(np.sum(affinity, axis=1)))
+    L_norm = np.dot(np.dot(D_inv_sqrt, L), D_inv_sqrt)
+    
+    # Get eigenvectors
+    eigenvalues, eigenvectors = np.linalg.eigh(L_norm)
+    # Sort by eigenvalues
+    idx = np.argsort(eigenvalues)
+    eigenvalues = eigenvalues[idx]
+    eigenvectors = eigenvectors[:, idx]
+    
+    # Get embedding (skip 0th eigenvector)
+    embedding = eigenvectors[:, 1:n_clusters+1]
+    
+    # Calculate probabilistic assignments
+    from sklearn.decomposition import PCA
+    
+    # Use PCA to find cluster centers in the embedded space
+    pca = PCA(n_components=2).fit(embedding)
+    X_pca = pca.transform(embedding)
+    
+    # Calculate cluster centers
+    centers = np.zeros((n_clusters, 2))
+    for i in range(n_clusters):
+        cluster_points = X_pca[labels == i]
+        centers[i] = np.mean(cluster_points, axis=0)
+    
+    # Calculate distances to each center in embedded space
+    distances = np.zeros((len(X_pca), n_clusters))
+    for i in range(n_clusters):
+        distances[:, i] = np.linalg.norm(X_pca - centers[i], axis=1)
+    
+    # Convert distances to probabilities using softmax
+    def softmax(x):
+        e_x = np.exp(-x)  # Negative for inverting distance
+        return e_x / e_x.sum(axis=1, keepdims=True)
+    
+    probs = softmax(distances)
+    
+    # Map centers back to original space (approximate)
+    # We can't directly map back, but we can estimate the centers
+    original_centers = np.zeros((n_clusters, 2))
+    for i in range(n_clusters):
+        mask = labels == i
+        if np.sum(mask) > 0:
+            original_centers[i] = np.mean(X[mask], axis=0)
+    
+    # Calculate pseudo-covariances for visualization
+    covariances = np.zeros((n_clusters, 2, 2))
+    for i in range(n_clusters):
+        cluster_mask = labels == i
+        if np.sum(cluster_mask) > 1:
+            cluster_points = X[cluster_mask]
+            covariances[i] = np.cov(cluster_points.T)
+        else:
+            covariances[i] = np.eye(2)
+    
+    computation_time = time.time() - start_time
+    
+    result = ClusteringResult(
+        name='Spectral Clustering with Probabilistic Assignments',
+        labels=labels,
+        probs=probs,
+        means=original_centers,
+        covariances=covariances,
+        model={'spectral': model, 'embedding': embedding},
+        computation_time=computation_time,
+        additional_info={'sigma': sigma, 'eigenvalues': eigenvalues[:n_clusters+1]}
+    )
+    
+    # Sort clusters from left to right
+    result = sort_clusters_by_position(result, df, feat1)
+    
+    return result
+
+def cluster_gmm_wrapper(df, feat1, feat2, n_clusters=3, random_state=42):
+    """
+    Wrapper for GMM clustering to provide the standard ClusteringResult format.
+    
+    Parameters:
+    -----------
+    df : DataFrame
+        The dataframe containing the data
+    feat1 : str
+        Column name for first feature
+    feat2 : str
+        Column name for second feature
+    n_clusters : int
+        Number of clusters
+    random_state : int
+        Random seed for reproducibility
+        
+    Returns:
+    --------
+    ClusteringResult
+        Standardized clustering result object
+    """
+    import time
+    from sklearn.mixture import GaussianMixture
+    
+    start_time = time.time()
+    
+    # Extract features
+    X = np.column_stack((df[feat1].values, df[feat2].values))
+    
+    # Fit GMM
+    gmm = GaussianMixture(n_components=n_clusters, random_state=random_state)
+    gmm.fit(X)
+    
+    # Get probabilities and labels
+    probs = gmm.predict_proba(X)
+    labels = gmm.predict(X)
+    
+    computation_time = time.time() - start_time
+    
+    result = ClusteringResult(
+        name='Gaussian Mixture Model',
+        labels=labels,
+        probs=probs,
+        means=gmm.means_,
+        covariances=gmm.covariances_,
+        model=gmm,
+        computation_time=computation_time,
+        weights=gmm.weights_
+    )
+    
+    # Sort clusters from left to right
+    result = sort_clusters_by_position(result, df, feat1)
+    
+    return result
+
+def compare_all_clustering_methods(df, feat1, feat2, n_clusters=3, random_state=42):
+    """
+    Compare all clustering methods on the given data with visualizations and ANOVA analysis.
+    
+    Parameters:
+    -----------
+    df : DataFrame
+        The dataframe containing the data
+    feat1 : str
+        Column name for first feature
+    feat2 : str
+        Column name for second feature
+    n_clusters : int
+        Default number of clusters (some methods may determine their own optimal number)
+    random_state : int
+        Random seed for reproducibility
+        
+    Returns:
+    --------
+    dict
+        Dictionary containing results from all clustering methods
+    """
+    print(f"\n--- Comparing clustering methods on {feat1} vs {feat2} ---")
+    
+    # List of clustering methods to compare
+    clustering_methods = [
+        ('GMM', cluster_gmm_wrapper),
+        ('Mixture of t', cluster_mixture_t),
+        ('DPMM', cluster_dpmm),
+        ('KDE-Based', cluster_kde_based),
+        ('Fuzzy C-Means', cluster_fuzzy_cmeans),
+        ('Spectral Prob', cluster_spectral_prob)
+    ]
+    
+    # Run all methods and collect results
+    results = {}
+    computation_times = []
+    anova_results = {}
+    
+    for name, method in clustering_methods:
+        print(f"\nRunning {name}...")
+        try:
+            # Special case for DPMM which can determine its own number of clusters
+            result = method(df, feat1, feat2, n_clusters=n_clusters, random_state=random_state)
+            
+            # Display number of clusters found
+            actual_clusters = len(np.unique(result.labels))
+            print(f"  Found {actual_clusters} clusters")
+            
+            results[name] = result
+            
+            # Extract computation time
+            computation_times.append((name, result.computation_time))
+            print(f"  {name} completed in {result.computation_time:.4f} seconds")
+            
+            # Visualize results with ANOVA
+            print(f"  Visualizing clustering results with ANOVA...")
+            fig, anova = visualize_clustering_with_anova(df, feat1, feat2, result)
+            plt.show()
+            
+            # Store ANOVA results
+            anova_results[name] = anova
+            
+            # Print summary of ANOVA results
+            if 'f_value' in anova and anova['f_value'] is not None:
+                print(f"  ANOVA results for {name}:")
+                print(f"    F-value: {anova['f_value']:.4f}")
+                print(f"    p-value: {anova['p_value']:.4f}")
+                print(f"    Significant difference: {anova['significant']}")
+                
+                # If significant, show which clusters differ
+                if anova['significant'] and 'tukey_results' in anova:
+                    print(f"    Tukey HSD post-hoc test:")
+                    tukey_lines = anova['tukey_results'].split('\n')
+                    # Print only the significant differences
+                    for line in tukey_lines:
+                        if 'reject' in line and 'True' in line:
+                            print(f"      {line}")
+            else:
+                print(f"  ANOVA analysis not possible for {name}")
+                
+        except Exception as e:
+            print(f"  {name} failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            results[name] = None
+    
+    # Create a bar chart of computation times at the end
+    plt.figure(figsize=(12, 6))
+    names = [name for name, _ in computation_times]
+    times = [time for _, time in computation_times]
+    
+    bars = plt.bar(names, times, color='skyblue')
+    
+    # Add time labels on top of the bars
+    for bar, time in zip(bars, times):
+        plt.text(
+            bar.get_x() + bar.get_width()/2,
+            bar.get_height() + 0.01,
+            f"{time:.4f}s",
+            ha='center', va='bottom',
+            fontsize=10
+        )
+    
+    plt.xlabel('Clustering Method')
+    plt.ylabel('Computation Time (seconds)')
+    plt.title('Clustering Methods Computation Time Comparison')
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.show()
+    
+    # Return comprehensive results
+    return {
+        'clustering_results': results,
+        'anova_results': anova_results,
+        'computation_times': computation_times
+    }
 

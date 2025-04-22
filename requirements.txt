@@ -1,5 +1,5 @@
 # YASA wants numpy 1.x
-numpy==1.24.3
+numpy<2.0.0
 nptyping==1.4.4
 pandas
 brainflow
