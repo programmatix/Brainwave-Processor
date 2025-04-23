@@ -32,6 +32,7 @@ from scipy.stats import f_oneway, ttest_ind
 import time
 import warnings
 from collections import defaultdict
+import statsmodels.api as sm
 
 # Set a seed for reproducibility
 np.random.seed(42)
@@ -49,6 +50,46 @@ class ClusteringResult:
     weights: Optional[np.ndarray] = None
     active_components: Optional[int] = None
     additional_info: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class RegressionResult:
+    slope: float
+    intercept: float
+    r2: float
+    slope_p_value: float
+    intercept_p_value: float
+    slope_ci: Tuple[float, float]
+    intercept_ci: Tuple[float, float]
+
+@dataclass
+class ClusterAnalysis:
+    label: int
+    size: int
+    x_range: Tuple[float, float]
+    y_range: Tuple[float, float]
+    y_mean: float
+    y_std: float
+    regression: RegressionResult
+    spearman_rho: float
+    spearman_p: float
+
+@dataclass
+class AnovaResult:
+    f_value: float
+    p_value: float
+    cluster_means: Dict[int, float]
+    cluster_stds: Dict[int, float]
+
+@dataclass
+class PairAnalysisResult:
+    feat1: str
+    feat2: str
+    n_clusters: int
+    overall_regression: RegressionResult
+    overall_spearman_rho: float
+    overall_spearman_p: float
+    anova: AnovaResult
+    clusters: List[ClusterAnalysis]
 
 def find_optimal_data_subsets(df, feat1, feat2, model_factory, model_name, n_clusters=3, use_2d_clustering=True):
     """
@@ -2301,8 +2342,6 @@ def compare_all_clustering_methods(df, feat1, feat2, n_clusters=3, random_state=
     """
     print(f"\n--- Comparing clustering methods on {feat1} vs {feat2} ---")
     
-    # Define which methods automatically determine optimal clusters
-    auto_optimal_methods = ['DPMM', 'Variational DPMM', 'X-means', 'HDBSCAN', 'Affinity Prop.']
     
     # List of clustering methods with appropriate parameter mappings
     clustering_methods = [
@@ -2674,4 +2713,117 @@ def visualize_clustering_with_anova(df, feat1, feat2, cluster_result):
     fig.tight_layout()
     
     return fig, anova_results
+
+def analyze_pair_gmm(df, feat1, feat2, n_clusters=3, random_state=42, use_merging=False, effect_size_threshold=0.3, visualize=False):
+    import statsmodels.api as sm
+    if use_merging:
+        result = cluster_with_merging(df, feat1, feat2, cluster_gmm_wrapper, param_name='n_clusters', effect_size_threshold=effect_size_threshold, random_state=random_state, n_clusters=n_clusters)
+    else:
+        result = cluster_gmm_wrapper(df, feat1, feat2, n_clusters=n_clusters, random_state=random_state)
+    labels = result.labels
+    X = df[feat1].values.reshape(-1,1)
+    y = df[feat2].values
+    X_const = sm.add_constant(X)
+    model = sm.OLS(y, X_const).fit()
+    params = model.params
+    ci = np.asarray(model.conf_int())
+    overall_regression = RegressionResult(
+        slope=float(params[1]),
+        intercept=float(params[0]),
+        r2=float(model.rsquared),
+        slope_p_value=float(model.pvalues[1]),
+        intercept_p_value=float(model.pvalues[0]),
+        slope_ci=(float(ci[1,0]), float(ci[1,1])),
+        intercept_ci=(float(ci[0,0]), float(ci[0,1]))
+    )
+    overall_spearman_rho, overall_spearman_p = stats.spearmanr(X.flatten(), y)
+    unique_labels = np.unique(labels)
+    groups = [y[labels==label] for label in unique_labels]
+    f_val, p_val = stats.f_oneway(*groups)
+    cluster_means = {int(label): float(np.mean(y[labels==label])) for label in unique_labels}
+    cluster_stds = {int(label): float(np.std(y[labels==label])) for label in unique_labels}
+    anova = AnovaResult(
+        f_value=float(f_val),
+        p_value=float(p_val),
+        cluster_means=cluster_means,
+        cluster_stds=cluster_stds
+    )
+    cluster_analyses = []
+    for label in unique_labels:
+        mask = labels==label
+        Xc = X[mask]
+        yc = y[mask]
+        size = int(len(yc))
+        x_min, x_max = (float(Xc.min()), float(Xc.max())) if size > 0 else (float('nan'), float('nan'))
+        y_min, y_max = (float(np.min(yc)), float(np.max(yc))) if size > 0 else (float('nan'), float('nan'))
+        y_mean = float(np.mean(yc)) if size > 0 else float('nan')
+        y_std = float(np.std(yc)) if size > 0 else float('nan')
+        if size > 1:
+            Xc_const = sm.add_constant(Xc)
+            model_c = sm.OLS(yc, Xc_const).fit()
+            params_c = model_c.params
+            ci_c = np.asarray(model_c.conf_int())
+            regression_c = RegressionResult(
+                slope=float(params_c[1]),
+                intercept=float(params_c[0]),
+                r2=float(model_c.rsquared),
+                slope_p_value=float(model_c.pvalues[1]),
+                intercept_p_value=float(model_c.pvalues[0]),
+                slope_ci=(float(ci_c[1,0]), float(ci_c[1,1])),
+                intercept_ci=(float(ci_c[0,0]), float(ci_c[0,1]))
+            )
+            spearman_rho_c, spearman_p_c = stats.spearmanr(Xc.flatten(), yc)
+        else:
+            regression_c = RegressionResult(
+                slope=float('nan'),
+                intercept=float('nan'),
+                r2=float('nan'),
+                slope_p_value=float('nan'),
+                intercept_p_value=float('nan'),
+                slope_ci=(float('nan'), float('nan')),
+                intercept_ci=(float('nan'), float('nan'))
+            )
+            spearman_rho_c, spearman_p_c = float('nan'), float('nan')
+        cluster_analysis = ClusterAnalysis(
+            label=int(label),
+            size=size,
+            x_range=(x_min, x_max),
+            y_range=(y_min, y_max),
+            y_mean=y_mean,
+            y_std=y_std,
+            regression=regression_c,
+            spearman_rho=float(spearman_rho_c),
+            spearman_p=float(spearman_p_c)
+        )
+        cluster_analyses.append(cluster_analysis)
+    pair_result = PairAnalysisResult(
+        feat1=feat1,
+        feat2=feat2,
+        n_clusters=n_clusters,
+        overall_regression=overall_regression,
+        overall_spearman_rho=overall_spearman_rho,
+        overall_spearman_p=overall_spearman_p,
+        anova=anova,
+        clusters=cluster_analyses
+    )
+    if visualize:
+        fig, _ = visualize_clustering_with_anova(df, feat1, feat2, result)
+        plt.show()
+    return pair_result
+
+def print_pair_analysis(pair_result: PairAnalysisResult):
+    print(f"Analysis for {pair_result.feat1} vs {pair_result.feat2}")
+    orr = pair_result.overall_regression
+    print(f"Overall Regression: slope={orr.slope:.3f} (CI={orr.slope_ci[0]:.3f}-{orr.slope_ci[1]:.3f}), intercept={orr.intercept:.3f} (CI={orr.intercept_ci[0]:.3f}-{orr.intercept_ci[1]:.3f}), R2={orr.r2:.3f}, p_slope={orr.slope_p_value:.3g}, p_intercept={orr.intercept_p_value:.3g}")
+    print(f"Overall Spearman: rho={pair_result.overall_spearman_rho:.3f}, p={pair_result.overall_spearman_p:.3g}")
+    a = pair_result.anova
+    print(f"ANOVA: F={a.f_value:.3f}, p={a.p_value:.3g}")
+    for lbl, mean in a.cluster_means.items():
+        std = a.cluster_stds[lbl]
+        print(f" Cluster {lbl}: mean={mean:.3f}, std={std:.3f}")
+    for c in pair_result.clusters:
+        print(f"Cluster {c.label}: size={c.size}, x_range={c.x_range[0]:.3f}-{c.x_range[1]:.3f}, y_range={c.y_range[0]:.3f}-{c.y_range[1]:.3f}, y_mean={c.y_mean:.3f}, y_std={c.y_std:.3f}")
+        reg = c.regression
+        print(f" Regression: slope={reg.slope:.3f} (CI={reg.slope_ci[0]:.3f}-{reg.slope_ci[1]:.3f}), intercept={reg.intercept:.3f} (CI={reg.intercept_ci[0]:.3f}-{reg.intercept_ci[1]:.3f}), R2={reg.r2:.3f}, p_slope={reg.slope_p_value:.3g}, p_intercept={reg.intercept_p_value:.3g}")
+        print(f" Spearman: rho={c.spearman_rho:.3f}, p={c.spearman_p:.3g}")
 
