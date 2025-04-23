@@ -25,6 +25,7 @@ from sklearn.linear_model import LinearRegression
 from sklearn.metrics import silhouette_score
 from stats_outliers import detect_outliers
 from stats_clustering import find_optimal_data_subsets
+from stats_shared import create_prediction_grid, plot_regression_relationship
 
 # Set a seed for reproducibility
 np.random.seed(42)
@@ -932,6 +933,7 @@ def fit_svr(df, feat1, feat2, find_subsets=True, remove_outliers=True, outlier_m
                 
                 x = np.arange(len(cluster_labels))
                 width = 0.2  # Make bars narrower to fit 4 bars
+                distinct_colors = plt.cm.viridis(np.linspace(0, 1, len(cluster_labels)))
                 bar_colors = distinct_colors[:len(cluster_labels)]
                 
                 rects1 = ax_bars.bar(x - 1.5*width, cv_r2, width, label='CV R²', color=bar_colors)

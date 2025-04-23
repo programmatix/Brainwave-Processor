@@ -30,6 +30,7 @@ def calculate_correlations(df, var1, var2):
     pearson_corr, pearson_p = stats.pearsonr(df[var1], df[var2])
     spearman_corr, spearman_p = stats.spearmanr(df[var1], df[var2])
     kendall_corr, kendall_p = stats.kendalltau(df[var1], df[var2])
+    distance_corr = distance_correlation(df[var1], df[var2])
     
     # Calculate mutual information
     # Reshape for mutual_info_regression
@@ -41,7 +42,8 @@ def calculate_correlations(df, var1, var2):
         'Pearson': {'correlation': pearson_corr, 'p_value': pearson_p},
         'Spearman': {'correlation': spearman_corr, 'p_value': spearman_p},
         'Kendall': {'correlation': kendall_corr, 'p_value': kendall_p},
-        'Mutual Information': {'score': mi}
+        'Mutual Information': {'score': mi},
+        'Distance Correlation': {'score': distance_corr}
     }
     
     return results
@@ -159,3 +161,23 @@ def visualize_correlation_heatmap(df, variables=None):
     plt.title('Correlation Heatmap')
     plt.tight_layout()
     plt.show()
+
+
+
+def distance_correlation(x, y):
+    x = np.atleast_1d(x)
+    y = np.atleast_1d(y)
+    n = x.shape[0]
+    if y.shape[0] != n:
+        raise ValueError('Number of samples must match')
+    a = np.abs(x[:, None] - x[None, :])
+    b = np.abs(y[:, None] - y[None, :])
+    A = a - a.mean(axis=0)[None, :] - a.mean(axis=1)[:, None] + a.mean()
+    B = b - b.mean(axis=0)[None, :] - b.mean(axis=1)[:, None] + b.mean()
+    dCov2_xy = (A * B).sum() / (n * n)
+    dCov2_xx = (A * A).sum() / (n * n)
+    dCov2_yy = (B * B).sum() / (n * n)
+    if dCov2_xx * dCov2_yy == 0:
+        return 0.0
+    return np.sqrt(dCov2_xy) / np.sqrt(np.sqrt(dCov2_xx * dCov2_yy))
+
