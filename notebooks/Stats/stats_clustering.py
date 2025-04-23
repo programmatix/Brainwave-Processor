@@ -422,6 +422,7 @@ def analyze_clusters_with_anova(df, feat1, feat2, model_factory=None, model_name
     # Use viridis color scheme instead of tab10
     distinct_colors = plt.cm.viridis(np.linspace(0, 1, cluster_results['n_clusters']))
     
+    
     # Create visualization
     fig = plt.figure(figsize=(16, 8))
     gs = gridspec.GridSpec(1, 2)

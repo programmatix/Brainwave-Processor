@@ -30,9 +30,12 @@ def create_prediction_grid(X, padding=0.5, mesh_step_size=0.02):
     xx = np.arange(x_min, x_max, mesh_step_size)
     return xx.reshape(-1, 1)
 
-def plot_regression_relationship(model_name, X, y, y_pred, x_new, y_new, ax, metrics, errors=None, threshold=None):
+def plot_regression_relationship(model_name, X, y, y_pred, x_new, y_new, ax, metrics, errors=None, threshold=None, uncertainties=None):
     ax.scatter(X, y, color='blue', alpha=0.6, label='Actual data')
     ax.plot(x_new, y_new, color='red', linewidth=2, label='Predicted relationship')
+    
+    if uncertainties is not None:
+        ax.fill_between(x_new.flatten(), y_new - uncertainties, y_new + uncertainties, color='grey', alpha=0.3, label='Error margin')
     
     if threshold is not None:
         ax.axvline(x=threshold, color='green', linestyle='--', label=f'Threshold: {threshold:.2f}')

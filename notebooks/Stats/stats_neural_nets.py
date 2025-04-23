@@ -24,7 +24,8 @@ from matplotlib.patches import Ellipse
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import silhouette_score
 from stats_outliers import detect_outliers
-
+from stats_shared import plot_regression_relationship, create_prediction_grid
+from stats_clustering import find_optimal_data_subsets
 
 def fit_pytorch_neural_net(df, feat1, feat2, hidden_layers=[10, 5], learning_rate=0.01, epochs=100, find_subsets=True, remove_outliers=True, outlier_method='influence'):
     """
@@ -166,7 +167,7 @@ def fit_pytorch_neural_net(df, feat1, feat2, hidden_layers=[10, 5], learning_rat
             nn_simple.fit(X_train, y_train)
             return nn_simple
             
-        outlier_mask, outlier_scores = detect_outliers(
+        _, _, outlier_mask, outlier_scores, _ = detect_outliers(
             X, y, method=outlier_method, max_remove_percent=10, 
             model_factory=simple_model_factory
         )
@@ -237,6 +238,7 @@ def fit_pytorch_neural_net(df, feat1, feat2, hidden_layers=[10, 5], learning_rat
     fig, axes = plt.subplots(1, 2, figsize=(18, 7))
     
     # Plot the main model on the first axis
+    uncertainties = np.full_like(y_new, metrics['rmse'])
     plot_regression_relationship(
         model_name=f"Neural Network ({hidden_layers})", 
         X=X_filtered, 
@@ -245,7 +247,8 @@ def fit_pytorch_neural_net(df, feat1, feat2, hidden_layers=[10, 5], learning_rat
         x_new=x_new,
         y_new=y_new,
         ax=axes[0],
-        metrics=metrics
+        metrics=metrics,
+        uncertainties=uncertainties
     )
     
     # Show regional performance in a separate figure
