@@ -33,6 +33,10 @@ import time
 import warnings
 from collections import defaultdict
 import statsmodels.api as sm
+from joblib import Parallel, delayed
+import fastcluster
+from scipy.cluster.hierarchy import fcluster, cut_tree
+from scipy.spatial.distance import cdist
 
 # Set a seed for reproducibility
 np.random.seed(42)
@@ -90,6 +94,7 @@ class PairAnalysisResult:
     overall_spearman_p: float
     anova: AnovaResult
     clusters: List[ClusterAnalysis]
+    best_p: float
 
 def find_optimal_data_subsets(df, feat1, feat2, model_factory, model_name, n_clusters=3, use_2d_clustering=True):
     """
@@ -421,7 +426,7 @@ def analyze_clusters_with_anova(df, feat1, feat2, model_factory=None, model_name
     # Step 3: Visualize the clusters
     # Use viridis color scheme instead of tab10
     distinct_colors = plt.cm.viridis(np.linspace(0, 1, cluster_results['n_clusters']))
-    
+
     
     # Create visualization
     fig = plt.figure(figsize=(16, 8))
@@ -1253,7 +1258,7 @@ def cluster_spectral_prob(df, feat1, feat2, n_clusters=3, sigma=1.0, random_stat
             computation_time=time.time() - start_time
         )
 
-def cluster_gmm_wrapper(df, feat1, feat2, n_clusters=3, random_state=42):
+def cluster_gmm_wrapper(df, feat1, feat2, n_clusters=3, random_state=42, profile=False):
     """
     Wrapper for GMM clustering to provide the standard ClusteringResult format.
     
@@ -1269,6 +1274,8 @@ def cluster_gmm_wrapper(df, feat1, feat2, n_clusters=3, random_state=42):
         Number of clusters
     random_state : int
         Random seed for reproducibility
+    profile : bool
+        Whether to collect and display profiling information
         
     Returns:
     --------
@@ -1279,17 +1286,27 @@ def cluster_gmm_wrapper(df, feat1, feat2, n_clusters=3, random_state=42):
     from sklearn.mixture import GaussianMixture
     
     start_time = time.time()
+    profiling_info = {}
     
     # Extract features
+    extract_start = time.time()
     X = np.column_stack((df[feat1].values, df[feat2].values))
+    if profile:
+        profiling_info['extract_features_ms'] = (time.time() - extract_start) * 1000
     
     # Fit GMM
+    fit_start = time.time()
     gmm = GaussianMixture(n_components=n_clusters, random_state=random_state)
     gmm.fit(X)
+    if profile:
+        profiling_info['gmm_fit_ms'] = (time.time() - fit_start) * 1000
     
     # Get probabilities and labels
+    predict_start = time.time()
     probs = gmm.predict_proba(X)
     labels = gmm.predict(X)
+    if profile:
+        profiling_info['prediction_ms'] = (time.time() - predict_start) * 1000
     
     computation_time = time.time() - start_time
     
@@ -1305,7 +1322,88 @@ def cluster_gmm_wrapper(df, feat1, feat2, n_clusters=3, random_state=42):
     )
     
     # Sort clusters from left to right
+    sort_start = time.time()
     result = sort_clusters_by_position(result, df, feat1)
+    if profile:
+        profiling_info['sort_clusters_ms'] = (time.time() - sort_start) * 1000
+        profiling_info['total_time_ms'] = computation_time * 1000
+        result.additional_info = profiling_info
+        print(f"GMM Profiling for {feat1} vs {feat2}:")
+        for key, value in profiling_info.items():
+            print(f"  {key}: {value:.2f}ms")
+    
+    return result
+
+def cluster_fastcluster_wrapper(df, feat1, feat2, n_clusters=3, method='ward', random_state=42, profile=False):
+    import time
+    import numpy as np
+    from scipy.cluster.hierarchy import fcluster, cut_tree
+    from scipy.spatial.distance import pdist, cdist, squareform
+    
+    start_time = time.time()
+    profiling_info = {}
+    
+    # Extract features
+    extract_start = time.time()
+    X = np.column_stack((df[feat1].values, df[feat2].values))
+    if profile:
+        profiling_info['extract_features_ms'] = (time.time() - extract_start) * 1000
+    
+    # Fit hierarchical clustering
+    fit_start = time.time()
+    Z = fastcluster.linkage(X, method=method)
+    if profile:
+        profiling_info['fastcluster_fit_ms'] = (time.time() - fit_start) * 1000
+    
+    # Get labels
+    predict_start = time.time()
+    labels = fcluster(Z, n_clusters, criterion='maxclust') - 1  # Convert to 0-indexed
+    
+    # Calculate cluster means
+    unique_labels = np.unique(labels)
+    means = np.array([X[labels == i].mean(axis=0) for i in unique_labels])
+    
+    # Calculate cluster covariances
+    covariances = np.array([np.cov(X[labels == i].T) for i in unique_labels])
+    
+    # Calculate distances to cluster centers for probabilities
+    distances = cdist(X, means)
+    
+    # Convert distances to probabilities using softmax
+    def softmax(x):
+        e_x = np.exp(-x)  # Negative to invert distances
+        return e_x / e_x.sum(axis=1, keepdims=True)
+    
+    probs = softmax(distances)
+    if profile:
+        profiling_info['prediction_ms'] = (time.time() - predict_start) * 1000
+    
+    computation_time = time.time() - start_time
+    
+    # Calculate weights as proportion of samples in each cluster
+    weights = np.array([np.sum(labels == i) / len(labels) for i in unique_labels])
+    
+    result = ClusteringResult(
+        name=f'Hierarchical Clustering (fastcluster - {method})',
+        labels=labels,
+        probs=probs,
+        means=means,
+        covariances=covariances,
+        model=Z,
+        computation_time=computation_time,
+        weights=weights
+    )
+    
+    # Sort clusters from left to right
+    sort_start = time.time()
+    result = sort_clusters_by_position(result, df, feat1)
+    if profile:
+        profiling_info['sort_clusters_ms'] = (time.time() - sort_start) * 1000
+        profiling_info['total_time_ms'] = computation_time * 1000
+        result.additional_info = profiling_info
+        print(f"Fastcluster Profiling for {feat1} vs {feat2}:")
+        for key, value in profiling_info.items():
+            print(f"  {key}: {value:.2f}ms")
     
     return result
 
@@ -2317,7 +2415,7 @@ def cluster_with_merging(df, feat1, feat2, clustering_func, param_name='n_cluste
         params['random_state'] = random_state
         return clustering_func(df, feat1, feat2, **params)
 
-def compare_all_clustering_methods(df, feat1, feat2, n_clusters=3, random_state=42):
+def compare_all_clustering_methods(df, feat1, feat2, n_clusters=3, merge_clusters=True, random_state=42):
     """
     Compare all clustering methods on the given data with visualizations and ANOVA analysis.
     For methods that don't automatically find optimal clusters, start with 3 clusters and
@@ -2346,6 +2444,42 @@ def compare_all_clustering_methods(df, feat1, feat2, n_clusters=3, random_state=
     
     # List of clustering methods with appropriate parameter mappings
     clustering_methods = [
+        {
+            'name': 'Fastcluster (Ward)',
+            'function': cluster_fastcluster_wrapper,
+            'params': {'n_clusters': n_clusters, 'method': 'ward'},
+            'auto_optimal': False
+        },
+        {
+            'name': 'Fastcluster (Single)',
+            'function': cluster_fastcluster_wrapper,
+            'params': {'n_clusters': n_clusters, 'method': 'single'},
+            'auto_optimal': False
+        },
+        {
+            'name': 'Fastcluster (Complete)',
+            'function': cluster_fastcluster_wrapper,
+            'params': {'n_clusters': n_clusters, 'method': 'complete'},
+            'auto_optimal': False
+        },
+        {
+            'name': 'Fastcluster (Average)',
+            'function': cluster_fastcluster_wrapper,
+            'params': {'n_clusters': n_clusters, 'method': 'average'},
+            'auto_optimal': False
+        },
+        {
+            'name': 'Fastcluster (Centroid)',
+            'function': cluster_fastcluster_wrapper,
+            'params': {'n_clusters': n_clusters, 'method': 'centroid'},
+            'auto_optimal': False
+        },
+        {
+            'name': 'Fastcluster (Median)',
+            'function': cluster_fastcluster_wrapper,
+            'params': {'n_clusters': n_clusters, 'method': 'median'},
+            'auto_optimal': False
+        },
         {
             'name': 'GMM',
             'function': cluster_gmm_wrapper,
@@ -2427,7 +2561,7 @@ def compare_all_clustering_methods(df, feat1, feat2, n_clusters=3, random_state=
                 params['random_state'] = random_state
                 result = func(df, feat1, feat2, **params)
                 print(f"  Method automatically determines optimal clusters")
-            else:
+            elif merge_clusters:
                 # Use the new approach: Start with 3 clusters and merge if needed
                 param_name = next((k for k in params.keys() if 'cluster' in k), 'n_clusters')
                 print(f"  Using {param_name}=3 and merging similar clusters...")
@@ -2438,6 +2572,8 @@ def compare_all_clustering_methods(df, feat1, feat2, n_clusters=3, random_state=
                     random_state=random_state, 
                     **{k: v for k, v in params.items() if k != param_name}
                 )
+            else:
+                result = func(df, feat1, feat2, **params)
             
             # Display number of clusters found
             actual_clusters = len(np.unique(result.labels))
@@ -2715,15 +2851,31 @@ def visualize_clustering_with_anova(df, feat1, feat2, cluster_result):
     
     return fig, anova_results
 
-def analyze_pair_gmm(df, feat1, feat2, n_clusters=3, random_state=42, use_merging=False, effect_size_threshold=0.3, visualize=False):
+def analyze_pair_best(df, feat1, feat2, n_clusters=3, random_state=42, use_merging=False, effect_size_threshold=0.3, visualize=False, profile=False):
     import statsmodels.api as sm
+    import time
+    
+    profiling_info = {}
+    start_time = time.time()
+    
     if use_merging:
-        result = cluster_with_merging(df, feat1, feat2, cluster_gmm_wrapper, param_name='n_clusters', effect_size_threshold=effect_size_threshold, random_state=random_state, n_clusters=n_clusters)
+        cluster_start = time.time()
+        result = cluster_with_merging(df, feat1, feat2, cluster_fastcluster_wrapper, param_name='n_clusters', effect_size_threshold=effect_size_threshold, random_state=random_state, n_clusters=n_clusters, profile=profile)
+        if profile:
+            profiling_info['clustering_time_ms'] = (time.time() - cluster_start) * 1000
     else:
-        result = cluster_gmm_wrapper(df, feat1, feat2, n_clusters=n_clusters, random_state=random_state)
+        cluster_start = time.time()
+        result = cluster_fastcluster_wrapper(df, feat1, feat2, n_clusters=n_clusters, random_state=random_state, profile=profile)
+        if profile:
+            profiling_info['clustering_time_ms'] = (time.time() - cluster_start) * 1000
+            if hasattr(result, 'additional_info') and result.additional_info:
+                profiling_info['gmm_details'] = result.additional_info
+    
     labels = result.labels
     X = df[feat1].values.reshape(-1,1)
     y = df[feat2].values
+    
+    regression_start = time.time()
     X_const = sm.add_constant(X)
     model = sm.OLS(y, X_const).fit()
     params = model.params
@@ -2737,7 +2889,15 @@ def analyze_pair_gmm(df, feat1, feat2, n_clusters=3, random_state=42, use_mergin
         slope_ci=(float(ci[1,0]), float(ci[1,1])),
         intercept_ci=(float(ci[0,0]), float(ci[0,1]))
     )
+    if profile:
+        profiling_info['overall_regression_time_ms'] = (time.time() - regression_start) * 1000
+    
+    spearman_start = time.time()
     overall_spearman_rho, overall_spearman_p = stats.spearmanr(X.flatten(), y)
+    if profile:
+        profiling_info['overall_spearman_time_ms'] = (time.time() - spearman_start) * 1000
+    
+    anova_start = time.time()
     unique_labels = np.unique(labels)
     groups = [y[labels==label] for label in unique_labels]
     f_val, p_val = stats.f_oneway(*groups)
@@ -2749,6 +2909,10 @@ def analyze_pair_gmm(df, feat1, feat2, n_clusters=3, random_state=42, use_mergin
         cluster_means=cluster_means,
         cluster_stds=cluster_stds
     )
+    if profile:
+        profiling_info['anova_time_ms'] = (time.time() - anova_start) * 1000
+    
+    cluster_analysis_start = time.time()
     cluster_analyses = []
     for label in unique_labels:
         mask = labels==label
@@ -2797,6 +2961,13 @@ def analyze_pair_gmm(df, feat1, feat2, n_clusters=3, random_state=42, use_mergin
             spearman_p=float(spearman_p_c)
         )
         cluster_analyses.append(cluster_analysis)
+    if profile:
+        profiling_info['cluster_analysis_time_ms'] = (time.time() - cluster_analysis_start) * 1000
+    
+    best_p = min(overall_spearman_p, anova.p_value)
+    for c in cluster_analyses:
+        best_p = min(best_p, c.spearman_p)
+    
     pair_result = PairAnalysisResult(
         feat1=feat1,
         feat2=feat2,
@@ -2805,20 +2976,42 @@ def analyze_pair_gmm(df, feat1, feat2, n_clusters=3, random_state=42, use_mergin
         overall_spearman_rho=overall_spearman_rho,
         overall_spearman_p=overall_spearman_p,
         anova=anova,
-        clusters=cluster_analyses
+        clusters=cluster_analyses,
+        best_p=best_p
     )
+    
     if visualize:
+        vis_start = time.time()
         fig, _ = visualize_clustering_with_anova(df, feat1, feat2, result)
         plt.show()
+        if profile:
+            profiling_info['visualization_time_ms'] = (time.time() - vis_start) * 1000
+    
+    total_time = time.time() - start_time
+    if profile:
+        profiling_info['total_time_ms'] = total_time * 1000
+        profiling_info['feature_pair'] = f"{feat1}_{feat2}"
+        profiling_info['n_clusters'] = n_clusters
+        pair_result.additional_info = profiling_info
+        print(f"Profiling for {feat1} vs {feat2}:")
+        for key, value in profiling_info.items():
+            if isinstance(value, float):
+                print(f"  {key}: {value:.2f}ms")
+            elif isinstance(value, dict):
+                print(f"  {key}: {value}")
+            else:
+                print(f"  {key}: {value}")
+    
     return pair_result
 
 def print_pair_analysis(pair_result: PairAnalysisResult):
     print(f"Analysis for {pair_result.feat1} vs {pair_result.feat2}")
+    print(f"Best p-value: {pair_result.best_p:.3f}")
     orr = pair_result.overall_regression
     print(f"Overall Regression: slope={orr.slope:.3f} (CI={orr.slope_ci[0]:.3f}-{orr.slope_ci[1]:.3f}), intercept={orr.intercept:.3f} (CI={orr.intercept_ci[0]:.3f}-{orr.intercept_ci[1]:.3f}), R2={orr.r2:.3f}, p_slope={orr.slope_p_value:.3g}, p_intercept={orr.intercept_p_value:.3g}")
     print(f"Overall Spearman: rho={pair_result.overall_spearman_rho:.3f}, p={pair_result.overall_spearman_p:.3g}")
     a = pair_result.anova
-    print(f"ANOVA: F={a.f_value:.3f}, p={a.p_value:.3g}")
+    print(f"ANOVA: F={a.f_value:.3f}, p={a.p_value:.3f}")
     for lbl, mean in a.cluster_means.items():
         std = a.cluster_stds[lbl]
         print(f" Cluster {lbl}: mean={mean:.3f}, std={std:.3f}")
@@ -2826,5 +3019,75 @@ def print_pair_analysis(pair_result: PairAnalysisResult):
         print(f"Cluster {c.label}: size={c.size}, x_range={c.x_range[0]:.3f}-{c.x_range[1]:.3f}, y_range={c.y_range[0]:.3f}-{c.y_range[1]:.3f}, y_mean={c.y_mean:.3f}, y_std={c.y_std:.3f}")
         reg = c.regression
         print(f" Regression: slope={reg.slope:.3f} (CI={reg.slope_ci[0]:.3f}-{reg.slope_ci[1]:.3f}), intercept={reg.intercept:.3f} (CI={reg.intercept_ci[0]:.3f}-{reg.intercept_ci[1]:.3f}), R2={reg.r2:.3f}, p_slope={reg.slope_p_value:.3g}, p_intercept={reg.intercept_p_value:.3g}")
-        print(f" Spearman: rho={c.spearman_rho:.3f}, p={c.spearman_p:.3g}")
+        print(f" Spearman: rho={c.spearman_rho:.3f}, p={c.spearman_p:.3f}")
+
+def find_pairwise_best(df, profile=False): 
+    import time
+    import numpy as np
+    
+    profiling_info = {}
+    start_time = time.time()
+    
+    out = pd.DataFrame(columns=['feat1', 'feat2', 'best_p', 'error'])
+    if profile:
+        out['profiling_info'] = None
+    
+    n_pairs = len(df.columns) * (len(df.columns) - 1)
+    progress = tqdm(total=n_pairs)
+    
+    pair_times = []
+    for c1 in df.columns:
+        for c2 in df.columns:
+            progress.update(1)
+            if c1 == c2:
+                continue
+                
+            pair_start = time.time()
+            try:
+                pair_result = analyze_pair_best(df, c1, c2, profile=profile)
+                
+                row_data = [c1, c2, pair_result.best_p, None]
+                if profile:
+                    row_data.append(pair_result.additional_info if hasattr(pair_result, 'additional_info') else None)
+                    pair_time = (time.time() - pair_start) * 1000  # Convert to ms
+                    pair_times.append(pair_time)
+                    progress.set_description(f"Avg pair time: {np.mean(pair_times):.2f}ms")
+                
+                # Use concat instead of loc assignment to avoid the warning
+                out = pd.concat([out, pd.DataFrame([row_data], columns=out.columns)], ignore_index=True)
+            except Exception as e:
+                row_data = [c1, c2, None, str(e)]
+                if profile:
+                    row_data.append(None)
+                # Use concat instead of loc assignment to avoid the warning
+                out = pd.concat([out, pd.DataFrame([row_data], columns=out.columns)], ignore_index=True)
+    
+    progress.close()
+    
+    total_time = time.time() - start_time
+    if profile:
+        profiling_info['total_time_ms'] = total_time * 1000
+        profiling_info['average_pair_time_ms'] = np.mean(pair_times) if pair_times else 0
+        profiling_info['median_pair_time_ms'] = np.median(pair_times) if pair_times else 0
+        profiling_info['min_pair_time_ms'] = min(pair_times) if pair_times else 0
+        profiling_info['max_pair_time_ms'] = max(pair_times) if pair_times else 0
+        profiling_info['total_pairs'] = n_pairs
+        profiling_info['processed_pairs'] = len(pair_times)
+        profiling_info['error_pairs'] = n_pairs - len(pair_times)
+        
+        print("Overall profiling information:")
+        for key, value in profiling_info.items():
+            if isinstance(value, float):
+                print(f"  {key}: {value:.2f}ms")
+            else:
+                print(f"  {key}: {value}")
+                
+        out.attrs['profiling_info'] = profiling_info
+    
+    return out
+
+
+
+
+
 

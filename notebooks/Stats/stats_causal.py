@@ -223,26 +223,27 @@ def run_ges_algorithm(data):
     object
         Causal graph from GES algorithm
     """
-    if not CAUSAL_LEARN_AVAILABLE:
-        print("GES algorithm not available. Skipping.")
-        return None
+    # if not CAUSAL_LEARN_AVAILABLE:
+    #     print("GES algorithm not available. Skipping.")
+    #     return None
     
-    # Preprocess data to avoid singular correlation matrix
-    processed_data, removed_cols = preprocess_for_causal_discovery(data)
-    if len(removed_cols) > 0:
-        print(f"Removed {len(removed_cols)} problematic columns for GES algorithm")
+    # # Preprocess data to avoid singular correlation matrix
+    # processed_data, removed_cols = preprocess_for_causal_discovery(data)
+    # if len(removed_cols) > 0:
+    #     print(f"Removed {len(removed_cols)} problematic columns for GES algorithm")
     
-    # Standardize the data
-    scaler = StandardScaler()
-    scaled_data = scaler.fit_transform(processed_data)
+    # # Standardize the data
+    # scaler = StandardScaler()
+    # scaled_data = scaler.fit_transform(processed_data)
     
     try:
         # Run GES algorithm
-        cg = ges(scaled_data)
-        return cg, processed_data.columns.tolist()
+        values = data.to_numpy()
+        cg = ges(values, node_names=data.columns.tolist())
+        return cg, data.columns.tolist()
     except ValueError as e:
         print(f"Error running GES algorithm: {e}")
-        return None, processed_data.columns.tolist()
+        return None, data.columns.tolist()
 
 def run_fci_algorithm(data, alpha=0.05, verbose=False):
     """
@@ -277,7 +278,8 @@ def run_fci_algorithm(data, alpha=0.05, verbose=False):
     try:
         # Run FCI algorithm
         print("Running FCI algorithm...")
-        cg, edges = fci(data, alpha=alpha, mvpc=True, indep_test=mv_fisherz)
+        values = data.to_numpy()
+        cg, edges = fci(values, alpha=alpha, mvpc=True, independence_test_method=mv_fisherz, node_names=data.columns.tolist(), verbose=verbose)
         return cg, edges, data.columns.tolist()
     except ValueError as e:
         print(f"Error running FCI algorithm: {e}")
