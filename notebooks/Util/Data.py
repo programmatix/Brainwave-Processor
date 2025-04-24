@@ -1,5 +1,7 @@
 import pandas as pd
 from IPython.display import display
+from tqdm.auto import tqdm
+
 def require_no_missing_values(df, columns):
     """
     Check if a dataframe has missing values in specific columns.
@@ -124,4 +126,102 @@ def analyze_negative_values(df, columns):
     
     return summary
 
+def remove_missing_rows_sequentially(df, columns):
+    """
+    Sequentially remove rows missing each column and record removal stats.
+    """
+    cols = [col for col in columns if col in df.columns]
+    summary_initial = analyze_missing_values(df, columns)
+    present_counts = summary_initial['Present Count']
+    order = present_counts.sort_values(ascending=False).index.tolist()
+    records = []
+    cumulative_removed = 0
+    current_df = df.copy()
+    for col in tqdm(order, desc="Sequential removal"):
+        missing_mask = current_df[col].isnull()
+        removed = missing_mask.sum()
+        current_df = current_df[~missing_mask]
+        cumulative_removed += removed
+        records.append({'Column': col, 'Removed': removed, 'Cumulative Removed': cumulative_removed})
+    return pd.DataFrame(records)
+
+def remove_missing_rows_greedy(df, columns):
+    """
+    Greedily add keys in order of least row removal impact, batch zero-removal keys, and record stats with percentages.
+    """
+    cols = [col for col in columns if col in df.columns]
+    original_len = len(df)
+    current_df = df.copy()
+    records = []
+    cumulative_removed = 0
+    remaining = set(cols)
+    with tqdm(total=len(cols), desc="Greedy removal") as pbar:
+        while remaining:
+            removals = {col: current_df[col].isnull().sum() for col in remaining}
+            zero_cols = [col for col, m in removals.items() if m == 0]
+            if zero_cols:
+                for zcol in zero_cols:
+                    records.append({
+                        'Column': zcol,
+                        'Removed': 0,
+                        'Removed %': 0.0,
+                        'Cumulative Removed': cumulative_removed,
+                        'Cumulative Removed %': round(cumulative_removed / original_len * 100, 1)
+                    })
+                remaining -= set(zero_cols)
+                pbar.update(len(zero_cols))
+                continue
+            next_col = min(removals, key=removals.get)
+            removed = removals[next_col]
+            current_df = current_df[current_df[next_col].notnull()]
+            cumulative_removed += removed
+            records.append({
+                'Column': next_col,
+                'Removed': removed,
+                'Removed %': round(removed / original_len * 100, 1),
+                'Cumulative Removed': cumulative_removed,
+                'Cumulative Removed %': round(cumulative_removed / original_len * 100, 1)
+            })
+            remaining.remove(next_col)
+            pbar.update(1)
+    return pd.DataFrame(records)
+
+
+def group_columns_by_prefix(df: pd.DataFrame, delimiter: str = ':') -> pd.DataFrame:
+    prefixes = df.columns.str.split(delimiter).str[0]
+    records = []
+    for prefix in pd.unique(prefixes):
+        cols = df.columns[prefixes == prefix]
+        group_df = df[cols]
+        column_count = len(cols)
+        total_cells = group_df.shape[0] * column_count
+        present_count = group_df.count().sum()
+        missing_count = group_df.isnull().sum().sum()
+        missing_pct = (missing_count / total_cells) * 100 if total_cells > 0 else 0
+        records.append({
+            'prefix': prefix,
+            'column_count': column_count,
+            'present_count': present_count,
+            'missing_count': missing_count,
+            'missing_%': round(missing_pct, 1)
+        })
+    return pd.DataFrame.from_records(records)
+
+def group_rows_by_prefix(df: pd.DataFrame, delimiter: str = ':') -> pd.DataFrame:
+    prefixes = df.index.str.split(delimiter).str[0]
+    records = []
+    for prefix in pd.unique(prefixes):
+        rows = df[prefixes == prefix]
+        row_count = len(rows)
+        present_count = rows.count().sum()
+        missing_count = rows.isnull().sum().sum()
+        missing_pct = (missing_count / row_count) * 100 if row_count > 0 else 0
+        records.append({
+            'prefix': prefix,
+            'row_count': row_count,
+            'present_count': present_count,
+            'missing_count': missing_count,
+            'missing_%': round(missing_pct, 1)
+        })
+    return pd.DataFrame.from_records(records)
 
