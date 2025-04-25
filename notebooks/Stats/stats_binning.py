@@ -30,6 +30,76 @@ from scipy import stats as scipy_stats
 # from sklearn.cluster import fuzzy_cmeans
 from scipy.special import softmax
 from sklearn.cluster import KMeans
+import fastcluster
+from scipy.cluster.hierarchy import fcluster
+import time
+from dataclasses import dataclass
+from typing import Dict, List, Any
+
+@dataclass
+class BinningAnovaResult:
+    f_value: float
+    p_value: float
+    bin_means: Dict[int, float]
+    bin_stds: Dict[int, float]
+
+@dataclass
+class BinningResult:
+    method: str
+    n_bins: int
+    bin_assignments: pd.Series
+    bin_contents: Dict[int, List[Any]]
+    anova: BinningAnovaResult
+    result_info: Dict[str, Any]
+
+def compute_bin_anova(series: pd.Series, bins: pd.Series) -> BinningAnovaResult:
+    unique_bins = sorted(bins.dropna().unique())
+    groups = [series[bins == i].values for i in unique_bins]
+    if len(groups) < 2:
+        f_value = np.nan
+        p_value = np.nan
+    else:
+        f_value, p_value = scipy_stats.f_oneway(*groups)
+    bin_means = {i: float(np.mean(g)) if len(g) > 0 else np.nan for i, g in zip(unique_bins, groups)}
+    bin_stds = {i: float(np.std(g, ddof=1)) if len(g) > 1 else (float(np.std(g, ddof=0)) if len(g) > 0 else np.nan) for i, g in zip(unique_bins, groups)}
+    return BinningAnovaResult(f_value=f_value, p_value=p_value, bin_means=bin_means, bin_stds=bin_stds)
+
+# Separate functions per binning method returning a unified result
+def bin_kmeans(series: pd.Series, n_bins: int = 5, profile: bool = False, **kwargs) -> BinningResult:
+    bins, result_info = bin_continuous_data(series, method='kmeans', n_bins=n_bins, profile=profile, **kwargs)
+    anova = compute_bin_anova(series, bins)
+    bin_contents = {i: series[bins == i].values.tolist() for i in sorted(bins.unique())}
+    return BinningResult(method='kmeans', n_bins=n_bins, bin_assignments=bins, bin_contents=bin_contents, anova=anova, result_info=result_info)
+
+def bin_gmm(series: pd.Series, n_bins: int = 5, profile: bool = False, **kwargs) -> BinningResult:
+    bins, result_info = bin_continuous_data(series, method='gmm', n_bins=n_bins, profile=profile, **kwargs)
+    anova = compute_bin_anova(series, bins)
+    bin_contents = {i: series[bins == i].values.tolist() for i in sorted(bins.unique())}
+    return BinningResult(method='gmm', n_bins=n_bins, bin_assignments=bins, bin_contents=bin_contents, anova=anova, result_info=result_info)
+
+def bin_tree(series: pd.Series, n_bins: int = 5, profile: bool = False, **kwargs) -> BinningResult:
+    bins, result_info = bin_continuous_data(series, method='tree', n_bins=n_bins, profile=profile, **kwargs)
+    anova = compute_bin_anova(series, bins)
+    bin_contents = {i: series[bins == i].values.tolist() for i in sorted(bins.unique())}
+    return BinningResult(method='tree', n_bins=n_bins, bin_assignments=bins, bin_contents=bin_contents, anova=anova, result_info=result_info)
+
+def bin_quantile(series: pd.Series, n_bins: int = 5, profile: bool = False, **kwargs) -> BinningResult:
+    bins, result_info = bin_continuous_data(series, method='quantile', n_bins=n_bins, profile=profile, **kwargs)
+    anova = compute_bin_anova(series, bins)
+    bin_contents = {i: series[bins == i].values.tolist() for i in sorted(bins.unique())}
+    return BinningResult(method='quantile', n_bins=n_bins, bin_assignments=bins, bin_contents=bin_contents, anova=anova, result_info=result_info)
+
+def bin_kbins(series: pd.Series, n_bins: int = 5, profile: bool = False, **kwargs) -> BinningResult:
+    bins, result_info = bin_continuous_data(series, method='kbins', n_bins=n_bins, profile=profile, **kwargs)
+    anova = compute_bin_anova(series, bins)
+    bin_contents = {i: series[bins == i].values.tolist() for i in sorted(bins.unique())}
+    return BinningResult(method='kbins', n_bins=n_bins, bin_assignments=bins, bin_contents=bin_contents, anova=anova, result_info=result_info)
+
+def bin_fastcluster(series: pd.Series, n_bins: int = 5, profile: bool = False, linkage_method: str = 'ward', **kwargs) -> BinningResult:
+    bins, result_info = bin_continuous_data(series, method='fastcluster', n_bins=n_bins, profile=profile, linkage_method=linkage_method, **kwargs)
+    anova = compute_bin_anova(series, bins)
+    bin_contents = {i: series[bins == i].values.tolist() for i in sorted(bins.unique())}
+    return BinningResult(method='fastcluster', n_bins=n_bins, bin_assignments=bins, bin_contents=bin_contents, anova=anova, result_info=result_info)
 
 def bin_and_viz(series, method='quantile', n_bins=5, **kwargs):
     binned_series, result_info = bin_continuous_data(series, method, n_bins, **kwargs)
@@ -41,7 +111,7 @@ def fuzzy_bin_and_viz(series, method='gmm_prob', n_bins=5, **kwargs):
     fig = visualize_fuzzy_binning(series, membership_df, result_info, method)
     return membership_df, result_info, fig
 
-def bin_continuous_data(series, method='quantile', n_bins=5, **kwargs):
+def bin_continuous_data(series, method='quantile', n_bins=5, profile=False, **kwargs):
     """
     Bin continuous data using various methods.
     
@@ -50,7 +120,7 @@ def bin_continuous_data(series, method='quantile', n_bins=5, **kwargs):
     series : pd.Series
         The continuous data to bin
     method : str, default='quantile'
-        Binning method: 'kmeans', 'gmm', 'tree', 'quantile', or 'kbins'
+        Binning method: 'kmeans', 'gmm', 'tree', 'quantile', 'kbins', 'fastcluster'
     n_bins : int or None, default=5
         Number of bins to create. If None, will automatically determine optimal bin count.
     **kwargs : 
@@ -63,6 +133,10 @@ def bin_continuous_data(series, method='quantile', n_bins=5, **kwargs):
     """
     data = series.values.reshape(-1, 1)
     result_info = {}
+    if profile:
+        profiling_info = {}
+        start_time = time.time()
+        result_info['profiling'] = profiling_info
     
     # Handle automatic bin count determination if n_bins is None
     if n_bins is None:
@@ -125,11 +199,28 @@ def bin_continuous_data(series, method='quantile', n_bins=5, **kwargs):
         bins = discretizer.fit_transform(data).flatten()
         result_info['model'] = discretizer
         result_info['bin_edges'] = discretizer.bin_edges_[0]
-    
+    elif method == 'fastcluster':
+        X = data
+        if profile:
+            extract_start = time.time()
+        Z = fastcluster.linkage(X, method=kwargs.get('linkage_method', 'ward'))
+        if profile:
+            profiling_info['fastcluster_fit_ms'] = (time.time() - extract_start) * 1000
+        if profile:
+            predict_start = time.time()
+        bins = fcluster(Z, n_bins, criterion='maxclust') - 1
+        if profile:
+            profiling_info['fastcluster_predict_ms'] = (time.time() - predict_start) * 1000
+        result_info['model'] = Z
+        unique_labels = np.unique(bins)
+        centers = np.array([np.mean(data[bins == lab]) for lab in unique_labels]).flatten()
+        result_info['centers'] = centers
     else:
         raise ValueError(f"Unsupported binning method: {method}")
     
     binned_series = pd.Series(bins, index=series.index)
+    if profile:
+        profiling_info['total_time_ms'] = (time.time() - start_time) * 1000
     
     # Assign meaningful bin names if requested
     if kwargs.get('assign_bin_names', False):
@@ -142,7 +233,7 @@ def bin_continuous_data(series, method='quantile', n_bins=5, **kwargs):
     
     return binned_series, result_info
 
-def determine_optimal_bin_count(series, method='kmeans', max_bins=15):
+def determine_optimal_bin_count(series, method='kmeans', max_bins=4):
     """
     Determine the optimal number of bins/clusters for a given series.
     

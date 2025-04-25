@@ -37,6 +37,7 @@ from joblib import Parallel, delayed
 import fastcluster
 from scipy.cluster.hierarchy import fcluster, cut_tree
 from scipy.spatial.distance import cdist
+from statsmodels.nonparametric.smoothers_lowess import lowess
 
 # Set a seed for reproducibility
 np.random.seed(42)
@@ -1334,7 +1335,7 @@ def cluster_gmm_wrapper(df, feat1, feat2, n_clusters=3, random_state=42, profile
     
     return result
 
-def cluster_fastcluster_wrapper(df, feat1, feat2, n_clusters=3, method='ward', random_state=42, profile=False):
+def cluster_fastcluster_wrapper(df_with_values, feat1, feat2, n_clusters=3, method='ward', random_state=42, profile=False):
     import time
     import numpy as np
     from scipy.cluster.hierarchy import fcluster, cut_tree
@@ -1345,7 +1346,7 @@ def cluster_fastcluster_wrapper(df, feat1, feat2, n_clusters=3, method='ward', r
     
     # Extract features
     extract_start = time.time()
-    X = np.column_stack((df[feat1].values, df[feat2].values))
+    X = np.column_stack((df_with_values[feat1].values, df_with_values[feat2].values))
     if profile:
         profiling_info['extract_features_ms'] = (time.time() - extract_start) * 1000
     
@@ -1396,7 +1397,7 @@ def cluster_fastcluster_wrapper(df, feat1, feat2, n_clusters=3, method='ward', r
     
     # Sort clusters from left to right
     sort_start = time.time()
-    result = sort_clusters_by_position(result, df, feat1)
+    result = sort_clusters_by_position(result, df_with_values, feat1)
     if profile:
         profiling_info['sort_clusters_ms'] = (time.time() - sort_start) * 1000
         profiling_info['total_time_ms'] = computation_time * 1000
@@ -2854,26 +2855,29 @@ def visualize_clustering_with_anova(df, feat1, feat2, cluster_result):
 def analyze_pair_best(df, feat1, feat2, n_clusters=3, random_state=42, use_merging=False, effect_size_threshold=0.3, visualize=False, profile=False):
     import statsmodels.api as sm
     import time
+    from statsmodels.nonparametric.smoothers_lowess import lowess
     
     profiling_info = {}
     start_time = time.time()
     
+    df_with_values = df[df[feat1].notna() & df[feat2].notna()]
+
     if use_merging:
         cluster_start = time.time()
-        result = cluster_with_merging(df, feat1, feat2, cluster_fastcluster_wrapper, param_name='n_clusters', effect_size_threshold=effect_size_threshold, random_state=random_state, n_clusters=n_clusters, profile=profile)
+        result = cluster_with_merging(df_with_values, feat1, feat2, cluster_fastcluster_wrapper, param_name='n_clusters', effect_size_threshold=effect_size_threshold, random_state=random_state, n_clusters=n_clusters, profile=profile)
         if profile:
             profiling_info['clustering_time_ms'] = (time.time() - cluster_start) * 1000
     else:
         cluster_start = time.time()
-        result = cluster_fastcluster_wrapper(df, feat1, feat2, n_clusters=n_clusters, random_state=random_state, profile=profile)
+        result = cluster_fastcluster_wrapper(df_with_values, feat1, feat2, n_clusters=n_clusters, random_state=random_state, profile=profile)
         if profile:
             profiling_info['clustering_time_ms'] = (time.time() - cluster_start) * 1000
             if hasattr(result, 'additional_info') and result.additional_info:
                 profiling_info['gmm_details'] = result.additional_info
     
     labels = result.labels
-    X = df[feat1].values.reshape(-1,1)
-    y = df[feat2].values
+    X = df_with_values[feat1].values.reshape(-1,1)
+    y = df_with_values[feat2].values
     
     regression_start = time.time()
     X_const = sm.add_constant(X)
@@ -2982,7 +2986,15 @@ def analyze_pair_best(df, feat1, feat2, n_clusters=3, random_state=42, use_mergi
     
     if visualize:
         vis_start = time.time()
-        fig, _ = visualize_clustering_with_anova(df, feat1, feat2, result)
+        fig, _ = visualize_clustering_with_anova(df_with_values, feat1, feat2, result)
+        plt.show()
+        smoothed = lowess(y, X.flatten(), frac=0.66)
+        plt.figure(figsize=(8, 6))
+        plt.scatter(X.flatten(), y, alpha=0.5)
+        plt.plot(smoothed[:,0], smoothed[:,1], color='red')
+        plt.xlabel(feat1)
+        plt.ylabel(feat2)
+        plt.title(f"LOESS smoothing for {feat1} vs {feat2}")
         plt.show()
         if profile:
             profiling_info['visualization_time_ms'] = (time.time() - vis_start) * 1000
@@ -3086,6 +3098,69 @@ def find_pairwise_best(df, profile=False):
     
     return out
 
+
+
+
+def find_corrs_best(df, target_feat, profile=False): 
+    import time
+    import numpy as np
+    
+    profiling_info = {}
+    start_time = time.time()
+    
+    out = pd.DataFrame(columns=['feat1', 'best_p', 'error'])
+    if profile:
+        out['profiling_info'] = None
+    
+    n_pairs = len(df.columns)
+    progress = tqdm(total=n_pairs)
+    
+    pair_times = []
+    for c1 in df.columns:
+        progress.update(1)
+        if c1 == target_feat:
+            continue
+            
+        pair_start = time.time()
+        try:
+            pair_result = analyze_pair_best(df, c1, target_feat, profile=profile)
+            
+            row_data = [c1, pair_result.best_p, None]
+            if profile:
+                row_data.append(pair_result.additional_info if hasattr(pair_result, 'additional_info') else None)
+                pair_time = (time.time() - pair_start) * 1000  # Convert to ms
+                pair_times.append(pair_time)
+                progress.set_description(f"Avg pair time: {np.mean(pair_times):.2f}ms")
+            out = pd.concat([out, pd.DataFrame([row_data], columns=out.columns)], ignore_index=True)
+        except Exception as e:
+            row_data = [c1, None, str(e)]
+            if profile:
+                row_data.append(None)
+            out = pd.concat([out, pd.DataFrame([row_data], columns=out.columns)], ignore_index=True)
+    
+    progress.close()
+    
+    total_time = time.time() - start_time
+    if profile:
+        profiling_info['total_time_ms'] = total_time * 1000
+        profiling_info['average_pair_time_ms'] = np.mean(pair_times) if pair_times else 0
+        profiling_info['median_pair_time_ms'] = np.median(pair_times) if pair_times else 0
+        profiling_info['min_pair_time_ms'] = min(pair_times) if pair_times else 0
+        profiling_info['max_pair_time_ms'] = max(pair_times) if pair_times else 0
+        profiling_info['total_pairs'] = n_pairs
+        profiling_info['processed_pairs'] = len(pair_times)
+        profiling_info['error_pairs'] = n_pairs - len(pair_times)
+        
+        print("Overall profiling information:")
+        for key, value in profiling_info.items():
+            if isinstance(value, float):
+                print(f"  {key}: {value:.2f}ms")
+            else:
+                print(f"  {key}: {value}")
+                
+        out.attrs['profiling_info'] = profiling_info
+    
+    return out
 
 
 
