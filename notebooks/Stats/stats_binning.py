@@ -101,6 +101,24 @@ def bin_fastcluster(series: pd.Series, n_bins: int = 5, profile: bool = False, l
     bin_contents = {i: series[bins == i].values.tolist() for i in sorted(bins.unique())}
     return BinningResult(method='fastcluster', n_bins=n_bins, bin_assignments=bins, bin_contents=bin_contents, anova=anova, result_info=result_info)
 
+def auto_bin(series: pd.Series, n_bins: int = 3, profile: bool = False, **kwargs) -> BinningResult:
+    """
+    Automatically bin series using multiple methods and select the best one based on ANOVA p-value.
+    """
+    methods = [bin_quantile, bin_kmeans, bin_tree, bin_kbins, bin_gmm, bin_fastcluster]
+    candidates = []
+    for func in methods:
+        try:
+            res = func(series, n_bins=n_bins, profile=profile, **kwargs)
+            candidates.append(res)
+        except Exception:
+            continue
+    if not candidates:
+        raise ValueError("No binning methods succeeded")
+    # pick the result with the lowest ANOVA p-value, tie-breaker by fewer bins
+    best = min(candidates, key=lambda r: (np.nan_to_num(r.anova.p_value, nan=np.inf), r.n_bins))
+    return best
+
 def bin_and_viz(series, method='quantile', n_bins=5, **kwargs):
     binned_series, result_info = bin_continuous_data(series, method, n_bins, **kwargs)
     fig = visualize_binning(series, binned_series, result_info, method)
@@ -1150,5 +1168,57 @@ def compare_hard_vs_fuzzy_binning(original_series, n_bins=5, figsize=(15, 12)):
     
     plt.tight_layout()
     return fig
+
+def compare_all_binning_methods(series: pd.Series, n_bins: int = None, profile: bool = False, visualize: bool = True, figsize=(12, 4)):
+    """
+    Compare all hard binning methods on a series with dynamic bin counts, visualizations, and ANOVA.
+    """
+    method_funcs = [bin_quantile, bin_kmeans, bin_tree, bin_kbins, bin_gmm, bin_fastcluster]
+    name_map = {'bin_quantile':'quantile', 'bin_kmeans':'kmeans', 'bin_tree':'tree', 'bin_kbins':'kbins', 'bin_gmm':'gmm'}
+    results = {}
+    runtimes = {}
+    for func in method_funcs:
+        func_name = func.__name__
+        display_name = func_name.replace('bin_','').capitalize()
+        if n_bins is None:
+            m = name_map.get(func_name)
+            bins_to_use = determine_optimal_bin_count(series, method=m) if m else None
+        else:
+            bins_to_use = n_bins
+        try:
+            res = func(series, n_bins=bins_to_use, profile=profile)
+        except Exception:
+            continue
+        results[display_name] = res
+        if profile:
+            runtimes[display_name] = res.result_info.get('profiling', {}).get('total_time_ms', np.nan)
+        if visualize:
+            fig, axes = plt.subplots(1, 2, figsize=figsize, sharey=True)
+            unique_bins = sorted(res.bin_contents.keys())
+            palette = sns.color_palette("hsv", len(unique_bins))
+            for idx, b in enumerate(unique_bins):
+                vals = res.bin_contents[b]
+                jitter = np.random.uniform(-0.2, 0.2, size=len(vals))
+                axes[0].scatter(np.array(vals)*0 + b + jitter, vals, color=palette[idx], alpha=0.6)
+            dfb = pd.DataFrame({'value': series.values, 'bin': res.bin_assignments})
+            # Passing `palette` without assigning `hue` is deprecated and will be removed in v0.14.0. Assign the `x` variable to `hue` and set `legend=False` for the same effect.
+            sns.boxplot(x='bin', y='value', data=dfb, ax=axes[1], palette=palette, order=unique_bins)
+            axes[0].set_xlabel('Bin')
+            axes[0].set_ylabel('Value')
+            axes[0].set_title(f'{display_name} Binned Values')
+            axes[1].set_title(f'ANOVA F={res.anova.f_value:.2f}, p={res.anova.p_value:.4f}')
+            plt.tight_layout()
+            plt.show()
+    if profile and visualize and runtimes:
+        fig, ax = plt.subplots(figsize=figsize)
+        names = list(runtimes.keys())
+        times = [runtimes[n] for n in names]
+        ax.bar(names, times)
+        ax.set_xticklabels(names, rotation=45, ha='right')
+        ax.set_ylabel('Time (ms)')
+        ax.set_title('Binning Method Runtimes')
+        plt.tight_layout()
+        plt.show()
+    return results
 
 

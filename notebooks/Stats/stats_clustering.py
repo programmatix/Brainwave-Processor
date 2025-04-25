@@ -38,6 +38,7 @@ import fastcluster
 from scipy.cluster.hierarchy import fcluster, cut_tree
 from scipy.spatial.distance import cdist
 from statsmodels.nonparametric.smoothers_lowess import lowess
+from notebooks.Stats.stats_binning import bin_fastcluster
 
 # Set a seed for reproducibility
 np.random.seed(42)
@@ -2985,19 +2986,44 @@ def analyze_pair_best(df, feat1, feat2, n_clusters=3, random_state=42, use_mergi
     )
     
     if visualize:
-        vis_start = time.time()
-        fig, _ = visualize_clustering_with_anova(df_with_values, feat1, feat2, result)
-        plt.show()
+        viz_start = time.time()
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+        # Panel 1: 2D clusters with LOESS
+        for lbl in np.unique(result.labels):
+            mask = result.labels == lbl
+            axes[0].scatter(df_with_values.loc[mask, feat1], df_with_values.loc[mask, feat2], label=f'Cluster {lbl}', alpha=0.7)
         smoothed = lowess(y, X.flatten(), frac=0.66)
-        plt.figure(figsize=(8, 6))
-        plt.scatter(X.flatten(), y, alpha=0.5)
-        plt.plot(smoothed[:,0], smoothed[:,1], color='red')
-        plt.xlabel(feat1)
-        plt.ylabel(feat2)
-        plt.title(f"LOESS smoothing for {feat1} vs {feat2}")
+        axes[0].plot(smoothed[:,0], smoothed[:,1], color='red', lw=2)
+        axes[0].set_xlabel(feat1)
+        axes[0].set_ylabel(feat2)
+        axes[0].set_title('2D Clusters with LOESS')
+        axes[0].legend()
+        # Panel 2: 1D Fastcluster bin scatter
+        bin_res = bin_fastcluster(df_with_values[feat1], n_bins=n_clusters, profile=profile)
+        bins_series = bin_res.bin_assignments
+        unique_bins = sorted(bins_series.unique())
+        for b in unique_bins:
+            vals = df_with_values.loc[bins_series == b, feat2].values
+            jitter = np.random.uniform(-0.2, 0.2, size=len(vals))
+            axes[1].scatter(np.full_like(vals, b) + jitter, vals, alpha=0.6, label=f'Bin {b}')
+        axes[1].set_xlabel('Bin')
+        axes[1].set_ylabel(feat2)
+        axes[1].set_title('1D Fastcluster Bins')
+        axes[1].legend()
+        # Panel 3: ANOVA boxplot of bins
+        dfb = pd.DataFrame({feat2: df_with_values[feat2].values, 'bin': bins_series})
+        sns.boxplot(x='bin', y=feat2, data=dfb, ax=axes[2])
+        groups_y = [dfb.loc[dfb['bin'] == b, feat2].values for b in unique_bins]
+        if len(groups_y) >= 2:
+            f_b, p_b = stats.f_oneway(*groups_y)
+        else:
+            f_b, p_b = np.nan, np.nan
+        axes[2].set_xlabel('Bin')
+        axes[2].set_title(f'ANOVA F={f_b:.2f}, p={p_b:.4f}')
+        plt.tight_layout()
         plt.show()
         if profile:
-            profiling_info['visualization_time_ms'] = (time.time() - vis_start) * 1000
+            profiling_info['visualization_time_ms'] = (time.time() - viz_start) * 1000
     
     total_time = time.time() - start_time
     if profile:
