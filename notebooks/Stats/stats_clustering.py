@@ -38,7 +38,7 @@ import fastcluster
 from scipy.cluster.hierarchy import fcluster, cut_tree
 from scipy.spatial.distance import cdist
 from statsmodels.nonparametric.smoothers_lowess import lowess
-from notebooks.Stats.stats_binning import bin_fastcluster, determine_optimal_bin_count, BinningResult, bin_gmm
+from notebooks.Stats.stats_binning import bin_fastcluster, determine_optimal_bin_count, BinningResult
 
 # Set a seed for reproducibility
 np.random.seed(42)
@@ -2904,9 +2904,8 @@ def analyze_pair_best(df, feat1, feat2, n_clusters=3, random_state=42, use_mergi
     
     bin_start = time.time()
 
-    bin_count = determine_optimal_bin_count(df_with_values[feat1], method='gmm')
-    bin_res = bin_gmm(df_with_values[feat1], n_bins=bin_count, profile=profile)
-    #bin_res = bin_fastcluster(df_with_values[feat1], n_bins=bin_count, profile=profile)
+    bin_count = determine_optimal_bin_count(df_with_values[feat1], method='fastcluster')
+    bin_res = bin_fastcluster(df_with_values[feat1], n_bins=bin_count, profile=profile)
 
     # anova_start = time.time()
     unique_labels = np.unique(labels)
@@ -3040,9 +3039,8 @@ def analyze_pair_best(df, feat1, feat2, n_clusters=3, random_state=42, use_mergi
         heights = [means_dict[b] for b in bin_labels]
         errors = [stds_dict[b] for b in bin_labels]
         positions = list(range(len(bin_labels)))
-        boxplot_df = pd.DataFrame({'bin': bins_series, 'value': df_with_values[feat2]})
-        sns.boxplot(x='bin', y='value', data=boxplot_df, ax=axes[2], palette=bin_colors, order=bin_labels)
-        #bars = axes[2].bar(positions, heights, yerr=errors, capsize=5, color=bin_colors, edgecolor='k')
+        #sns.boxplot(x='bin', y='value', data=df_with_values, ax=axes[2], palette=bin_colors, order=bin_labels)
+        bars = axes[2].bar(positions, heights, yerr=errors, capsize=5, color=bin_colors, edgecolor='k')
         # Set x-axis to bin labels
         axes[2].set_xticks(positions)
         axes[2].set_xticklabels(bin_labels)
