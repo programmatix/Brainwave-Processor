@@ -38,7 +38,7 @@ import fastcluster
 from scipy.cluster.hierarchy import fcluster, cut_tree
 from scipy.spatial.distance import cdist
 from statsmodels.nonparametric.smoothers_lowess import lowess
-from notebooks.Stats.stats_binning import bin_fastcluster
+from notebooks.Stats.stats_binning import bin_fastcluster, determine_optimal_bin_count, BinningResult, bin_gmm
 
 # Set a seed for reproducibility
 np.random.seed(42)
@@ -94,7 +94,7 @@ class PairAnalysisResult:
     overall_regression: RegressionResult
     overall_spearman_rho: float
     overall_spearman_p: float
-    anova: AnovaResult
+    bin_res: BinningResult
     clusters: List[ClusterAnalysis]
     best_p: float
 
@@ -2880,42 +2880,48 @@ def analyze_pair_best(df, feat1, feat2, n_clusters=3, random_state=42, use_mergi
     X = df_with_values[feat1].values.reshape(-1,1)
     y = df_with_values[feat2].values
     
-    regression_start = time.time()
-    X_const = sm.add_constant(X)
-    model = sm.OLS(y, X_const).fit()
-    params = model.params
-    ci = np.asarray(model.conf_int())
-    overall_regression = RegressionResult(
-        slope=float(params[1]),
-        intercept=float(params[0]),
-        r2=float(model.rsquared),
-        slope_p_value=float(model.pvalues[1]),
-        intercept_p_value=float(model.pvalues[0]),
-        slope_ci=(float(ci[1,0]), float(ci[1,1])),
-        intercept_ci=(float(ci[0,0]), float(ci[0,1]))
-    )
-    if profile:
-        profiling_info['overall_regression_time_ms'] = (time.time() - regression_start) * 1000
+    # regression_start = time.time()
+    # X_const = sm.add_constant(X)
+    # model = sm.OLS(y, X_const).fit()
+    # params = model.params
+    # ci = np.asarray(model.conf_int())
+    # overall_regression = RegressionResult(
+    #     slope=float(params[1]),
+    #     intercept=float(params[0]),
+    #     r2=float(model.rsquared),
+    #     slope_p_value=float(model.pvalues[1]),
+    #     intercept_p_value=float(model.pvalues[0]),
+    #     slope_ci=(float(ci[1,0]), float(ci[1,1])),
+    #     intercept_ci=(float(ci[0,0]), float(ci[0,1]))
+    # )
+    # if profile:
+    #     profiling_info['overall_regression_time_ms'] = (time.time() - regression_start) * 1000
     
     spearman_start = time.time()
     overall_spearman_rho, overall_spearman_p = stats.spearmanr(X.flatten(), y)
     if profile:
         profiling_info['overall_spearman_time_ms'] = (time.time() - spearman_start) * 1000
     
-    anova_start = time.time()
+    bin_start = time.time()
+
+    bin_count = determine_optimal_bin_count(df_with_values[feat1], method='gmm')
+    bin_res = bin_gmm(df_with_values[feat1], n_bins=bin_count, profile=profile)
+    #bin_res = bin_fastcluster(df_with_values[feat1], n_bins=bin_count, profile=profile)
+
+    # anova_start = time.time()
     unique_labels = np.unique(labels)
-    groups = [y[labels==label] for label in unique_labels]
-    f_val, p_val = stats.f_oneway(*groups)
-    cluster_means = {int(label): float(np.mean(y[labels==label])) for label in unique_labels}
-    cluster_stds = {int(label): float(np.std(y[labels==label])) for label in unique_labels}
-    anova = AnovaResult(
-        f_value=float(f_val),
-        p_value=float(p_val),
-        cluster_means=cluster_means,
-        cluster_stds=cluster_stds
-    )
+    # groups = [y[labels==label] for label in unique_labels]
+    # f_val, p_val = stats.f_oneway(*groups)
+    # cluster_means = {int(label): float(np.mean(y[labels==label])) for label in unique_labels}
+    # cluster_stds = {int(label): float(np.std(y[labels==label])) for label in unique_labels}
+    # anova = AnovaResult(
+    #     f_value=float(f_val),
+    #     p_value=float(p_val),
+    #     cluster_means=cluster_means,
+    #     cluster_stds=cluster_stds
+    # )
     if profile:
-        profiling_info['anova_time_ms'] = (time.time() - anova_start) * 1000
+        profiling_info['bin_time_ms'] = (time.time() - bin_start) * 1000
     
     cluster_analysis_start = time.time()
     cluster_analyses = []
@@ -2929,30 +2935,30 @@ def analyze_pair_best(df, feat1, feat2, n_clusters=3, random_state=42, use_mergi
         y_mean = float(np.mean(yc)) if size > 0 else float('nan')
         y_std = float(np.std(yc)) if size > 0 else float('nan')
         if size > 1:
-            Xc_const = sm.add_constant(Xc)
-            model_c = sm.OLS(yc, Xc_const).fit()
-            params_c = model_c.params
-            ci_c = np.asarray(model_c.conf_int())
-            regression_c = RegressionResult(
-                slope=float(params_c[1]),
-                intercept=float(params_c[0]),
-                r2=float(model_c.rsquared),
-                slope_p_value=float(model_c.pvalues[1]),
-                intercept_p_value=float(model_c.pvalues[0]),
-                slope_ci=(float(ci_c[1,0]), float(ci_c[1,1])),
-                intercept_ci=(float(ci_c[0,0]), float(ci_c[0,1]))
-            )
+            # Xc_const = sm.add_constant(Xc)
+            # model_c = sm.OLS(yc, Xc_const).fit()
+            # params_c = model_c.params
+            # ci_c = np.asarray(model_c.conf_int())
+            # regression_c = RegressionResult(
+            #     slope=float(params_c[1]),
+            #     intercept=float(params_c[0]),
+            #     r2=float(model_c.rsquared),
+            #     slope_p_value=float(model_c.pvalues[1]),
+            #     intercept_p_value=float(model_c.pvalues[0]),
+            #     slope_ci=(float(ci_c[1,0]), float(ci_c[1,1])),
+            #     intercept_ci=(float(ci_c[0,0]), float(ci_c[0,1]))
+            # )
             spearman_rho_c, spearman_p_c = stats.spearmanr(Xc.flatten(), yc)
         else:
-            regression_c = RegressionResult(
-                slope=float('nan'),
-                intercept=float('nan'),
-                r2=float('nan'),
-                slope_p_value=float('nan'),
-                intercept_p_value=float('nan'),
-                slope_ci=(float('nan'), float('nan')),
-                intercept_ci=(float('nan'), float('nan'))
-            )
+            # regression_c = RegressionResult(
+            #     slope=float('nan'),
+            #     intercept=float('nan'),
+            #     r2=float('nan'),
+            #     slope_p_value=float('nan'),
+            #     intercept_p_value=float('nan'),
+            #     slope_ci=(float('nan'), float('nan')),
+            #     intercept_ci=(float('nan'), float('nan'))
+            # )
             spearman_rho_c, spearman_p_c = float('nan'), float('nan')
         cluster_analysis = ClusterAnalysis(
             label=int(label),
@@ -2961,7 +2967,7 @@ def analyze_pair_best(df, feat1, feat2, n_clusters=3, random_state=42, use_mergi
             y_range=(y_min, y_max),
             y_mean=y_mean,
             y_std=y_std,
-            regression=regression_c,
+            regression=None,
             spearman_rho=float(spearman_rho_c),
             spearman_p=float(spearman_p_c)
         )
@@ -2969,7 +2975,7 @@ def analyze_pair_best(df, feat1, feat2, n_clusters=3, random_state=42, use_mergi
     if profile:
         profiling_info['cluster_analysis_time_ms'] = (time.time() - cluster_analysis_start) * 1000
     
-    best_p = min(overall_spearman_p, anova.p_value)
+    best_p = min(overall_spearman_p, bin_res.anova.p_value)
     for c in cluster_analyses:
         best_p = min(best_p, c.spearman_p)
     
@@ -2977,10 +2983,10 @@ def analyze_pair_best(df, feat1, feat2, n_clusters=3, random_state=42, use_mergi
         feat1=feat1,
         feat2=feat2,
         n_clusters=n_clusters,
-        overall_regression=overall_regression,
+        overall_regression=None,
         overall_spearman_rho=overall_spearman_rho,
         overall_spearman_p=overall_spearman_p,
-        anova=anova,
+        bin_res=bin_res,
         clusters=cluster_analyses,
         best_p=best_p
     )
@@ -2988,38 +2994,65 @@ def analyze_pair_best(df, feat1, feat2, n_clusters=3, random_state=42, use_mergi
     if visualize:
         viz_start = time.time()
         fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-        # Panel 1: 2D clusters with LOESS
-        for lbl in np.unique(result.labels):
+        # Panel 1: 2D clusters with ellipses
+        unique_labels = np.unique(result.labels)
+        n_clusters_plot = len(unique_labels)
+        cluster_colors = plt.cm.viridis(np.linspace(0,1,n_clusters_plot))
+        for i, lbl in enumerate(unique_labels):
             mask = result.labels == lbl
-            axes[0].scatter(df_with_values.loc[mask, feat1], df_with_values.loc[mask, feat2], label=f'Cluster {lbl}', alpha=0.7)
-        smoothed = lowess(y, X.flatten(), frac=0.66)
-        axes[0].plot(smoothed[:,0], smoothed[:,1], color='red', lw=2)
+            axes[0].scatter(df_with_values.loc[mask, feat1], df_with_values.loc[mask, feat2],
+                            c=[cluster_colors[i]], label=f'Cluster {lbl}', alpha=0.7, edgecolors='k')
+        # draw ellipses if available
+        if result.means is not None and result.covariances is not None:
+            for i, (mean, cov) in enumerate(zip(result.means, result.covariances)):
+                if i < n_clusters_plot:
+                    try:
+                        v, w = np.linalg.eigh(cov)
+                        angle = np.degrees(np.arctan2(w[1, 0], w[0, 0]))
+                        width, height = 2*np.sqrt(v)
+                        ell = Ellipse(xy=(mean[0], mean[1]), width=width, height=height,
+                                      angle=angle, color=cluster_colors[i], alpha=0.3)
+                        axes[0].add_patch(ell)
+                    except Exception:
+                        pass
         axes[0].set_xlabel(feat1)
         axes[0].set_ylabel(feat2)
-        axes[0].set_title('2D Clusters with LOESS')
+        axes[0].set_title('2D Clusters')
         axes[0].legend()
-        # Panel 2: 1D Fastcluster bin scatter
-        bin_res = bin_fastcluster(df_with_values[feat1], n_bins=n_clusters, profile=profile)
+        # Panel 2: 2D scatter colored by 1D bins with LOESS
+        # Use same number of bins as clusters found
         bins_series = bin_res.bin_assignments
-        unique_bins = sorted(bins_series.unique())
-        for b in unique_bins:
-            vals = df_with_values.loc[bins_series == b, feat2].values
-            jitter = np.random.uniform(-0.2, 0.2, size=len(vals))
-            axes[1].scatter(np.full_like(vals, b) + jitter, vals, alpha=0.6, label=f'Bin {b}')
-        axes[1].set_xlabel('Bin')
+        bin_labels = sorted(bins_series.unique())
+        bin_colors = sns.color_palette('husl', len(bin_labels))
+        for idx, b in enumerate(bin_labels):
+            mask_b = bins_series == b
+            axes[1].scatter(df_with_values.loc[mask_b, feat1], df_with_values.loc[mask_b, feat2],
+                            c=[bin_colors[idx]], label=f'Bin {b}', alpha=0.7, edgecolors='k')
+        smoothed = lowess(y, X.flatten(), frac=0.66)
+        axes[1].plot(smoothed[:,0], smoothed[:,1], color='black', lw=2)
+        axes[1].set_xlabel(feat1)
         axes[1].set_ylabel(feat2)
-        axes[1].set_title('1D Fastcluster Bins')
+        axes[1].set_title('1D Bins Colored in 2D')
         axes[1].legend()
-        # Panel 3: ANOVA boxplot of bins
-        dfb = pd.DataFrame({feat2: df_with_values[feat2].values, 'bin': bins_series})
-        sns.boxplot(x='bin', y=feat2, data=dfb, ax=axes[2])
-        groups_y = [dfb.loc[dfb['bin'] == b, feat2].values for b in unique_bins]
-        if len(groups_y) >= 2:
-            f_b, p_b = stats.f_oneway(*groups_y)
-        else:
-            f_b, p_b = np.nan, np.nan
+        # Panel 3: ANOVA bar chart of bin means (aligned with bins)
+        means_dict = bin_res.anova.bin_means
+        stds_dict = bin_res.anova.bin_stds
+        heights = [means_dict[b] for b in bin_labels]
+        errors = [stds_dict[b] for b in bin_labels]
+        positions = list(range(len(bin_labels)))
+        boxplot_df = pd.DataFrame({'bin': bins_series, 'value': df_with_values[feat2]})
+        sns.boxplot(x='bin', y='value', data=boxplot_df, ax=axes[2], palette=bin_colors, order=bin_labels)
+        #bars = axes[2].bar(positions, heights, yerr=errors, capsize=5, color=bin_colors, edgecolor='k')
+        # Set x-axis to bin labels
+        axes[2].set_xticks(positions)
+        axes[2].set_xticklabels(bin_labels)
         axes[2].set_xlabel('Bin')
-        axes[2].set_title(f'ANOVA F={f_b:.2f}, p={p_b:.4f}')
+        axes[2].set_ylabel(feat2)
+        axes[2].set_title(f'ANOVA F={bin_res.anova.f_value:.2f}, p={bin_res.anova.p_value:.4f}')
+        
+        # Annotate bar means
+        for pos, h in zip(positions, heights):
+            axes[2].text(pos, h, f"{h:.2f}", ha='center', va='bottom', fontsize=8)
         plt.tight_layout()
         plt.show()
         if profile:
@@ -3046,17 +3079,17 @@ def print_pair_analysis(pair_result: PairAnalysisResult):
     print(f"Analysis for {pair_result.feat1} vs {pair_result.feat2}")
     print(f"Best p-value: {pair_result.best_p:.3f}")
     orr = pair_result.overall_regression
-    print(f"Overall Regression: slope={orr.slope:.3f} (CI={orr.slope_ci[0]:.3f}-{orr.slope_ci[1]:.3f}), intercept={orr.intercept:.3f} (CI={orr.intercept_ci[0]:.3f}-{orr.intercept_ci[1]:.3f}), R2={orr.r2:.3f}, p_slope={orr.slope_p_value:.3g}, p_intercept={orr.intercept_p_value:.3g}")
+    #print(f"Overall Regression: slope={orr.slope:.3f} (CI={orr.slope_ci[0]:.3f}-{orr.slope_ci[1]:.3f}), intercept={orr.intercept:.3f} (CI={orr.intercept_ci[0]:.3f}-{orr.intercept_ci[1]:.3f}), R2={orr.r2:.3f}, p_slope={orr.slope_p_value:.3g}, p_intercept={orr.intercept_p_value:.3g}")
     print(f"Overall Spearman: rho={pair_result.overall_spearman_rho:.3f}, p={pair_result.overall_spearman_p:.3g}")
-    a = pair_result.anova
+    a = pair_result.bin_res.anova
     print(f"ANOVA: F={a.f_value:.3f}, p={a.p_value:.3f}")
-    for lbl, mean in a.cluster_means.items():
-        std = a.cluster_stds[lbl]
-        print(f" Cluster {lbl}: mean={mean:.3f}, std={std:.3f}")
+    for lbl, mean in a.bin_means.items():
+        std = a.bin_stds[lbl]
+        print(f" Bin {lbl}: mean={mean:.3f}, std={std:.3f}")
     for c in pair_result.clusters:
         print(f"Cluster {c.label}: size={c.size}, x_range={c.x_range[0]:.3f}-{c.x_range[1]:.3f}, y_range={c.y_range[0]:.3f}-{c.y_range[1]:.3f}, y_mean={c.y_mean:.3f}, y_std={c.y_std:.3f}")
-        reg = c.regression
-        print(f" Regression: slope={reg.slope:.3f} (CI={reg.slope_ci[0]:.3f}-{reg.slope_ci[1]:.3f}), intercept={reg.intercept:.3f} (CI={reg.intercept_ci[0]:.3f}-{reg.intercept_ci[1]:.3f}), R2={reg.r2:.3f}, p_slope={reg.slope_p_value:.3g}, p_intercept={reg.intercept_p_value:.3g}")
+        #reg = c.regression
+        #print(f" Regression: slope={reg.slope:.3f} (CI={reg.slope_ci[0]:.3f}-{reg.slope_ci[1]:.3f}), intercept={reg.intercept:.3f} (CI={reg.intercept_ci[0]:.3f}-{reg.intercept_ci[1]:.3f}), R2={reg.r2:.3f}, p_slope={reg.slope_p_value:.3g}, p_intercept={reg.intercept_p_value:.3g}")
         print(f" Spearman: rho={c.spearman_rho:.3f}, p={c.spearman_p:.3f}")
 
 def find_pairwise_best(df, profile=False): 

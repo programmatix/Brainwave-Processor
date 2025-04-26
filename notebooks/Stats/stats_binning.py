@@ -7,6 +7,7 @@ from sklearn.inspection import permutation_importance
 from sklearn.preprocessing import StandardScaler
 import statsmodels.api as sm
 from statsmodels.graphics.regressionplots import plot_partregress
+import warnings
 
 from notebooks.Util.Data import require_no_missing_values
 import pandas as pd
@@ -1194,18 +1195,31 @@ def compare_all_binning_methods(series: pd.Series, n_bins: int = None, profile: 
             runtimes[display_name] = res.result_info.get('profiling', {}).get('total_time_ms', np.nan)
         if visualize:
             fig, axes = plt.subplots(1, 2, figsize=figsize, sharey=True)
-            unique_bins = sorted(res.bin_contents.keys())
-            palette = sns.color_palette("hsv", len(unique_bins))
-            for idx, b in enumerate(unique_bins):
-                vals = res.bin_contents[b]
+            # separate exact zeros into their own bin
+            bin_series = res.bin_assignments.copy()
+            zero_mask = series == 0
+            if zero_mask.any():
+                bin_series[zero_mask] = 'zero'
+            bin_series = bin_series.astype(str)
+            dfb = pd.DataFrame({'value': series.values, 'bin_label': bin_series})
+            # sort bins by their mean values for x-axis order
+            bin_means = dfb.groupby('bin_label')['value'].mean().to_dict()
+            sorted_bins = sorted(bin_means, key=lambda b: bin_means[b])
+            palette = sns.color_palette("hsv", len(sorted_bins))
+            # scatter plot with matching colors and sorted positions
+            for idx, b in enumerate(sorted_bins):
+                vals = dfb.loc[dfb['bin_label'] == b, 'value'].values
                 jitter = np.random.uniform(-0.2, 0.2, size=len(vals))
-                axes[0].scatter(np.array(vals)*0 + b + jitter, vals, color=palette[idx], alpha=0.6)
-            dfb = pd.DataFrame({'value': series.values, 'bin': res.bin_assignments})
-            # Passing `palette` without assigning `hue` is deprecated and will be removed in v0.14.0. Assign the `x` variable to `hue` and set `legend=False` for the same effect.
-            sns.boxplot(x='bin', y='value', data=dfb, ax=axes[1], palette=palette, order=unique_bins)
+                axes[0].scatter(idx + jitter, vals, color=palette[idx], alpha=0.6)
+            axes[0].set_xticks(range(len(sorted_bins)))
+            axes[0].set_xticklabels(sorted_bins)
             axes[0].set_xlabel('Bin')
             axes[0].set_ylabel('Value')
             axes[0].set_title(f'{display_name} Binned Values')
+            # boxplot with same colors and bin order
+            warnings.filterwarnings("ignore", category=FutureWarning, message=".*Passing `palette` without assigning `hue`.*")
+            sns.boxplot(x='bin_label', y='value', data=dfb, ax=axes[1], palette=palette, order=sorted_bins, hue='bin_label', legend=False, dodge=False)
+            axes[1].set_xlabel('Bin')
             axes[1].set_title(f'ANOVA F={res.anova.f_value:.2f}, p={res.anova.p_value:.4f}')
             plt.tight_layout()
             plt.show()
