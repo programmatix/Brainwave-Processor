@@ -111,6 +111,7 @@ def analyze_pair_best(df, x_feat, y_feat, n_clusters=3, random_state=42, use_mer
     bin_start = time.time()
     bin_count = determine_optimal_bin_count(df_with_values[x_feat], method='fastcluster')
     bin_res = bin_fastcluster(df_with_values[x_feat], n_bins=bin_count, profile=profile)
+    bin_res._generate_bins_info()
 
     if profile:
         profiling_info['bin_time_ms'] = (time.time() - bin_start) * 1000
@@ -218,17 +219,29 @@ def analyze_pair_best(df, x_feat, y_feat, n_clusters=3, random_state=42, use_mer
 
 def _plot_anova(ax, result, x_feat, y_feat, bin_colors, bins_to_show):
     df_with_values = pd.DataFrame({x_feat: result.X.flatten(), y_feat: result.y, 'bin': result.clusters_x.bin_assignments})
+    
+    # Use the bin colors from BinningResult if available
+    if hasattr(result.clusters_x, 'bins_info'):
+        bin_colors = [bin_info['color'] for bin_info in result.clusters_x.bins_info 
+                     if bin_info['bin_idx'] in bins_to_show]
+    
     sns.boxplot(x='bin', y=y_feat, data=df_with_values, ax=ax, palette=bin_colors, order=bins_to_show, whis=0)
     ax.set_xlabel(f'{x_feat} bins')
     ax.set_ylabel(y_feat)
     ax.set_title(f'{result.anova.method} F={result.anova.f_value:.2f}, p={result.anova.p_value:.4f} (excluded={len(result.anova.excluded_bins)})')
     
-    # Create legend entries for each bin
+    # Create legend entries using bin info from BinningResult
     legend_handles = []
-    for i, b in enumerate(bins_to_show):
-        mean = result.anova.bin_means[b]
-        n = len(result.clusters_x.bin_contents[b])
-        legend_handles.append(Patch(color=bin_colors[i], label=f'Bin {b}: n={n}, mean={mean:.2f}'))
+    for bin_info in result.clusters_x.bins_info:
+        if bin_info['bin_idx'] not in bins_to_show:
+            continue
+            
+        mean = result.anova.bin_means[bin_info['bin_idx']]
+        n = len(result.clusters_x.bin_contents[bin_info['bin_idx']])
+        legend_handles.append(
+            Patch(color=bin_info['color'], 
+                 label=f'{bin_info["name"]}: n={n}, mean={mean:.2f}')
+        )
     
     ax.legend(handles=legend_handles, title='Bin Details')
 

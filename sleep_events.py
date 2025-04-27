@@ -1,5 +1,5 @@
-import firebase_admin
-from firebase_admin import credentials, firestore
+# import firebase_admin
+# from firebase_admin import credentials, firestore
 import os
 import pandas as pd
 import pytz
@@ -254,3 +254,6 @@ def load_nights_data(pimp = True):
     result_df['dayAndNightOf'] = pd.to_datetime(result_df['dayAndNightOf'])
 
     return result_df
+
+
+

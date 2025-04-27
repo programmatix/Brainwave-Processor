@@ -502,11 +502,12 @@ def plot_causal_graph(graph_tuple, title='Causal Graph', highlight_nodes=None, t
                 else:
                     # For undirected graphs, don't show arrows
                     nx.draw_networkx_edges(nx_graph, pos, 
-                                        edgelist=edges,
-                                        arrowsize=0,
+                                        edgelist=list(nx_graph.edges()),
+                                        arrows=False,
                                         edge_color=edge_colors,
                                         width=edge_widths,
-                                        alpha=edge_alpha)
+                                        alpha=edge_alpha,
+                                        style='solid')
             
             # Draw edge labels with correlation values
             edge_labels = {}

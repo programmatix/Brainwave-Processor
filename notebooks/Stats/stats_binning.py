@@ -44,6 +44,35 @@ class BinningResult:
     bin_assignments: pd.Series
     bin_contents: Dict[int, List[Any]]
     result_info: Dict[str, Any]
+    bins_info: List[Dict[str, Any]] = field(default_factory=list)
+
+    def __post_init__(self):
+        if not self.bins_info:
+            self._generate_bins_info()
+
+    def _generate_bins_info(self):
+        unique_bins = sorted(self.bin_assignments.unique())
+        for bin_idx in unique_bins:
+            bin_data = self.bin_contents[bin_idx]
+            if not bin_data:
+                continue
+
+            bin_min = min(bin_data)
+            bin_max = max(bin_data)
+            bin_name = f"{self.method.capitalize()} Bin {bin_idx}: {bin_min:.2f}-{bin_max:.2f}"
+            bin_color = self._get_bin_color(bin_idx)
+
+            self.bins_info.append({
+                "bin_idx": bin_idx,
+                "start": bin_min,
+                "end": bin_max,
+                "name": bin_name,
+                "color": bin_color
+            })
+
+    def _get_bin_color(self, bin_idx):
+        palette = sns.color_palette("hsv", self.n_bins)
+        return palette[bin_idx % len(palette)]
 
 # Separate functions per binning method returning a unified result
 def bin_kmeans(series: pd.Series, n_bins: int = 5, profile: bool = False, **kwargs) -> BinningResult:
@@ -1214,5 +1243,33 @@ def compare_all_binning_methods(series: pd.Series, n_bins: int = None, profile: 
         plt.tight_layout()
         plt.show()
     return results
+
+def _plot_anova(ax, result, x_feat, y_feat, bin_colors, bins_to_show):
+    df_with_values = pd.DataFrame({x_feat: result.X.flatten(), y_feat: result.y, 'bin': result.clusters_x.bin_assignments})
+    
+    # Use the bin colors from BinningResult if available
+    if hasattr(result.clusters_x, 'bins_info'):
+        bin_colors = [bin_info['color'] for bin_info in result.clusters_x.bins_info 
+                     if bin_info['bin_idx'] in bins_to_show]
+    
+    sns.boxplot(x='bin', y=y_feat, data=df_with_values, ax=ax, palette=bin_colors, order=bins_to_show, whis=0)
+    ax.set_xlabel(f'{x_feat} bins')
+    ax.set_ylabel(y_feat)
+    ax.set_title(f'{result.anova.method} F={result.anova.f_value:.2f}, p={result.anova.p_value:.4f} (excluded={len(result.anova.excluded_bins)})')
+    
+    # Create legend entries using bin info from BinningResult
+    legend_handles = []
+    for bin_info in result.clusters_x.bins_info:
+        if bin_info['bin_idx'] not in bins_to_show:
+            continue
+            
+        mean = result.anova.bin_means[bin_info['bin_idx']]
+        n = len(result.clusters_x.bin_contents[bin_info['bin_idx']])
+        legend_handles.append(
+            Patch(color=bin_info['color'], 
+                 label=f'{bin_info["name"]}: n={n}, mean={mean:.2f}')
+        )
+    
+    ax.legend(handles=legend_handles, title='Bin Details')
 
 
