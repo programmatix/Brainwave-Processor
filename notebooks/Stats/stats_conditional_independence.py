@@ -3,10 +3,12 @@ import numpy as np
 from math import log, sqrt
 from collections.abc import Iterable
 from scipy import stats
-from scipy.stats import chi2, norm
+from scipy.stats import chi2, norm, spearmanr
+from dataclasses import dataclass
+from typing import List, Dict, Any, Optional
 
 from notebooks.Stats.stats_binning import bin_fastcluster, determine_optimal_bin_count
-from notebooks.Stats.stats_corr_best import analyze_pair_best
+from notebooks.Stats.stats_corr_best import PairAnalysisResult, analyze_pair_best
 
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -225,6 +227,73 @@ class MV_FisherZ(CIT_Base):
             return 1.0
 
 
+@dataclass
+class SpearmanResult:
+    """Simplified result object for Spearman correlation."""
+    x_feat: str
+    y_feat: str 
+    correlation: float
+    p_value: float
+    sample_size: int
+    
+    @property
+    def best_p(self):
+        """For compatibility with PairAnalysisResult interface."""
+        return self.p_value
+        
+    @property
+    def is_significant(self):
+        """Check if p-value is significant (< 0.05)."""
+        return self.p_value < 0.05
+
+@dataclass
+class ConditionalIndependenceResult:
+    x_feat: str
+    y_feat: str
+    conditioning_feat: str
+    direct_p: float
+    conditional_p: float
+    is_conditionally_independent: bool
+    direct_relationship_exists: bool
+    is_mediator: bool
+    bin_results: List[SpearmanResult]
+    direct_result: PairAnalysisResult
+    
+    def print_summary(self):
+        """Print a concise, informative summary of the conditional independence test results."""
+        print(f"\n{'=' * 60}")
+        print(f"CONDITIONAL INDEPENDENCE TEST SUMMARY")
+        print(f"{'=' * 60}")
+        
+        print(f"Variables: {self.x_feat} → {self.y_feat} | {self.conditioning_feat}")
+        print(f"Direct p-value: {self.direct_p:.4f} {'(significant)' if self.direct_relationship_exists else '(not significant)'}")
+        print(f"Conditional p-value: {self.conditional_p:.4f} {'(independent)' if self.is_conditionally_independent else '(not independent)'}")
+        
+        print("Bins:")
+        for b in self.bin_results:
+            print(f"  {b.x_feat} -> {b.y_feat}: {b.best_p:.4f} n={b.sample_size}")
+
+        print(f"\n{'-' * 60}")
+        print("INTERPRETATION:")
+        
+        if self.is_mediator:
+            print(f"✓ MEDIATION DETECTED")
+            print(f"  {self.x_feat} likely affects {self.y_feat} THROUGH {self.conditioning_feat}.")
+            print(f"  The direct relationship disappears when controlling for {self.conditioning_feat}.")
+        elif self.direct_relationship_exists and not self.is_conditionally_independent:
+            print(f"✓ DIRECT RELATIONSHIP REMAINS")
+            print(f"  {self.x_feat} likely affects {self.y_feat} both directly AND through other pathways.")
+            print(f"  {self.conditioning_feat} does NOT fully explain the relationship.")
+        elif not self.direct_relationship_exists:
+            print(f"✓ NO SIGNIFICANT RELATIONSHIP")
+            print(f"  {self.x_feat} and {self.y_feat} don't have a significant relationship.")
+            print(f"  There is no relationship for {self.conditioning_feat} to mediate.")
+        else:
+            print(f"✓ COMPLEX RELATIONSHIP")
+            print(f"  The relationship may be complex or involve other variables.")
+        
+        print(f"{'=' * 60}")
+
 
 def test_conditional_independence(df, x_feat, y_feat, conditioning_feat, 
                                  n_clusters=3, random_state=42, 
@@ -232,8 +301,18 @@ def test_conditional_independence(df, x_feat, y_feat, conditioning_feat,
     """
     Test whether x_feat and y_feat are conditionally independent given conditioning_feat.
     
+    Parameters:
+        df: DataFrame with the data
+        x_feat: Name of the X variable
+        y_feat: Name of the Y variable
+        conditioning_feat: Name of the conditioning variable
+        n_clusters: Number of clusters for binning
+        random_state: Random state for reproducibility
+        alpha: Significance level
+        **kwargs: Additional arguments passed to analyze_pair_best for the direct relationship
+        
     Returns:
-        dict: Results containing conditional independence assessment
+        ConditionalIndependenceResult: Results containing conditional independence assessment
     """
     # Step 1: Test direct relationship between x and y
     direct_result = analyze_pair_best(df, x_feat, y_feat, n_clusters=n_clusters, 
@@ -244,19 +323,31 @@ def test_conditional_independence(df, x_feat, y_feat, conditioning_feat,
     df_valid = df[df[x_feat].notna() & df[y_feat].notna() & df[conditioning_feat].notna()]
     bin_count = determine_optimal_bin_count(df_valid[conditioning_feat], method='fastcluster')
     bin_res = bin_fastcluster(df_valid[conditioning_feat], n_bins=bin_count)
-    bin_res._generate_bins_info()
     
-    # Step 3: Test relationship within each bin of the conditioning variable
+    # Step 3: Test relationship within each bin of the conditioning variable using Spearman correlation
     conditional_p_values = []
     bin_results = []
     
     for bin_idx in range(bin_res.n_bins):
         bin_mask = bin_res.bin_assignments == bin_idx
-        if sum(bin_mask) > 10:  # Ensure sufficient data in the bin
+        if sum(bin_mask) > 5:  # Ensure sufficient data in the bin
             bin_df = df_valid[bin_mask]
-            # Analyze relationship within this bin
-            bin_result = analyze_pair_best(bin_df, x_feat, y_feat, n_clusters=n_clusters, 
-                                          random_state=random_state, **kwargs)
+            
+            # Use Spearman's correlation for each bin
+            # No point using analyze_pair_best as there won't be enough data in each bin to be worth clustering further
+            corr, p_value = spearmanr(
+                bin_df[x_feat].values, 
+                bin_df[y_feat].values,
+                nan_policy='omit'
+            )
+            bin_result = SpearmanResult(
+                x_feat=x_feat,
+                y_feat=y_feat,
+                correlation=corr,
+                p_value=p_value,
+                sample_size=len(bin_df)
+            )
+                
             conditional_p_values.append(bin_result.best_p)
             bin_results.append(bin_result)
     
@@ -271,20 +362,20 @@ def test_conditional_independence(df, x_feat, y_feat, conditioning_feat,
     is_conditionally_independent = combined_p > alpha
     direct_significant = direct_p < alpha
     
-    return {
-        'x_feat': x_feat,
-        'y_feat': y_feat,
-        'conditioning_feat': conditioning_feat,
-        'direct_p': direct_p,
-        'conditional_p': combined_p,
-        'is_conditionally_independent': is_conditionally_independent,
-        'direct_relationship_exists': direct_significant,
-        'is_mediator': direct_significant and is_conditionally_independent,
-        'bin_results': bin_results,
-        'direct_result': direct_result
-    }
+    return ConditionalIndependenceResult(
+        x_feat=x_feat,
+        y_feat=y_feat,
+        conditioning_feat=conditioning_feat,
+        direct_p=direct_p,
+        conditional_p=combined_p,
+        is_conditionally_independent=is_conditionally_independent,
+        direct_relationship_exists=direct_significant,
+        is_mediator=direct_significant and is_conditionally_independent,
+        bin_results=bin_results,
+        direct_result=direct_result
+    )
 
-def visualize_conditional_independence(result, df, figsize=(18, 12)):
+def visualize_conditional_independence(result: ConditionalIndependenceResult, df, figsize=(18, 22)):
     """
     Visualize the results of a conditional independence test.
     
@@ -297,21 +388,24 @@ def visualize_conditional_independence(result, df, figsize=(18, 12)):
     import seaborn as sns
     from matplotlib.gridspec import GridSpec
     
-    x_feat = result['x_feat']
-    y_feat = result['y_feat']
-    z_feat = result['conditioning_feat']
+    x_feat = result.x_feat
+    y_feat = result.y_feat
+    z_feat = result.conditioning_feat
     
-    fig = plt.figure(figsize=figsize)
-    gs = GridSpec(3, 3, figure=fig)
+    # Create figure with properly sized grid
+    fig = plt.figure(figsize=(18, 22))  # Even taller figure to accommodate new plot
+    
+    # Create custom grid with appropriate ratios for each section
+    gs = GridSpec(7, 3, figure=fig, height_ratios=[1, 1, 1, 1, 1, 1, 2])  # 7 rows, 3 columns, extra row for colored plot
     
     # Create title with summary of findings
-    if result['is_mediator']:
+    if result.is_mediator:
         title = f"{z_feat} mediates the relationship between {x_feat} and {y_feat}"
         relationship_type = "MEDIATION"
-    elif result['direct_relationship_exists'] and not result['is_conditionally_independent']:
+    elif result.direct_relationship_exists and not result.is_conditionally_independent:
         title = f"{z_feat} does NOT explain away the relationship between {x_feat} and {y_feat}"
         relationship_type = "DIRECT EFFECT REMAINS"
-    elif not result['direct_relationship_exists']:
+    elif not result.direct_relationship_exists:
         title = f"No significant relationship between {x_feat} and {y_feat} to begin with"
         relationship_type = "NO RELATIONSHIP"
     else:
@@ -322,80 +416,155 @@ def visualize_conditional_independence(result, df, figsize=(18, 12)):
     
     # 1. Original relationship scatterplot (X -> Y)
     ax1 = fig.add_subplot(gs[0, 0])
-    sns.scatterplot(x=x_feat, y=y_feat, data=df, alpha=0.5, ax=ax1)
-    direct_p_str = f"p = {result['direct_p']:.4f}"
-    if result['direct_relationship_exists']:
+    sns.regplot(x=x_feat, y=y_feat, data=df, scatter_kws={'alpha': 0.5}, line_kws={'color': 'red'}, ax=ax1)
+    direct_p_str = f"p = {result.direct_p:.4f}"
+    if result.direct_relationship_exists:
         direct_p_str += " (significant)"
     ax1.set_title(f"Direct relationship: {x_feat} → {y_feat}\n{direct_p_str}")
     
     # 2. Conditioning variable relationships
     ax2 = fig.add_subplot(gs[0, 1])
-    sns.scatterplot(x=x_feat, y=z_feat, data=df, alpha=0.5, ax=ax2)
+    sns.regplot(x=x_feat, y=z_feat, data=df, scatter_kws={'alpha': 0.5}, line_kws={'color': 'red'}, ax=ax2)
     
     # Calculate and show p-value for X -> Z relationship
-    xz_result = analyze_pair_best(df, x_feat, z_feat)
-    xz_p_str = f"p = {xz_result.best_p:.4f}"
-    if xz_result.best_p < 0.05:
+    xz_corr, xz_p = stats.spearmanr(df[x_feat], df[z_feat], nan_policy='omit')
+    xz_p_str = f"p = {xz_p:.4f} (rho = {xz_corr:.2f})"
+    if xz_p < 0.05:
         xz_p_str += " (significant)"
+    
     ax2.set_title(f"Relationship: {x_feat} → {z_feat}\n{xz_p_str}")
     
     ax3 = fig.add_subplot(gs[0, 2])
     
-    # Color points in Z-Y scatterplot based on their bin
+    # Prepare data with bins for coloring
     valid_data = df[df[x_feat].notna() & df[y_feat].notna() & df[z_feat].notna()].copy()
     discretizer = KBinsDiscretizer(n_bins=min(5, len(valid_data[z_feat].unique())), encode='ordinal', strategy='quantile')
     valid_data['bin'] = discretizer.fit_transform(valid_data[z_feat].values.reshape(-1, 1))
-    sns.scatterplot(x=z_feat, y=y_feat, data=valid_data, hue='bin', palette='viridis', alpha=0.5, ax=ax3)
+    
+    # Color points in Z-Y scatterplot based on their bin
+    sns.regplot(x=z_feat, y=y_feat, data=valid_data, scatter_kws={'alpha': 0.5}, line_kws={'color': 'red'}, ax=ax3)
     
     # Calculate and show p-value for Z -> Y relationship
-    zy_result = analyze_pair_best(df, z_feat, y_feat)
-    zy_p_str = f"p = {zy_result.best_p:.4f}"
-    if zy_result.best_p < 0.05:
+    zy_corr, zy_p = stats.spearmanr(df[z_feat], df[y_feat], nan_policy='omit')
+    zy_p_str = f"p = {zy_p:.4f} (rho = {zy_corr:.2f})"
+    if zy_p < 0.05:
         zy_p_str += " (significant)"
+            
     ax3.set_title(f"Relationship: {z_feat} → {y_feat}\n{zy_p_str}")
     
-    # Move explanation box to avoid overlapping with bottom graphs
-    ax_diagram = fig.add_subplot(gs[2, :])
+    # NEW ROW: Add X-Y scatter plot with Z-bin coloring
+    ax_colored = fig.add_subplot(gs[1, :])
+    
+    # Create bin labels for legend
+    bin_edges = discretizer.bin_edges_[0]
+    bin_labels = [f"{z_feat}: {bin_edges[i]:.2f} to {bin_edges[i+1]:.2f}" 
+                 for i in range(len(bin_edges)-1)]
+    
+    # Create a scatter plot with points colored by Z bin with larger points for visibility
+    sns.scatterplot(x=x_feat, y=y_feat, hue='bin', data=valid_data, palette='viridis', 
+                   alpha=0.7, s=80, ax=ax_colored, legend='brief')
+    
+    # Update legend with proper bin labels
+    handles, labels = ax_colored.get_legend_handles_labels()
+    ax_colored.legend(handles, bin_labels, title=f"{z_feat} bins", loc='best')
+    
+    ax_colored.set_title(f"{x_feat} vs {y_feat} relationship, colored by {z_feat} bins", fontsize=14)
+    
+    # Add a text annotation explaining the concept
+    text_str = (
+        "How to read this plot: Points are colored by their " + z_feat + " value.\n"
+        "If the relationship between " + x_feat + " and " + y_feat + " differs across colors (bins),\n"
+        "then " + z_feat + " affects how " + x_feat + " and " + y_feat + " relate to each other."
+    )
+    ax_colored.annotate(text_str, xy=(0.5, -0.1), xycoords='axes fraction', 
+                      ha='center', fontsize=12, bbox=dict(boxstyle="round,pad=0.5", 
+                                                         facecolor='wheat', alpha=0.5))
+    
+    # 3. Conditional relationship - faceted by bins of conditioning variable
+    bin_count = len(bin_labels)
+    bin_rows = 0
+    if result.bin_results and len(result.bin_results) > 0:
+        # Plot each bin with consistent colors from viridis palette
+        max_cols = 3
+        n_plots = len(result.bin_results)
+        bin_rows = (n_plots + max_cols - 1) // max_cols  # Ceiling division to get number of rows needed
+        
+        axs = []
+        for i in range(n_plots):
+            row = 2 + i // max_cols  # Start from row 2 now
+            col = i % max_cols
+            ax = fig.add_subplot(gs[row, col])
+            axs.append(ax)
+            
+            bin_data = valid_data[valid_data['bin'] == i]
+            color = plt.cm.viridis(i/(bin_count-1) if bin_count > 1 else 0)  # Get color from viridis palette
+            
+            # Use regplot instead of scatterplot to add regression line with error bands
+            sns.regplot(
+                x=x_feat, 
+                y=y_feat, 
+                data=bin_data, 
+                scatter_kws={'color': color, 'alpha': 0.6},
+                line_kws={'color': 'red'},
+                ci=95,  # 95% confidence interval
+                ax=ax
+            )
+            
+            # Get p-value and correlation for this bin
+            bin_result = result.bin_results[i]
+            bin_p = bin_result.best_p
+            
+            # Display correlation coefficient (rho) along with p-value
+            p_str = f"p = {bin_p:.4f} (rho = {bin_result.correlation:.2f})"
+                
+            if bin_p < 0.05:
+                p_str += " (significant)"
+                
+            ax.set_title(f"Bin {i+1}: {bin_labels[i]}\n{p_str}")
+    
+    # Adjust row_for_explanation based on how many bin rows we used
+    row_for_explanation = 2 + bin_rows  # Start two rows after the bin plots
+    ax_explanation = fig.add_subplot(gs[row_for_explanation:row_for_explanation+2, :])
+    ax_explanation.axis('off')
+    
+    # Generate and display explanation text
+    explanation = generate_explanation_text(result)
+    explanation += "\n\nHOW CONDITIONAL P-VALUE IS CALCULATED:\n"
+    explanation += f"We know {x_feat} and {y_feat} are correlated.\n"
+    explanation += f"We want to know if that's still the case once we account for {z_feat}.\n"
+    explanation += f"1. The conditioning variable {z_feat} is binned into {bin_count} groups\n"
+    explanation += f"2. Within each bin, we test if the {x_feat}-{y_feat} relationship still holds using Spearman correlation\n"
+    explanation += f"3. The p-values from each bin are combined using Fisher's method\n"
+    explanation += f"4. This gives an overall p-value for {x_feat}-{y_feat} relationship after controlling for {z_feat}"
+    
+    props = dict(boxstyle='round', facecolor='wheat', alpha=0.8)
+    ax_explanation.text(0.5, 0.5, explanation, transform=ax_explanation.transAxes, 
+                       fontsize=12, verticalalignment='center', horizontalalignment='center',
+                       bbox=props)
+    
+    # 5. Causal diagram - adjust row position
+    ax_diagram = fig.add_subplot(gs[row_for_explanation+2:, :])
     ax_diagram.axis('off')
     
     # Draw causal diagram based on findings
-    if result['is_mediator']:
+    if result.is_mediator:
         draw_mediation_path(ax_diagram, x_feat, y_feat, z_feat, 
                            direct_significant=False, 
                            x_to_z_significant=True, 
                            z_to_y_significant=True)
-    elif result['direct_relationship_exists'] and not result['is_conditionally_independent']:
+    elif result.direct_relationship_exists and not result.is_conditionally_independent:
         draw_mediation_path(ax_diagram, x_feat, y_feat, z_feat, 
                            direct_significant=True, 
                            x_to_z_significant=True, 
                            z_to_y_significant=True)
     else:
         draw_mediation_path(ax_diagram, x_feat, y_feat, z_feat, 
-                           direct_significant=result['direct_relationship_exists'], 
+                           direct_significant=result.direct_relationship_exists, 
                            x_to_z_significant=False, 
                            z_to_y_significant=False)
     
-    # Position explanation box above the causal diagram
-    ax_explanation = fig.add_subplot(gs[1, :])
-    ax_explanation.axis('off')
+    plt.tight_layout(rect=[0, 0, 1, 0.95], h_pad=1.0, w_pad=1.0)
     
-    # Update explanation text with more details
-    explanation = generate_explanation_text(result)
-    
-    # Add detailed explanation of how conditional p-value is calculated
-    explanation += "\n\nHOW CONDITIONAL P-VALUE IS CALCULATED:\n"
-    explanation += f"1. The conditioning variable {z_feat} is binned into {discretizer.n_bins} groups\n"
-    explanation += "2. Within each bin, we test the X-Y relationship\n"
-    explanation += "3. The p-values from each bin are combined using Fisher's method\n"
-    explanation += "4. This gives an overall p-value for X-Y relationship after controlling for Z"
-    
-    # Make the text box larger and more prominent
-    props = dict(boxstyle='round', facecolor='wheat', alpha=0.8)
-    ax_explanation.text(0.5, 0.5, explanation, transform=ax_explanation.transAxes, 
-                       fontsize=12, verticalalignment='center', horizontalalignment='center',
-                       bbox=props)
-    
-    plt.tight_layout(rect=[0, 0, 1, 0.95])
     return fig
 
 
@@ -450,14 +619,14 @@ def draw_mediation_path(ax, x_label, y_label, z_label, direct_significant=True,
 
 def generate_explanation_text(result):
     """Generate a clear explanation of the conditional independence test results"""
-    x_feat = result['x_feat']
-    y_feat = result['y_feat']
-    z_feat = result['conditioning_feat']
+    x_feat = result.x_feat
+    y_feat = result.y_feat
+    z_feat = result.conditioning_feat
     
-    direct_p = result['direct_p']
-    conditional_p = result['conditional_p']
+    direct_p = result.direct_p
+    conditional_p = result.conditional_p
     
-    if result['is_mediator']:
+    if result.is_mediator:
         explanation = (
             f"MEDIATION DETECTED:\n\n"
             f"1. {x_feat} and {y_feat} are related (p={direct_p:.4f}).\n"
@@ -465,7 +634,7 @@ def generate_explanation_text(result):
             f"3. This suggests {z_feat} mediates the relationship between {x_feat} and {y_feat}.\n\n"
             f"Interpretation: {x_feat} likely affects {y_feat} THROUGH {z_feat}."
         )
-    elif result['direct_relationship_exists'] and not result['is_conditionally_independent']:
+    elif result.direct_relationship_exists and not result.is_conditionally_independent:
         explanation = (
             f"DIRECT RELATIONSHIP REMAINS:\n\n"
             f"1. {x_feat} and {y_feat} are related (p={direct_p:.4f}).\n"
@@ -473,7 +642,7 @@ def generate_explanation_text(result):
             f"3. This suggests {z_feat} does NOT fully explain the relationship.\n\n"
             f"Interpretation: {x_feat} likely affects {y_feat} both directly AND through other pathways."
         )
-    elif not result['direct_relationship_exists']:
+    elif not result.direct_relationship_exists:
         explanation = (
             f"NO SIGNIFICANT RELATIONSHIP:\n\n"
             f"1. {x_feat} and {y_feat} don't have a significant relationship (p={direct_p:.4f}).\n"

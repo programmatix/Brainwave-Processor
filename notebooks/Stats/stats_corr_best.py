@@ -42,7 +42,7 @@ from statsmodels.nonparametric.smoothers_lowess import lowess
 from notebooks.Stats.stats_binning import bin_fastcluster, determine_optimal_bin_count, BinningResult
 from notebooks.Stats.stats_clustering import ClusterAnalysis, cluster_fastcluster_wrapper, ClusteringResult
 from tqdm.auto import tqdm
-from notebooks.Stats.stats_anova import BinningAnovaResult, compute_bin_anova, compute_t_test
+from notebooks.Stats.stats_anova import BinningAnovaResult, compute_bin_anova, compute_t_test, compute_binning_anova
 
 @dataclass
 class PairAnalysisResult:
@@ -111,7 +111,6 @@ def analyze_pair_best(df, x_feat, y_feat, n_clusters=3, random_state=42, use_mer
     bin_start = time.time()
     bin_count = determine_optimal_bin_count(df_with_values[x_feat], method='fastcluster')
     bin_res = bin_fastcluster(df_with_values[x_feat], n_bins=bin_count, profile=profile)
-    bin_res._generate_bins_info()
 
     if profile:
         profiling_info['bin_time_ms'] = (time.time() - bin_start) * 1000
@@ -121,14 +120,18 @@ def analyze_pair_best(df, x_feat, y_feat, n_clusters=3, random_state=42, use_mer
     if profile:
         profiling_info['overall_spearman_time_ms'] = (time.time() - spearman_start) * 1000
 
-    spearman_start = time.time()
-    if bin_res.n_bins == 2:
-        anova_result = compute_t_test(y, bin_res.bin_assignments)
-    else:
-        anova_result = compute_bin_anova(y, bin_res.bin_assignments)
+    # Use the new compute_binning_anova function that works directly with BinningResult
+    anova_start = time.time()
+    anova_result = compute_binning_anova(bin_res, y)
     if profile:
-        profiling_info['anova_time_ms'] = (time.time() - spearman_start) * 1000
-    best_p = min(overall_spearman_p, anova_result.p_value)
+        profiling_info['anova_time_ms'] = (time.time() - anova_start) * 1000
+    
+    # Initialize best_p with the overall Spearman p-value
+    best_p = overall_spearman_p
+    
+    # If ANOVA p-value is valid, include it in best_p calculation
+    if not np.isnan(anova_result.p_value):
+        best_p = min(best_p, anova_result.p_value)
 
     cluster_2d_result = None
     cluster_analyses = None
@@ -180,8 +183,9 @@ def analyze_pair_best(df, x_feat, y_feat, n_clusters=3, random_state=42, use_mer
         if profile:
             profiling_info['cluster_analysis_time_ms'] = (time.time() - cluster_analysis_start) * 1000
         
+        # Update best p-value with significant cluster p-values
         for c in cluster_analyses:
-            if c.size >= 5:
+            if c.size >= 5 and not np.isnan(c.spearman_p):
                 best_p = min(best_p, c.spearman_p)
         
     pair_result = PairAnalysisResult(
@@ -217,34 +221,39 @@ def analyze_pair_best(df, x_feat, y_feat, n_clusters=3, random_state=42, use_mer
     
     return pair_result
 
-def _plot_anova(ax, result, x_feat, y_feat, bin_colors, bins_to_show):
-    df_with_values = pd.DataFrame({x_feat: result.X.flatten(), y_feat: result.y, 'bin': result.clusters_x.bin_assignments})
+def _plot_anova(ax, result: PairAnalysisResult, x_feat, y_feat):
+    # Create dataframe with the data for plotting
+    df_with_values = pd.DataFrame({
+        x_feat: result.X.flatten(), 
+        y_feat: result.y, 
+        'bin': result.clusters_x.bin_assignments
+    })
     
-    # Use the bin colors from BinningResult if available
-    if hasattr(result.clusters_x, 'bins_info'):
-        bin_colors = [bin_info['color'] for bin_info in result.clusters_x.bins_info 
-                     if bin_info['bin_idx'] in bins_to_show]
+    # Map numerical bins to string representation to maintain exact order in boxplot
+    # df_with_values['bin_str'] = df_with_values['bin'].apply(lambda x: f"{int(x)}")
     
-    sns.boxplot(x='bin', y=y_feat, data=df_with_values, ax=ax, palette=bin_colors, order=bins_to_show, whis=0)
+    bin_colors = [b.color for b in result.clusters_x.bins]
+    # Use the string bin column for plotting with proper order
+    sns.boxplot(x='bin', y=y_feat, data=df_with_values, ax=ax, 
+                palette=bin_colors, whis=0)
+    
     ax.set_xlabel(f'{x_feat} bins')
     ax.set_ylabel(y_feat)
     ax.set_title(f'{result.anova.method} F={result.anova.f_value:.2f}, p={result.anova.p_value:.4f} (excluded={len(result.anova.excluded_bins)})')
     
-    # Create legend entries using bin info from BinningResult
     legend_handles = []
-    for bin_info in result.clusters_x.bins_info:
-        if bin_info['bin_idx'] not in bins_to_show:
-            continue
-            
-        mean = result.anova.bin_means[bin_info['bin_idx']]
-        n = len(result.clusters_x.bin_contents[bin_info['bin_idx']])
-        legend_handles.append(
-            Patch(color=bin_info['color'], 
-                 label=f'{bin_info["name"]}: n={n}, mean={mean:.2f}')
-        )
     
-    ax.legend(handles=legend_handles, title='Bin Details')
+    # Process bins in numerical order
+    for bin in result.anova.bin_results:
+        if bin.excluded:
+            continue
+        b = result.clusters_x.bins[bin.bin_idx]
+        legend_handles.append(Patch(color=b.color, label=f'{b.name}: n={bin.size}, y_mean={bin.mean:.2f}'))
 
+    # Add the legend only if we have handles
+    if legend_handles:
+        ax.legend(handles=legend_handles, title='Bin Details')
+        
 def visualise_pair_best(df, x_feat, y_feat, result: PairAnalysisResult):
     if result.is_discrete:
         fig, axes = plt.subplots(1, 1, figsize=(5, 5))
@@ -253,9 +262,8 @@ def visualise_pair_best(df, x_feat, y_feat, result: PairAnalysisResult):
         axes.set_ylabel(y_feat)
         axes.set_title('Scatter Plot')
         bins_to_show = [b for b in result.clusters_x.bin_assignments.unique() if b not in result.anova.excluded_bins]
-        bin_colors = sns.color_palette('husl', len(bins_to_show))
         if bins_to_show:
-            _plot_anova(axes, result, x_feat, y_feat, bin_colors, bins_to_show)
+            _plot_anova(axes, result, x_feat, y_feat)
         else:
             axes.text(0.5, 0.5, 'No bins to display', ha='center', va='center')
             axes.set_title('No bins available for ANOVA')
@@ -287,54 +295,76 @@ def visualise_pair_best(df, x_feat, y_feat, result: PairAnalysisResult):
         axes[0].set_ylabel(y_feat)
         axes[0].set_title('2D Clusters')
         axes[0].legend()
+        
         # Panel 2: 2D scatter colored by 1D bins with LOESS
+        # Get bin assignments and unique bin labels
         bins_series = result.clusters_x.bin_assignments
-        bin_labels = sorted(bins_series.unique())
-        bin_colors = sns.color_palette('husl', len(bin_labels))
-        for idx, b in enumerate(bin_labels):
-            mask_b = bins_series == b
+        bins = result.clusters_x.bins
+        
+        # Plot each bin with its color
+        for b in bins:
+            mask_b = bins_series == b.bin_idx
+            
+            # Get number of points in this bin
+            n_points = len(b.values)
+                
             axes[1].scatter(result.X[mask_b], result.y[mask_b],
-                            c=[bin_colors[idx]], label=f'Bin {b} n={len(result.clusters_x.bin_contents[b])}', alpha=0.7, edgecolors='k')
+                          c=[b.color], label=f'{b.name} n={n_points}', alpha=0.7, edgecolors='k')
+                          
+        # Add LOESS curve
         smoothed = lowess(result.y, result.X.flatten(), frac=0.66)
         axes[1].plot(smoothed[:,0], smoothed[:,1], color='black', lw=2)
         axes[1].set_xlabel(x_feat)
         axes[1].set_ylabel(y_feat)
         axes[1].set_title('1D Bins')
         axes[1].legend()
+        
         # Panel 3: ANOVA boxplot of bin values
-        bins_to_show = [b for b in bin_labels if b not in result.anova.excluded_bins]
+        bins_to_show = [b for b in bins if b.bin_idx not in result.anova.excluded_bins]
         if bins_to_show:
-            _plot_anova(axes[2], result, x_feat, y_feat, bin_colors, bins_to_show)
+            _plot_anova(axes[2], result, x_feat, y_feat)
         else:
             axes[2].text(0.5, 0.5, 'No bins to display', ha='center', va='center')
             axes[2].set_title('No bins available for ANOVA')
         
         plt.tight_layout()
         plt.show()
-        
 
 def print_pair_analysis(pair_result: PairAnalysisResult):
     print(f"Analysis for {pair_result.feat1} vs {pair_result.feat2}")
     print(f"Best p-value: {pair_result.best_p:.3f}")
-    #orr = pair_result.overall_regression
-    #print(f"Overall Regression: slope={orr.slope:.3f} (CI={orr.slope_ci[0]:.3f}-{orr.slope_ci[1]:.3f}), intercept={orr.intercept:.3f} (CI={orr.intercept_ci[0]:.3f}-{orr.intercept_ci[1]:.3f}), R2={orr.r2:.3f}, p_slope={orr.slope_p_value:.3g}, p_intercept={orr.intercept_p_value:.3g}")
     print(f"Overall Spearman: rho={pair_result.overall_spearman_rho:.3f}, p={pair_result.overall_spearman_p:.3f}")
-    a = pair_result.anova
+    
+    # Access ANOVA and binning results
+    binning = pair_result.clusters_x
+    
     print(f"Binning:")
-    print(f" Method: {pair_result.clusters_x.method}")
-    print(f" Count={pair_result.clusters_x.n_bins} excluded from ANOVA={len(a.excluded_bins)}")
+    print(f" Method: {binning.method}")
+    for bin in binning.bins:
+        # Print bin statistics using both Bin and BinAnovaResult properties
+        print(f"  Bin {bin.bin_idx}: name={bin.name}, x_range={bin.start:.3f}-{bin.end:.3f}, x_mean={bin.mean:.3f}, " 
+                f"x_std={bin.std:.3f}, size={bin.count}")
 
-    print(f" {a.method}: F={a.f_value:.3f}, p={a.p_value:.3f}")
+    anova = pair_result.anova
 
-    for lbl, mean in a.bin_means.items():
-        std = a.bin_stds[lbl]
-        print(f"  Bin {lbl}: mean={mean:.3f}, std={std:.3f} size={len(pair_result.clusters_x.bin_contents[lbl])} {a.excluded_bins.get(lbl, '')}")
-        # print(f"  Bin {lbl}: mean={mean:.3f}, std={std:.3f} size={len(pair_result.clusters_x.bin_contents[lbl])}")
+    print(f"ANOVA:")
+    print(f" {anova.method}: F={anova.f_value:.3f}, p={anova.p_value:.3f}")
+    print(f" Count={binning.n_bins} excluded from ANOVA={len([b for b in anova.bin_results if b.excluded])}")
+    # Print statistics for each bin
+    for bin_result in anova.bin_results:
+        bin_obj = binning.bins[bin_result.bin_idx]
+        
+        if bin_obj:
+            # Print bin statistics using both Bin and BinAnovaResult properties
+            exclusion_msg = f"(excluded: {bin_result.exclusion_reason})" if bin_result.excluded else ""
+            print(f"  Bin {bin_obj.bin_idx}: y_mean={bin_result.mean:.3f}, " 
+                  f"y_std={bin_result.std:.3f}, size={bin_result.size} {exclusion_msg}")
+    
+    # Print 2D cluster information if available
     if pair_result.clusters_2d_analysis is not None:
         for c in pair_result.clusters_2d_analysis:
-            print(f"2D Cluster {c.label}: size={c.size}, x_range={c.x_range[0]:.3f}-{c.x_range[1]:.3f}, y_range={c.y_range[0]:.3f}-{c.y_range[1]:.3f}, y_mean={c.y_mean:.3f}, y_std={c.y_std:.3f}")
-            #reg = c.regression
-            #print(f" Regression: slope={reg.slope:.3f} (CI={reg.slope_ci[0]:.3f}-{reg.slope_ci[1]:.3f}), intercept={reg.intercept:.3f} (CI={reg.intercept_ci[0]:.3f}-{reg.intercept_ci[1]:.3f}), R2={reg.r2:.3f}, p_slope={reg.slope_p_value:.3g}, p_intercept={reg.intercept_p_value:.3g}")
+            print(f"2D Cluster {c.label}: size={c.size}, x_range={c.x_range[0]:.3f}-{c.x_range[1]:.3f}, "
+                  f"y_range={c.y_range[0]:.3f}-{c.y_range[1]:.3f}, y_mean={c.y_mean:.3f}, y_std={c.y_std:.3f}")
             print(f" Spearman: rho={c.spearman_rho:.3f}, p={c.spearman_p:.3f}")
     else:
         print("No 2D clusters available (probably as discrete data)")

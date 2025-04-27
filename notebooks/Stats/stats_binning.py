@@ -35,81 +35,187 @@ import fastcluster
 from scipy.cluster.hierarchy import fcluster
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional, Union
+
+@dataclass
+class Bin:
+    """Represents a single bin in a binning operation."""
+    bin_idx: int
+    start: float
+    end: float
+    color: tuple  # RGB color tuple
+    assignments: np.ndarray  # Boolean mask of which data points belong to this bin
+    values: List[Any]  # The actual values contained in this bin
+    name: Optional[str] = None
+    bin_info: Dict[str, Any] = field(default_factory=dict)  # Additional metadata about the bin
+    
+    def __post_init__(self):
+        if self.name is None:
+            self.name = f"Bin {self.bin_idx}: {self.start:.2f}-{self.end:.2f}"
+        
+        # Ensure assignments is a numpy array
+        if not isinstance(self.assignments, np.ndarray):
+            self.assignments = np.array(self.assignments)
+            
+    @property
+    def count(self) -> int:
+        """Number of data points in this bin."""
+        return len(self.values)
+    
+    @property
+    def mean(self) -> float:
+        """Mean value of this bin."""
+        return np.mean(self.values) if self.values else np.nan
+    
+    @property
+    def median(self) -> float:
+        """Median value of this bin."""
+        return np.median(self.values) if self.values else np.nan
+    
+    @property
+    def std(self) -> float:
+        """Standard deviation of values in this bin."""
+        return np.std(self.values) if len(self.values) > 1 else np.nan
+    
+    def contains(self, value) -> bool:
+        """Check if a value falls within this bin's range."""
+        return self.start <= value <= self.end
 
 @dataclass
 class BinningResult:
+    """Result of a binning operation containing bins and metadata."""
     method: str
-    n_bins: int
-    bin_assignments: pd.Series
-    bin_contents: Dict[int, List[Any]]
-    result_info: Dict[str, Any]
-    bins_info: List[Dict[str, Any]] = field(default_factory=list)
-
-    def __post_init__(self):
-        if not self.bins_info:
-            self._generate_bins_info()
-
-    def _generate_bins_info(self):
-        unique_bins = sorted(self.bin_assignments.unique())
+    bins: List[Bin]
+    original_series: pd.Series
+    result_info: Dict[str, Any] = field(default_factory=dict)
+    
+    @property
+    def n_bins(self) -> int:
+        """Number of bins in the result."""
+        return len(self.bins)
+    
+    @property
+    def bin_assignments(self) -> pd.Series:
+        """Series with bin index assignments for each data point."""
+        assignments = pd.Series(index=self.original_series.index, dtype=int)
+        for bin_obj in self.bins:
+            assignments.loc[bin_obj.assignments] = bin_obj.bin_idx
+        return assignments
+    
+    @property
+    def bin_contents(self) -> Dict[int, List[Any]]:
+        """Dictionary mapping bin indices to their values."""
+        return {bin_obj.bin_idx: bin_obj.values for bin_obj in self.bins}
+    
+    @property
+    def bins_info(self) -> List[Dict[str, Any]]:
+        """List of dictionaries with information about each bin."""
+        return [
+            {
+                "bin_idx": bin_obj.bin_idx,
+                "start": bin_obj.start,
+                "end": bin_obj.end,
+                "name": bin_obj.name,
+                "color": bin_obj.color,
+                "count": bin_obj.count,
+                "mean": bin_obj.mean
+            }
+            for bin_obj in self.bins
+        ]
+    
+    @classmethod
+    def from_series_and_assignments(cls, method: str, original_series: pd.Series, 
+                                   bin_assignments: pd.Series, result_info: Dict[str, Any] = None) -> 'BinningResult':
+        """
+        Create a BinningResult from a series and bin assignments.
+        
+        Parameters:
+        -----------
+        method : str
+            The method used for binning
+        original_series : pd.Series
+            The original data
+        bin_assignments : pd.Series
+            Series with bin assignments
+        result_info : dict, optional
+            Additional information about the binning
+            
+        Returns:
+        --------
+        BinningResult
+        """
+        if result_info is None:
+            result_info = {}
+            
+        # Get unique bin indices
+        unique_bins = sorted(bin_assignments.unique())
+        n_bins = len(unique_bins)
+        
+        # Generate color palette
+        palette = sns.color_palette("Set2", n_bins)
+        
+        # Create Bin objects
+        bins = []
         for bin_idx in unique_bins:
-            bin_data = self.bin_contents[bin_idx]
-            if not bin_data:
+            # Get mask for this bin
+            bin_mask = bin_assignments == bin_idx
+            # Get values for this bin
+            bin_values = original_series[bin_mask].values.tolist()
+            
+            if not bin_values:
                 continue
-
-            bin_min = min(bin_data)
-            bin_max = max(bin_data)
-            bin_name = f"{self.method.capitalize()} Bin {bin_idx}: {bin_min:.2f}-{bin_max:.2f}"
-            bin_color = self._get_bin_color(bin_idx)
-
-            self.bins_info.append({
-                "bin_idx": bin_idx,
-                "start": bin_min,
-                "end": bin_max,
-                "name": bin_name,
-                "color": bin_color
-            })
-
-    def _get_bin_color(self, bin_idx):
-        palette = sns.color_palette("hsv", self.n_bins)
-        return palette[bin_idx % len(palette)]
+                
+            # Calculate bin statistics
+            bin_min = min(bin_values)
+            bin_max = max(bin_values)
+            
+            # Create bin name
+            bin_name = f"{bin_idx}: {bin_min:.2f}-{bin_max:.2f}"
+            
+            # Create Bin object
+            bin_obj = Bin(
+                bin_idx=bin_idx,
+                start=bin_min,
+                end=bin_max,
+                color=palette[bin_idx % len(palette)],
+                assignments=bin_mask,
+                values=bin_values,
+                name=bin_name
+            )
+            bins.append(bin_obj)
+        
+        return cls(method=method, bins=bins, original_series=original_series, result_info=result_info)
 
 # Separate functions per binning method returning a unified result
 def bin_kmeans(series: pd.Series, n_bins: int = 5, profile: bool = False, **kwargs) -> BinningResult:
     bins, result_info = bin_continuous_data(series, method='kmeans', n_bins=n_bins, profile=profile, **kwargs)
-    
-    bin_contents = {i: series[bins == i].values.tolist() for i in sorted(bins.unique())}
-    return BinningResult(method='kmeans', n_bins=n_bins, bin_assignments=bins, bin_contents=bin_contents, result_info=result_info)
+    return BinningResult.from_series_and_assignments(method='kmeans', original_series=series, 
+                                                    bin_assignments=bins, result_info=result_info)
 
 def bin_gmm(series: pd.Series, n_bins: int = 5, profile: bool = False, **kwargs) -> BinningResult:
     bins, result_info = bin_continuous_data(series, method='gmm', n_bins=n_bins, profile=profile, **kwargs)
-    
-    bin_contents = {i: series[bins == i].values.tolist() for i in sorted(bins.unique())}
-    return BinningResult(method='gmm', n_bins=n_bins, bin_assignments=bins, bin_contents=bin_contents, result_info=result_info)
+    return BinningResult.from_series_and_assignments(method='gmm', original_series=series, 
+                                                   bin_assignments=bins, result_info=result_info)
 
 def bin_tree(series: pd.Series, n_bins: int = 5, profile: bool = False, **kwargs) -> BinningResult:
     bins, result_info = bin_continuous_data(series, method='tree', n_bins=n_bins, profile=profile, **kwargs)
-    
-    bin_contents = {i: series[bins == i].values.tolist() for i in sorted(bins.unique())}
-    return BinningResult(method='tree', n_bins=n_bins, bin_assignments=bins, bin_contents=bin_contents, result_info=result_info)
+    return BinningResult.from_series_and_assignments(method='tree', original_series=series, 
+                                                   bin_assignments=bins, result_info=result_info)
 
 def bin_quantile(series: pd.Series, n_bins: int = 5, profile: bool = False, **kwargs) -> BinningResult:
     bins, result_info = bin_continuous_data(series, method='quantile', n_bins=n_bins, profile=profile, **kwargs)
-    
-    bin_contents = {i: series[bins == i].values.tolist() for i in sorted(bins.unique())}
-    return BinningResult(method='quantile', n_bins=n_bins, bin_assignments=bins, bin_contents=bin_contents, result_info=result_info)
+    return BinningResult.from_series_and_assignments(method='quantile', original_series=series, 
+                                                   bin_assignments=bins, result_info=result_info)
 
 def bin_kbins(series: pd.Series, n_bins: int = 5, profile: bool = False, **kwargs) -> BinningResult:
     bins, result_info = bin_continuous_data(series, method='kbins', n_bins=n_bins, profile=profile, **kwargs)
-    
-    bin_contents = {i: series[bins == i].values.tolist() for i in sorted(bins.unique())}
-    return BinningResult(method='kbins', n_bins=n_bins, bin_assignments=bins, bin_contents=bin_contents, result_info=result_info)
+    return BinningResult.from_series_and_assignments(method='kbins', original_series=series, 
+                                                   bin_assignments=bins, result_info=result_info)
 
 def bin_fastcluster(series: pd.Series, n_bins: int = 5, profile: bool = False, linkage_method: str = 'ward', **kwargs) -> BinningResult:
     bins, result_info = bin_continuous_data(series, method='fastcluster', n_bins=n_bins, profile=profile, linkage_method=linkage_method, **kwargs)
-    
-    bin_contents = {i: series[bins == i].values.tolist() for i in sorted(bins.unique())}
-    return BinningResult(method='fastcluster', n_bins=n_bins, bin_assignments=bins, bin_contents=bin_contents, result_info=result_info)
+    return BinningResult.from_series_and_assignments(method='fastcluster', original_series=series, 
+                                                   bin_assignments=bins, result_info=result_info)
 
 def auto_bin(series: pd.Series, n_bins: int = 3, profile: bool = False, **kwargs) -> BinningResult:
     """
@@ -247,7 +353,29 @@ def bin_continuous_data(series, method='quantile', n_bins=5, profile=False, **kw
         raise ValueError(f"Unsupported binning method: {method}")
     
     binned_series = pd.Series(bins, index=series.index)
-    if profile:
+    
+    # Reorder bin labels to ensure bin 0 is leftmost (lowest values)
+    bin_means = {}
+    for bin_label in np.unique(bins):
+        bin_means[bin_label] = series[binned_series == bin_label].mean()
+    
+    # Create mapping from old bin labels to new sorted bin labels
+    # Sort bins by mean value (ascending)
+    sorted_bins = sorted(bin_means.keys(), key=lambda x: bin_means[x])
+    bin_mapping = {old_label: new_label for new_label, old_label in enumerate(sorted_bins)}
+    
+    # Apply the mapping to get new bin assignments
+    binned_series = binned_series.map(bin_mapping)
+    
+    # Update result_info if needed (e.g., centers, means)
+    if 'centers' in result_info:
+        sorted_centers = [result_info['centers'][i] for i in sorted_bins]
+        result_info['centers'] = np.array(sorted_centers)
+    if 'means' in result_info:
+        sorted_means = [result_info['means'][i] for i in sorted_bins]
+        result_info['means'] = np.array(sorted_means)
+    
+    if profile: 
         profiling_info['total_time_ms'] = (time.time() - start_time) * 1000
     
     # Assign meaningful bin names if requested
@@ -511,7 +639,8 @@ def visualize_binning(original_series, binned_series, result_info, method, figsi
     # If bin names were provided, use them for labels
     if 'bin_names' in result_info:
         bin_labels = result_info['bin_names']
-        unique_bin_values = binned_series.unique()
+        # Sort the unique bin values to ensure consistent ordering (bin 0 first)
+        unique_bin_values = sorted(binned_series.unique())
         
         for i, bin_value in enumerate(unique_bin_values):
             bin_mask = binned_series == bin_value
@@ -527,11 +656,11 @@ def visualize_binning(original_series, binned_series, result_info, method, figsi
             except Exception as e:
                 print(f"Error plotting bin {bin_value}: {e}")
     else:
-        # Numerical bin indices
+        # Numerical bin indices - ensure they're in order from 0 to n-1
         for bin_idx in range(unique_bins):
             # For string/categorical bins, we need to handle differently
             if isinstance(binned_series.iloc[0], (str, np.str_)):
-                unique_values = binned_series.unique()
+                unique_values = sorted(binned_series.unique())
                 if bin_idx >= len(unique_values):
                     continue
                 bin_value = unique_values[bin_idx]
@@ -1083,8 +1212,8 @@ def compare_hard_vs_fuzzy_binning(original_series, n_bins=5, figsize=(15, 12)):
     # Create figure with subplots
     fig, axes = plt.subplots(3, 2, figsize=figsize)
     
-    # Plot hard binning methods
-    for bin_idx in range(kmeans_bins.nunique()):
+    # Plot hard binning methods - ensure bin ordering with bin 0 first
+    for bin_idx in sorted(range(kmeans_bins.nunique())):
         bin_mask = kmeans_bins == bin_idx
         axes[0, 0].scatter(
             original_series[bin_mask].index, 
@@ -1095,7 +1224,7 @@ def compare_hard_vs_fuzzy_binning(original_series, n_bins=5, figsize=(15, 12)):
     axes[0, 0].set_title('K-Means Binning (Hard)')
     axes[0, 0].set_ylabel('Value')
     
-    for bin_idx in range(gmm_bins.nunique()):
+    for bin_idx in sorted(range(gmm_bins.nunique())):
         bin_mask = gmm_bins == bin_idx
         axes[1, 0].scatter(
             original_series[bin_mask].index, 
@@ -1106,7 +1235,7 @@ def compare_hard_vs_fuzzy_binning(original_series, n_bins=5, figsize=(15, 12)):
     axes[1, 0].set_title('GMM Binning (Hard)')
     axes[1, 0].set_ylabel('Value')
     
-    for bin_idx in range(quantile_bins.nunique()):
+    for bin_idx in sorted(range(quantile_bins.nunique())):
         bin_mask = quantile_bins == bin_idx
         axes[2, 0].scatter(
             original_series[bin_mask].index, 
@@ -1120,7 +1249,7 @@ def compare_hard_vs_fuzzy_binning(original_series, n_bins=5, figsize=(15, 12)):
     
     # Plot fuzzy binning - use primary memberships for coloring
     primary_cmeans_bins = fuzzy_cmeans.idxmax(axis=1).str.replace('bin_', '').astype(int)
-    for bin_idx in range(n_bins):
+    for bin_idx in sorted(range(n_bins)):
         bin_mask = primary_cmeans_bins == bin_idx
         # Get alpha based on membership strength
         alpha_values = fuzzy_cmeans.iloc[:, bin_idx][bin_mask].values
@@ -1135,7 +1264,7 @@ def compare_hard_vs_fuzzy_binning(original_series, n_bins=5, figsize=(15, 12)):
     axes[0, 1].set_title('Fuzzy C-Means (Primary Membership)')
     
     primary_gmm_bins = gmm_probs.idxmax(axis=1).str.replace('bin_', '').astype(int)
-    for bin_idx in range(n_bins):
+    for bin_idx in sorted(range(n_bins)):
         bin_mask = primary_gmm_bins == bin_idx
         axes[1, 1].scatter(
             original_series[bin_mask].index, 
@@ -1213,6 +1342,7 @@ def compare_all_binning_methods(series: pd.Series, n_bins: int = None, profile: 
             dfb = pd.DataFrame({'value': series.values, 'bin_label': bin_series})
             # sort bins by their mean values for x-axis order
             bin_means = dfb.groupby('bin_label')['value'].mean().to_dict()
+            # Sort bins in ascending order so bin 0 is leftmost
             sorted_bins = sorted(bin_means, key=lambda b: bin_means[b])
             palette = sns.color_palette("hsv", len(sorted_bins))
             # scatter plot with matching colors and sorted positions
@@ -1226,10 +1356,10 @@ def compare_all_binning_methods(series: pd.Series, n_bins: int = None, profile: 
             axes[0].set_ylabel('Value')
             axes[0].set_title(f'{display_name} Binned Values')
             # boxplot with same colors and bin order
-            warnings.filterwarnings("ignore", category=FutureWarning, message=".*Passing `palette` without assigning `hue`.*")
-            sns.boxplot(x='bin_label', y='value', data=dfb, ax=axes[1], palette=palette, order=sorted_bins, hue='bin_label', legend=False, dodge=False)
-            axes[1].set_xlabel('Bin')
-            axes[1].set_title(f'ANOVA F={res.anova.f_value:.2f}, p={res.anova.p_value:.4f}')
+            # warnings.filterwarnings("ignore", category=FutureWarning, message=".*Passing `palette` without assigning `hue`.*")
+            # sns.boxplot(x='bin_label', y='value', data=dfb, ax=axes[1], palette=palette, order=sorted_bins, hue='bin_label', legend=False, dodge=False)
+            # axes[1].set_xlabel('Bin')
+            # axes[1].set_title(f'ANOVA F={res.anova.f_value:.2f}, p={res.anova.p_value:.4f}')
             plt.tight_layout()
             plt.show()
     if profile and visualize and runtimes:
@@ -1243,33 +1373,3 @@ def compare_all_binning_methods(series: pd.Series, n_bins: int = None, profile: 
         plt.tight_layout()
         plt.show()
     return results
-
-def _plot_anova(ax, result, x_feat, y_feat, bin_colors, bins_to_show):
-    df_with_values = pd.DataFrame({x_feat: result.X.flatten(), y_feat: result.y, 'bin': result.clusters_x.bin_assignments})
-    
-    # Use the bin colors from BinningResult if available
-    if hasattr(result.clusters_x, 'bins_info'):
-        bin_colors = [bin_info['color'] for bin_info in result.clusters_x.bins_info 
-                     if bin_info['bin_idx'] in bins_to_show]
-    
-    sns.boxplot(x='bin', y=y_feat, data=df_with_values, ax=ax, palette=bin_colors, order=bins_to_show, whis=0)
-    ax.set_xlabel(f'{x_feat} bins')
-    ax.set_ylabel(y_feat)
-    ax.set_title(f'{result.anova.method} F={result.anova.f_value:.2f}, p={result.anova.p_value:.4f} (excluded={len(result.anova.excluded_bins)})')
-    
-    # Create legend entries using bin info from BinningResult
-    legend_handles = []
-    for bin_info in result.clusters_x.bins_info:
-        if bin_info['bin_idx'] not in bins_to_show:
-            continue
-            
-        mean = result.anova.bin_means[bin_info['bin_idx']]
-        n = len(result.clusters_x.bin_contents[bin_info['bin_idx']])
-        legend_handles.append(
-            Patch(color=bin_info['color'], 
-                 label=f'{bin_info["name"]}: n={n}, mean={mean:.2f}')
-        )
-    
-    ax.legend(handles=legend_handles, title='Bin Details')
-
-
