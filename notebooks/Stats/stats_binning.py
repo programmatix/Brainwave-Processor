@@ -34,7 +34,7 @@ from sklearn.cluster import KMeans
 import fastcluster
 from scipy.cluster.hierarchy import fcluster
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Any
 
 @dataclass
@@ -43,6 +43,7 @@ class BinningAnovaResult:
     p_value: float
     bin_means: Dict[int, float]
     bin_stds: Dict[int, float]
+    excluded_bins: Dict[int, str] = field(default_factory=dict)
 
 @dataclass
 class BinningResult:
@@ -56,14 +57,17 @@ class BinningResult:
 def compute_bin_anova(series: pd.Series, bins: pd.Series) -> BinningAnovaResult:
     unique_bins = sorted(bins.dropna().unique())
     groups = [series[bins == i].values for i in unique_bins]
-    if len(groups) < 2:
+    # Filter out groups with fewer than 5 values and record excluded bins
+    excluded_bins = {i: "too few values" for i, g in zip(unique_bins, groups) if len(g) < 5}
+    filtered_groups = [g for g in groups if len(g) >= 5]
+    if len(filtered_groups) < 2:
         f_value = np.nan
         p_value = np.nan
     else:
-        f_value, p_value = scipy_stats.f_oneway(*groups)
+        f_value, p_value = scipy_stats.f_oneway(*filtered_groups)
     bin_means = {i: float(np.mean(g)) if len(g) > 0 else np.nan for i, g in zip(unique_bins, groups)}
     bin_stds = {i: float(np.std(g, ddof=1)) if len(g) > 1 else (float(np.std(g, ddof=0)) if len(g) > 0 else np.nan) for i, g in zip(unique_bins, groups)}
-    return BinningAnovaResult(f_value=f_value, p_value=p_value, bin_means=bin_means, bin_stds=bin_stds)
+    return BinningAnovaResult(f_value=f_value, p_value=p_value, bin_means=bin_means, bin_stds=bin_stds, excluded_bins=excluded_bins)
 
 # Separate functions per binning method returning a unified result
 def bin_kmeans(series: pd.Series, n_bins: int = 5, profile: bool = False, **kwargs) -> BinningResult:
