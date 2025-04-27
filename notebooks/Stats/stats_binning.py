@@ -38,73 +38,49 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Any
 
 @dataclass
-class BinningAnovaResult:
-    f_value: float
-    p_value: float
-    bin_means: Dict[int, float]
-    bin_stds: Dict[int, float]
-    excluded_bins: Dict[int, str] = field(default_factory=dict)
-
-@dataclass
 class BinningResult:
     method: str
     n_bins: int
     bin_assignments: pd.Series
     bin_contents: Dict[int, List[Any]]
-    anova: BinningAnovaResult
     result_info: Dict[str, Any]
-
-def compute_bin_anova(series: pd.Series, bins: pd.Series) -> BinningAnovaResult:
-    unique_bins = sorted(bins.dropna().unique())
-    groups = [series[bins == i].values for i in unique_bins]
-    # Filter out groups with fewer than 5 values and record excluded bins
-    excluded_bins = {i: "too few values" for i, g in zip(unique_bins, groups) if len(g) < 5}
-    filtered_groups = [g for g in groups if len(g) >= 5]
-    if len(filtered_groups) < 2:
-        f_value = np.nan
-        p_value = np.nan
-    else:
-        f_value, p_value = scipy_stats.f_oneway(*filtered_groups)
-    bin_means = {i: float(np.mean(g)) if len(g) > 0 else np.nan for i, g in zip(unique_bins, groups)}
-    bin_stds = {i: float(np.std(g, ddof=1)) if len(g) > 1 else (float(np.std(g, ddof=0)) if len(g) > 0 else np.nan) for i, g in zip(unique_bins, groups)}
-    return BinningAnovaResult(f_value=f_value, p_value=p_value, bin_means=bin_means, bin_stds=bin_stds, excluded_bins=excluded_bins)
 
 # Separate functions per binning method returning a unified result
 def bin_kmeans(series: pd.Series, n_bins: int = 5, profile: bool = False, **kwargs) -> BinningResult:
     bins, result_info = bin_continuous_data(series, method='kmeans', n_bins=n_bins, profile=profile, **kwargs)
-    anova = compute_bin_anova(series, bins)
+    
     bin_contents = {i: series[bins == i].values.tolist() for i in sorted(bins.unique())}
-    return BinningResult(method='kmeans', n_bins=n_bins, bin_assignments=bins, bin_contents=bin_contents, anova=anova, result_info=result_info)
+    return BinningResult(method='kmeans', n_bins=n_bins, bin_assignments=bins, bin_contents=bin_contents, result_info=result_info)
 
 def bin_gmm(series: pd.Series, n_bins: int = 5, profile: bool = False, **kwargs) -> BinningResult:
     bins, result_info = bin_continuous_data(series, method='gmm', n_bins=n_bins, profile=profile, **kwargs)
-    anova = compute_bin_anova(series, bins)
+    
     bin_contents = {i: series[bins == i].values.tolist() for i in sorted(bins.unique())}
-    return BinningResult(method='gmm', n_bins=n_bins, bin_assignments=bins, bin_contents=bin_contents, anova=anova, result_info=result_info)
+    return BinningResult(method='gmm', n_bins=n_bins, bin_assignments=bins, bin_contents=bin_contents, result_info=result_info)
 
 def bin_tree(series: pd.Series, n_bins: int = 5, profile: bool = False, **kwargs) -> BinningResult:
     bins, result_info = bin_continuous_data(series, method='tree', n_bins=n_bins, profile=profile, **kwargs)
-    anova = compute_bin_anova(series, bins)
+    
     bin_contents = {i: series[bins == i].values.tolist() for i in sorted(bins.unique())}
-    return BinningResult(method='tree', n_bins=n_bins, bin_assignments=bins, bin_contents=bin_contents, anova=anova, result_info=result_info)
+    return BinningResult(method='tree', n_bins=n_bins, bin_assignments=bins, bin_contents=bin_contents, result_info=result_info)
 
 def bin_quantile(series: pd.Series, n_bins: int = 5, profile: bool = False, **kwargs) -> BinningResult:
     bins, result_info = bin_continuous_data(series, method='quantile', n_bins=n_bins, profile=profile, **kwargs)
-    anova = compute_bin_anova(series, bins)
+    
     bin_contents = {i: series[bins == i].values.tolist() for i in sorted(bins.unique())}
-    return BinningResult(method='quantile', n_bins=n_bins, bin_assignments=bins, bin_contents=bin_contents, anova=anova, result_info=result_info)
+    return BinningResult(method='quantile', n_bins=n_bins, bin_assignments=bins, bin_contents=bin_contents, result_info=result_info)
 
 def bin_kbins(series: pd.Series, n_bins: int = 5, profile: bool = False, **kwargs) -> BinningResult:
     bins, result_info = bin_continuous_data(series, method='kbins', n_bins=n_bins, profile=profile, **kwargs)
-    anova = compute_bin_anova(series, bins)
+    
     bin_contents = {i: series[bins == i].values.tolist() for i in sorted(bins.unique())}
-    return BinningResult(method='kbins', n_bins=n_bins, bin_assignments=bins, bin_contents=bin_contents, anova=anova, result_info=result_info)
+    return BinningResult(method='kbins', n_bins=n_bins, bin_assignments=bins, bin_contents=bin_contents, result_info=result_info)
 
 def bin_fastcluster(series: pd.Series, n_bins: int = 5, profile: bool = False, linkage_method: str = 'ward', **kwargs) -> BinningResult:
     bins, result_info = bin_continuous_data(series, method='fastcluster', n_bins=n_bins, profile=profile, linkage_method=linkage_method, **kwargs)
-    anova = compute_bin_anova(series, bins)
+    
     bin_contents = {i: series[bins == i].values.tolist() for i in sorted(bins.unique())}
-    return BinningResult(method='fastcluster', n_bins=n_bins, bin_assignments=bins, bin_contents=bin_contents, anova=anova, result_info=result_info)
+    return BinningResult(method='fastcluster', n_bins=n_bins, bin_assignments=bins, bin_contents=bin_contents, result_info=result_info)
 
 def auto_bin(series: pd.Series, n_bins: int = 3, profile: bool = False, **kwargs) -> BinningResult:
     """

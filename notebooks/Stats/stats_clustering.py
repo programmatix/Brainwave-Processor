@@ -1323,18 +1323,21 @@ def cluster_gmm_wrapper(df, feat1, feat2, n_clusters=3, random_state=42, profile
     
     return result
 
-def cluster_fastcluster_wrapper(df_with_values, feat1, feat2, n_clusters=3, method='ward', random_state=42, profile=False):
+
+def cluster_fastcluster_wrapper(df_with_values, x_feat, y_feat, n_clusters=3, method='ward', random_state=42, profile=False):
     import time
     import numpy as np
     from scipy.cluster.hierarchy import fcluster, cut_tree
     from scipy.spatial.distance import pdist, cdist, squareform
-    
+
     start_time = time.time()
     profiling_info = {}
-    
+
+    # Check for discrete x values
+
     # Extract features
     extract_start = time.time()
-    X = np.column_stack((df_with_values[feat1].values, df_with_values[feat2].values))
+    X = np.column_stack((df_with_values[x_feat].values, df_with_values[y_feat].values))
     if profile:
         profiling_info['extract_features_ms'] = (time.time() - extract_start) * 1000
     
@@ -1385,12 +1388,12 @@ def cluster_fastcluster_wrapper(df_with_values, feat1, feat2, n_clusters=3, meth
     
     # Sort clusters from left to right
     sort_start = time.time()
-    result = sort_clusters_by_position(result, df_with_values, feat1)
+    result = sort_clusters_by_position(result, df_with_values, x_feat)
     if profile:
         profiling_info['sort_clusters_ms'] = (time.time() - sort_start) * 1000
         profiling_info['total_time_ms'] = computation_time * 1000
         result.additional_info = profiling_info
-        print(f"Fastcluster Profiling for {feat1} vs {feat2}:")
+        print(f"Fastcluster Profiling for {x_feat} vs {y_feat}:")
         for key, value in profiling_info.items():
             print(f"  {key}: {value:.2f}ms")
     
