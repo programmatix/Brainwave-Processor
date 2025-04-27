@@ -7,7 +7,7 @@ from scipy.stats import chi2, norm, spearmanr
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
 
-from notebooks.Stats.stats_binning import bin_fastcluster, determine_optimal_bin_count
+from notebooks.Stats.stats_binning import Bin, bin_fastcluster, determine_optimal_bin_count
 from notebooks.Stats.stats_corr_best import PairAnalysisResult, analyze_pair_best
 
 import matplotlib.pyplot as plt
@@ -235,6 +235,7 @@ class SpearmanResult:
     correlation: float
     p_value: float
     sample_size: int
+    bin: Bin
     
     @property
     def best_p(self):
@@ -271,7 +272,7 @@ class ConditionalIndependenceResult:
         
         print("Bins:")
         for b in self.bin_results:
-            print(f"  {b.x_feat} -> {b.y_feat}: {b.best_p:.4f} n={b.sample_size}")
+            print(f"  {b.bin.name}: {b.best_p:.4f} n={b.sample_size}")
 
         print(f"\n{'-' * 60}")
         print("INTERPRETATION:")
@@ -345,7 +346,8 @@ def test_conditional_independence(df, x_feat, y_feat, conditioning_feat,
                 y_feat=y_feat,
                 correlation=corr,
                 p_value=p_value,
-                sample_size=len(bin_df)
+                sample_size=len(bin_df),
+                bin=bin_res.bins[bin_idx]
             )
                 
             conditional_p_values.append(bin_result.best_p)
@@ -375,7 +377,7 @@ def test_conditional_independence(df, x_feat, y_feat, conditioning_feat,
         direct_result=direct_result
     )
 
-def visualize_conditional_independence(result: ConditionalIndependenceResult, df, figsize=(18, 22)):
+def b(result: ConditionalIndependenceResult, df, figsize=(18, 22)):
     """
     Visualize the results of a conditional independence test.
     
