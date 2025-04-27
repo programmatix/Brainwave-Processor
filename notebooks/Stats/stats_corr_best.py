@@ -32,6 +32,7 @@ from scipy.stats import f_oneway, ttest_ind
 import time
 import warnings
 from collections import defaultdict
+from notebooks.DayData.day_data_processing import isMlKeyUselessOrDeprecated
 import statsmodels.api as sm
 from joblib import Parallel, delayed
 import fastcluster
@@ -94,6 +95,7 @@ def analyze_pair_best(df, x_feat, y_feat, n_clusters=3, random_state=42, use_mer
     data_process_start = time.time()
 
     df_with_values = df[df[x_feat].notna() & df[y_feat].notna()]
+
     X = df_with_values[x_feat].values.reshape(-1,1)
     y = df_with_values[y_feat].values
 
@@ -287,7 +289,7 @@ def visualise_pair_best(df, x_feat, y_feat, result: PairAnalysisResult):
         axes[1].set_title('1D Bins')
         axes[1].legend()
         # Panel 3: ANOVA boxplot of bin values
-        bins_to_show = [b for b in bin_labels if b not in result.clusters_x.anova.excluded_bins]
+        bins_to_show = [b for b in bin_labels if b not in result.anova.excluded_bins]
         if bins_to_show:
             _plot_anova(axes[2], result, x_feat, y_feat, bin_colors, bins_to_show)
         else:
@@ -324,14 +326,14 @@ def print_pair_analysis(pair_result: PairAnalysisResult):
     else:
         print("No 2D clusters available (probably as discrete data)")
 
-def find_pairwise_best(df, profile=False): 
+def find_pairwise_best(df, profile=False, min_values=10): 
     import time
     import numpy as np
     
     profiling_info = {}
     start_time = time.time()
     
-    out = pd.DataFrame(columns=['feat1', 'feat2', 'best_p', 'error'])
+    out = pd.DataFrame(columns=['feat1', 'feat2', 'best_p', 'error', 'values'])
     if profile:
         out['profiling_info'] = None
     
@@ -347,9 +349,15 @@ def find_pairwise_best(df, profile=False):
                 
             pair_start = time.time()
             try:
+                df_with_values = df[df[c1].notna() & df[c2].notna()]
+                if len(df_with_values) < min_values:
+                    row_data = [c1, c2, None, "Not enough values", len(df_with_values)]
+                    out = pd.concat([out, pd.DataFrame([row_data], columns=out.columns)], ignore_index=True)
+                    continue
+
                 pair_result = analyze_pair_best(df, c1, c2, profile=profile)
                 
-                row_data = [c1, c2, pair_result.best_p, None]
+                row_data = [c1, c2, pair_result.best_p, None, len(df_with_values)]
                 if profile:
                     row_data.append(pair_result.additional_info if hasattr(pair_result, 'additional_info') else None)
                     pair_time = (time.time() - pair_start) * 1000  # Convert to ms
@@ -359,7 +367,7 @@ def find_pairwise_best(df, profile=False):
                 # Use concat instead of loc assignment to avoid the warning
                 out = pd.concat([out, pd.DataFrame([row_data], columns=out.columns)], ignore_index=True)
             except Exception as e:
-                row_data = [c1, c2, None, str(e)]
+                row_data = [c1, c2, None, str(e), len(df_with_values)]
                 if profile:
                     row_data.append(None)
                 # Use concat instead of loc assignment to avoid the warning
@@ -392,14 +400,14 @@ def find_pairwise_best(df, profile=False):
 
 
 
-def find_corrs_best(df, target_feat, profile=False): 
+def find_corrs_best(df, y_feat, profile=False, min_values=10): 
     import time
     import numpy as np
     
     profiling_info = {}
     start_time = time.time()
     
-    out = pd.DataFrame(columns=['feat1', 'best_p', 'error'])
+    out = pd.DataFrame(columns=['feat1', 'best_p', 'error', 'values', 'spearman_rho'])
     if profile:
         out['profiling_info'] = None
     
@@ -407,16 +415,25 @@ def find_corrs_best(df, target_feat, profile=False):
     progress = tqdm(total=n_pairs)
     
     pair_times = []
-    for c1 in df.columns:
+    for x_feat in df.columns:
         progress.update(1)
-        if c1 == target_feat:
+        if x_feat == y_feat:
+            continue
+
+        if isMlKeyUselessOrDeprecated(x_feat):
             continue
             
         pair_start = time.time()
         try:
-            pair_result = analyze_pair_best(df, c1, target_feat, profile=profile)
+            df_with_values = df[df[x_feat].notna() & df[y_feat].notna()]
+            if len(df_with_values) < min_values:
+                row_data = [x_feat, None, "Not enough values", len(df_with_values), None]
+                out = pd.concat([out, pd.DataFrame([row_data], columns=out.columns)], ignore_index=True)
+                continue
+
+            pair_result = analyze_pair_best(df, x_feat, y_feat, profile=profile)
             
-            row_data = [c1, pair_result.best_p, None]
+            row_data = [x_feat, pair_result.best_p, None, len(df_with_values), pair_result.overall_spearman_rho]
             if profile:
                 row_data.append(pair_result.additional_info if hasattr(pair_result, 'additional_info') else None)
                 pair_time = (time.time() - pair_start) * 1000  # Convert to ms
@@ -424,7 +441,7 @@ def find_corrs_best(df, target_feat, profile=False):
                 progress.set_description(f"Avg pair time: {np.mean(pair_times):.2f}ms")
             out = pd.concat([out, pd.DataFrame([row_data], columns=out.columns)], ignore_index=True)
         except Exception as e:
-            row_data = [c1, None, str(e)]
+            row_data = [x_feat, None, str(e), len(df_with_values), None]
             if profile:
                 row_data.append(None)
             out = pd.concat([out, pd.DataFrame([row_data], columns=out.columns)], ignore_index=True)
