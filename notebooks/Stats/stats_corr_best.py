@@ -77,7 +77,6 @@ def check_discrete_x_values(df, feat1, min_unique=5):
     If so, return True (indicating no clustering should be performed).
     """
     unique_values = df[feat1].nunique()
-    print("Unique values for ", feat1, ": ", unique_values)
     if unique_values <= min_unique:
         print(f"Skipping clustering: Only {unique_values} unique values in {feat1} (<= {min_unique})")
         return True

@@ -1,5 +1,5 @@
-# import firebase_admin
-# from firebase_admin import credentials, firestore
+import firebase_admin
+from firebase_admin import credentials, firestore
 import os
 import pandas as pd
 import pytz
@@ -11,7 +11,8 @@ import mongo_client
 def connect_to_firebase():
     if not firebase_admin._apps:
         home_dir = os.path.expanduser("~")
-        firebase_credentials_path = os.path.join(home_dir, "examined-life-dd234-firebase-adminsdk-f515f-f30d76e25d.json")
+        # firebase_credentials_path = os.path.join(home_dir, "examined-life-dd234-firebase-adminsdk-f515f-f30d76e25d.json")
+        firebase_credentials_path = os.path.join(home_dir, "examined-life-dd234-firebase-adminsdk-f515f-09f1331d09.json")
 
         cred = credentials.Certificate(firebase_credentials_path)
         firebase_admin.initialize_app(cred)
@@ -235,6 +236,8 @@ def pimp_my_days_data(result_df):
 
     for old_col, new_col in zip(duration_columns, new_duration_columns):
         day_data[new_col] = pd.to_timedelta(day_data[old_col], unit='s')
+
+    day_data.index = day_data['dayAndNightOf']
 
     return day_data
 

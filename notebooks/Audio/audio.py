@@ -141,6 +141,50 @@ def get_audio(sftp, remote_dir: str, filename: str):
     return data_array, ogg
 
 
+import numpy as np
+from scipy import signal
+import matplotlib.pyplot as plt
+
+def plot_power_spectrum(data_array, sample_rate):
+    # Flatten the data_array to 1D
+    data_array_flat = np.ravel(data_array)
+    # Compute Welch's periodogram
+    frequencies, power_spectrum = signal.welch(data_array_flat, fs=sample_rate, nperseg=1024)
+
+    # mask = frequencies < 50
+    # frequencies_filtered = frequencies[mask]
+    # power_spectrum_filtered = power_spectrum[mask]
+
+    # Plot the periodogram
+    plt.figure(figsize=(10, 6))
+    plt.semilogy(frequencies, power_spectrum)
+    plt.xlabel('Frequency (Hz)')
+    plt.ylabel('Power Spectral Density (V^2/Hz)')
+    plt.title('Welch\'s Periodogram')
+    plt.grid()
+    plt.show()
+
+
+def filter_audio(data_array, sample_rate):
+    data_array_flat = np.ravel(data_array)
+
+    # Design a gentler low-pass filter (order=3, cutoff=100 Hz)
+    nyquist = 0.5 * sample_rate
+    cutoff = 100  # Lower cutoff for smoother sound
+    normalized_cutoff = cutoff / nyquist
+    order = 3  # Lower order reduces artifacts
+    b, a = signal.butter(order, normalized_cutoff, btype='low', analog=False)
+
+    # Filter order (higher = sharper roll-off, but potential artifacts)
+    order = 5  
+    b, a = signal.butter(order, normalized_cutoff, btype='low', analog=False)
+
+    # Apply the filter (zero-phase)
+    filtered_data = signal.filtfilt(b, a, data_array_flat)
+    return filtered_data
+    
+    
+
 import simpleaudio as sa # type: ignore
 
 def play_audio(data_array, ogg, duration=None, gain=1.0):

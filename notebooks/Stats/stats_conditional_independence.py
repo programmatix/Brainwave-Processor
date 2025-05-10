@@ -357,6 +357,7 @@ def test_conditional_independence(df, x_feat, y_feat, conditioning_feat,
     if conditional_p_values:
         chi_square = -2 * sum(np.log(p) for p in conditional_p_values)
         combined_p = 1 - stats.chi2.cdf(chi_square, df=2*len(conditional_p_values))
+        #print(f"Combined p-value: {combined_p:.4f} from {len(conditional_p_values)} bins {conditional_p_values}")
     else:
         combined_p = 1.0
     
@@ -377,7 +378,7 @@ def test_conditional_independence(df, x_feat, y_feat, conditioning_feat,
         direct_result=direct_result
     )
 
-def b(result: ConditionalIndependenceResult, df, figsize=(18, 22)):
+def visualize_conditional_independence(result: ConditionalIndependenceResult, df, figsize=(18, 16)):
     """
     Visualize the results of a conditional independence test.
     
@@ -389,16 +390,18 @@ def b(result: ConditionalIndependenceResult, df, figsize=(18, 22)):
     import matplotlib.pyplot as plt
     import seaborn as sns
     from matplotlib.gridspec import GridSpec
+    import numpy as np
+    from sklearn.preprocessing import KBinsDiscretizer
     
     x_feat = result.x_feat
     y_feat = result.y_feat
     z_feat = result.conditioning_feat
     
     # Create figure with properly sized grid
-    fig = plt.figure(figsize=(18, 22))  # Even taller figure to accommodate new plot
+    fig = plt.figure(figsize=figsize)
     
     # Create custom grid with appropriate ratios for each section
-    gs = GridSpec(7, 3, figure=fig, height_ratios=[1, 1, 1, 1, 1, 1, 2])  # 7 rows, 3 columns, extra row for colored plot
+    gs = GridSpec(4, 3, figure=fig, height_ratios=[1, 2, 1.5, 1.5])
     
     # Create title with summary of findings
     if result.is_mediator:
@@ -436,15 +439,51 @@ def b(result: ConditionalIndependenceResult, df, figsize=(18, 22)):
     
     ax2.set_title(f"Relationship: {x_feat} → {z_feat}\n{xz_p_str}")
     
+    # 3. Z-Y relationship with points colored by bins
     ax3 = fig.add_subplot(gs[0, 2])
     
-    # Prepare data with bins for coloring
+    # Prepare data for plotting
     valid_data = df[df[x_feat].notna() & df[y_feat].notna() & df[z_feat].notna()].copy()
-    discretizer = KBinsDiscretizer(n_bins=min(5, len(valid_data[z_feat].unique())), encode='ordinal', strategy='quantile')
-    valid_data['bin'] = discretizer.fit_transform(valid_data[z_feat].values.reshape(-1, 1))
     
-    # Color points in Z-Y scatterplot based on their bin
-    sns.regplot(x=z_feat, y=y_feat, data=valid_data, scatter_kws={'alpha': 0.5}, line_kws={'color': 'red'}, ax=ax3)
+    # Create a dictionary mapping bin ranges to bin indexes
+    bin_mapping = {}
+    bin_labels = []
+    
+    # Use the actual bins from the result instead of rebinning
+    for i, bin_result in enumerate(result.bin_results):
+        bin_range = (bin_result.bin.start, bin_result.bin.end)
+        bin_mapping[bin_range] = i
+        bin_labels.append(f"{z_feat}: {bin_range[0]:.2f} to {bin_range[1]:.2f}")
+    
+    # Assign bin index to each row in valid_data
+    valid_data['bin'] = -1  # Default value for points that don't fall in any bin
+    
+    for i, bin_result in enumerate(result.bin_results):
+        bin_range = (bin_result.bin.start, bin_result.bin.end)
+        # Assign bin index to rows where z_feat is within this bin's range
+        if i == len(result.bin_results) - 1:
+            # For the highest bin, include the upper bound
+            valid_data.loc[(valid_data[z_feat] >= bin_range[0]) & 
+                          (valid_data[z_feat] <= bin_range[1]), 'bin'] = i
+        else:
+            # For other bins, exclude the upper bound
+            valid_data.loc[(valid_data[z_feat] >= bin_range[0]) & 
+                          (valid_data[z_feat] < bin_range[1]), 'bin'] = i
+    
+    # Plot points colored by bin
+    palette = plt.cm.viridis(np.linspace(0, 1, len(result.bin_results)))
+    
+    # Plot the Z-Y relationship with points colored by bin
+    for i, bin_result in enumerate(result.bin_results):
+        bin_data = valid_data[valid_data['bin'] == i]
+        ax3.scatter(bin_data[z_feat], bin_data[y_feat], 
+                   color=palette[i], alpha=0.7, label=bin_labels[i])
+    
+    # Add regression line
+    slope, intercept, r_value, p_value, std_err = stats.linregress(valid_data[z_feat], valid_data[y_feat])
+    x_line = np.linspace(min(valid_data[z_feat]), max(valid_data[z_feat]), 100)
+    y_line = intercept + slope * x_line
+    ax3.plot(x_line, y_line, '-', color='red', linewidth=2)
     
     # Calculate and show p-value for Z -> Y relationship
     zy_corr, zy_p = stats.spearmanr(df[z_feat], df[y_feat], nan_policy='omit')
@@ -454,98 +493,102 @@ def b(result: ConditionalIndependenceResult, df, figsize=(18, 22)):
             
     ax3.set_title(f"Relationship: {z_feat} → {y_feat}\n{zy_p_str}")
     
-    # NEW ROW: Add X-Y scatter plot with Z-bin coloring
-    ax_colored = fig.add_subplot(gs[1, :])
+    # MAIN PLOT: Large scatter plot with conditional regression lines
+    ax_main = fig.add_subplot(gs[1, :])
     
-    # Create bin labels for legend
-    bin_edges = discretizer.bin_edges_[0]
-    bin_labels = [f"{z_feat}: {bin_edges[i]:.2f} to {bin_edges[i+1]:.2f}" 
-                 for i in range(len(bin_edges)-1)]
+    # First, plot all points with light alpha
+    ax_main.scatter(valid_data[x_feat], valid_data[y_feat], 
+                   alpha=0.2, color='gray', s=20, label='All data points')
     
-    # Create a scatter plot with points colored by Z bin with larger points for visibility
-    sns.scatterplot(x=x_feat, y=y_feat, hue='bin', data=valid_data, palette='viridis', 
-                   alpha=0.7, s=80, ax=ax_colored, legend='brief')
+    # List to store legend handles and labels
+    legend_handles = []
+    legend_labels = []
     
-    # Update legend with proper bin labels
-    handles, labels = ax_colored.get_legend_handles_labels()
-    ax_colored.legend(handles, bin_labels, title=f"{z_feat} bins", loc='best')
+    # Add regression lines for each bin with their own colors
+    bin_count = len(result.bin_results)
+    for i, bin_result in enumerate(result.bin_results):
+        bin_data = valid_data[valid_data['bin'] == i]
+        if len(bin_data) > 5:  # Ensure sufficient data in the bin
+            color = palette[i]
+            
+            x_vals = np.array(bin_data[x_feat])
+            y_vals = np.array(bin_data[y_feat])
+            
+            # Plot the points for this bin
+            scatter = ax_main.scatter(x_vals, y_vals, color=color, alpha=0.6, s=40)
+            
+            # Only calculate regression if we have multiple points
+            if len(x_vals) > 2:
+                # Calculate regression line
+                slope, intercept, r_value, p_value, std_err = stats.linregress(x_vals, y_vals)
+                
+                # Generate points for line across the range
+                x_line = np.linspace(min(x_vals), max(x_vals), 100)
+                y_line = intercept + slope * x_line
+                
+                # Plot regression line
+                line, = ax_main.plot(x_line, y_line, '-', color=color, linewidth=2.5)
+                
+                # Add to legend with correlation coefficient and p-value
+                p_value_str = f"p={bin_result.p_value:.4f}"
+                rho_str = f"ρ={bin_result.correlation:.2f}"
+                sample_size = f"n={bin_result.sample_size}"
+                
+                legend_handles.append(line)
+                legend_labels.append(f"{bin_labels[i]}: {rho_str}, {p_value_str}, {sample_size}")
     
-    ax_colored.set_title(f"{x_feat} vs {y_feat} relationship, colored by {z_feat} bins", fontsize=14)
-    
-    # Add a text annotation explaining the concept
-    text_str = (
-        "How to read this plot: Points are colored by their " + z_feat + " value.\n"
-        "If the relationship between " + x_feat + " and " + y_feat + " differs across colors (bins),\n"
-        "then " + z_feat + " affects how " + x_feat + " and " + y_feat + " relate to each other."
-    )
-    ax_colored.annotate(text_str, xy=(0.5, -0.1), xycoords='axes fraction', 
-                      ha='center', fontsize=12, bbox=dict(boxstyle="round,pad=0.5", 
-                                                         facecolor='wheat', alpha=0.5))
-    
-    # 3. Conditional relationship - faceted by bins of conditioning variable
-    bin_count = len(bin_labels)
-    bin_rows = 0
-    if result.bin_results and len(result.bin_results) > 0:
-        # Plot each bin with consistent colors from viridis palette
-        max_cols = 3
-        n_plots = len(result.bin_results)
-        bin_rows = (n_plots + max_cols - 1) // max_cols  # Ceiling division to get number of rows needed
+    # Add overall regression line
+    x_vals_all = np.array(valid_data[x_feat])
+    y_vals_all = np.array(valid_data[y_feat])
+    if len(x_vals_all) > 2:
+        slope_all, intercept_all, r_all, p_all, _ = stats.linregress(x_vals_all, y_vals_all)
+        x_line_all = np.linspace(min(x_vals_all), max(x_vals_all), 100)
+        y_line_all = intercept_all + slope_all * x_line_all
+        overall_line, = ax_main.plot(x_line_all, y_line_all, '--', color='red', linewidth=3)
         
-        axs = []
-        for i in range(n_plots):
-            row = 2 + i // max_cols  # Start from row 2 now
-            col = i % max_cols
-            ax = fig.add_subplot(gs[row, col])
-            axs.append(ax)
-            
-            bin_data = valid_data[valid_data['bin'] == i]
-            color = plt.cm.viridis(i/(bin_count-1) if bin_count > 1 else 0)  # Get color from viridis palette
-            
-            # Use regplot instead of scatterplot to add regression line with error bands
-            sns.regplot(
-                x=x_feat, 
-                y=y_feat, 
-                data=bin_data, 
-                scatter_kws={'color': color, 'alpha': 0.6},
-                line_kws={'color': 'red'},
-                ci=95,  # 95% confidence interval
-                ax=ax
-            )
-            
-            # Get p-value and correlation for this bin
-            bin_result = result.bin_results[i]
-            bin_p = bin_result.best_p
-            
-            # Display correlation coefficient (rho) along with p-value
-            p_str = f"p = {bin_p:.4f} (rho = {bin_result.correlation:.2f})"
-                
-            if bin_p < 0.05:
-                p_str += " (significant)"
-                
-            ax.set_title(f"Bin {i+1}: {bin_labels[i]}\n{p_str}")
+        # Add to legend
+        legend_handles.append(overall_line)
+        legend_labels.append(f"Overall relationship: ρ={r_all:.2f}, p={p_all:.4f}, n={len(x_vals_all)}")
     
-    # Adjust row_for_explanation based on how many bin rows we used
-    row_for_explanation = 2 + bin_rows  # Start two rows after the bin plots
-    ax_explanation = fig.add_subplot(gs[row_for_explanation:row_for_explanation+2, :])
+    # Add legend with statistics
+    ax_main.legend(legend_handles, legend_labels, title=f"Relationship by {z_feat} bins", 
+                  loc='best', frameon=True, framealpha=0.9, fontsize=9)
+    
+    # Set title and labels
+    ax_main.set_title(f"Relationship between {x_feat} and {y_feat} conditional on {z_feat}\np={result.conditional_p:.4f}", fontsize=14)
+    ax_main.set_xlabel(x_feat, fontsize=12)
+    ax_main.set_ylabel(y_feat, fontsize=12)
+    
+    # Add explanation annotation
+    explanation_text = (
+        f"How to read this plot: Each colored line shows the relationship between {x_feat} and {y_feat}\n"
+        f"within a specific range of {z_feat}. If the lines differ in slope or significance,\n"
+        f"then {z_feat} influences how {x_feat} and {y_feat} relate to each other."
+    )
+    
+    # ax_main.annotate(explanation_text, xy=(0.5, -0.15), xycoords='axes fraction', 
+    #                 ha='center', fontsize=10, bbox=dict(boxstyle="round,pad=0.5", 
+    #                                                   facecolor='wheat', alpha=0.5))
+    
+    # Explanation text
+    ax_explanation = fig.add_subplot(gs[2, :])
     ax_explanation.axis('off')
     
     # Generate and display explanation text
     explanation = generate_explanation_text(result)
     explanation += "\n\nHOW CONDITIONAL P-VALUE IS CALCULATED:\n"
-    explanation += f"We know {x_feat} and {y_feat} are correlated.\n"
-    explanation += f"We want to know if that's still the case once we account for {z_feat}.\n"
     explanation += f"1. The conditioning variable {z_feat} is binned into {bin_count} groups\n"
-    explanation += f"2. Within each bin, we test if the {x_feat}-{y_feat} relationship still holds using Spearman correlation\n"
+    explanation += f"2. Within each bin, we test if the {x_feat}-{y_feat} relationship holds using Spearman correlation\n"
     explanation += f"3. The p-values from each bin are combined using Fisher's method\n"
-    explanation += f"4. This gives an overall p-value for {x_feat}-{y_feat} relationship after controlling for {z_feat}"
+    explanation += f"4. This gives an overall p-value for the {x_feat}-{y_feat} relationship after controlling for {z_feat}"
     
     props = dict(boxstyle='round', facecolor='wheat', alpha=0.8)
     ax_explanation.text(0.5, 0.5, explanation, transform=ax_explanation.transAxes, 
                        fontsize=12, verticalalignment='center', horizontalalignment='center',
                        bbox=props)
     
-    # 5. Causal diagram - adjust row position
-    ax_diagram = fig.add_subplot(gs[row_for_explanation+2:, :])
+    # Causal diagram
+    ax_diagram = fig.add_subplot(gs[3, :])
     ax_diagram.axis('off')
     
     # Draw causal diagram based on findings
@@ -565,7 +608,7 @@ def b(result: ConditionalIndependenceResult, df, figsize=(18, 22)):
                            x_to_z_significant=False, 
                            z_to_y_significant=False)
     
-    plt.tight_layout(rect=[0, 0, 1, 0.95], h_pad=1.0, w_pad=1.0)
+    plt.tight_layout(rect=[0, 0, 1, 0.95], h_pad=1.5, w_pad=1.0)
     
     return fig
 
@@ -619,6 +662,8 @@ def draw_mediation_path(ax, x_label, y_label, z_label, direct_significant=True,
     ax.set_ylim(0, 1)
 
 
+
+
 def generate_explanation_text(result):
     """Generate a clear explanation of the conditional independence test results"""
     x_feat = result.x_feat
@@ -660,3 +705,43 @@ def generate_explanation_text(result):
         )
     
     return explanation
+
+def process_conditional_independence_results(df, conditioning_feat, n_clusters=3, random_state=42, alpha=0.05, **kwargs):
+    """
+    Process each feature in the DataFrame and append conditional independence test results.
+    
+    Parameters:
+        df: DataFrame with the data
+        conditioning_feat: Name of the conditioning variable
+        n_clusters: Number of clusters for binning
+        random_state: Random state for reproducibility
+        alpha: Significance level
+        **kwargs: Additional arguments passed to analyze_pair_best for the direct relationship
+        
+    Returns:
+        DataFrame: Copy of the input DataFrame with appended results
+    """
+    result_df = df.copy()
+    
+    for idx, row in df.iterrows():
+        feat1 = row['feat1']
+        
+        # Assume feat1 is the x_feat and y_feat is another feature (adjust as needed)
+        result = test_conditional_independence(
+            df, 
+            x_feat=feat1, 
+            y_feat=conditioning_feat, 
+            conditioning_feat=conditioning_feat,
+            n_clusters=n_clusters, 
+            random_state=random_state, 
+            alpha=alpha, 
+            **kwargs
+        )
+        
+        # Append results to the DataFrame
+        result_df.at[idx, 'conditional_p'] = result.conditional_p
+        result_df.at[idx, 'is_conditionally_independent'] = result.is_conditionally_independent
+        result_df.at[idx, 'is_mediator'] = result.is_mediator
+        result_df.at[idx, 'direct_relationship_exists'] = result.direct_relationship_exists
+    
+    return result_df
