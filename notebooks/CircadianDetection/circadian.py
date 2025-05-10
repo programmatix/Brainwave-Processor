@@ -1086,6 +1086,59 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+def calc_post_lep_stats(all_processed, merged_df, minutes=120, interval=5):
+    """
+    Calculate temperature statistics (mean, std dev 1 & 2) for each interval after LEP.
+
+    Args:
+        all_processed: Dictionary containing processed data for each day.
+        merged_df: DataFrame with merged circadian rhythm data.
+        minutes: Total minutes after LEP to analyze (default: 120).
+        interval: Interval in minutes for grouping (default: 5).
+
+    Returns:
+        DataFrame with columns ['minute', 'mean', 'std1_lower', 'std1_upper', 'std2_lower', 'std2_upper'].
+    """
+    all_data = pd.DataFrame()
+
+    for day, data in all_processed.items():
+        if 'error' in data:
+            continue
+            
+        day_lep = merged_df[merged_df['dayAndNightOf'] == day]
+        if day_lep.empty or pd.isna(day_lep['LEP_cr_datetime'].iloc[0]):
+            continue
+            
+        lep_time = day_lep['LEP_cr_datetime'].iloc[0]
+        df = data['df']
+        
+        period_end = lep_time + pd.Timedelta(minutes=minutes)
+        period_data = df[(df['time'] >= lep_time) & (df['time'] <= period_end)].copy()
+        
+        if period_data.empty:
+            continue
+        
+        period_data['minutes_after_lep'] = (period_data['time'] - lep_time).dt.total_seconds() / 60
+        all_data = pd.concat([all_data, period_data[['minutes_after_lep', 'Temp']]])
+
+    if all_data.empty:
+        return None
+
+    all_data['minute'] = (all_data['minutes_after_lep'] // interval) * interval
+    stats = all_data.groupby('minute')['Temp'].agg(['mean', 'std']).reset_index()
+    stats = stats[stats['minute'] <= minutes]
+
+    stats_with_bands = pd.DataFrame({
+        'minute': stats['minute'],
+        'mean': stats['mean'],
+        'std1_lower': stats['mean'] - stats['std'],
+        'std1_upper': stats['mean'] + stats['std'],
+        'std2_lower': stats['mean'] - 2 * stats['std'],
+        'std2_upper': stats['mean'] + 2 * stats['std']
+    })
+
+    return stats_with_bands
+
 def plot_post_lep_periods_matplotlib(all_processed, merged_df, minutes=120):
     fig, ax = plt.subplots(figsize=(12, 6))
     
@@ -2235,3 +2288,175 @@ def plot_pca_results(pca_results):
     plt.tight_layout()
     return fig
 
+def calc_pre_mp_stats(all_processed, merged_df, minutes=120, interval=5):
+    """
+    Calculate temperature statistics (mean, std dev 1 & 2) for each interval before MP.
+
+    Args:
+        all_processed: Dictionary containing processed data for each day.
+        merged_df: DataFrame with merged circadian rhythm data.
+        minutes: Total minutes before MP to analyze (default: 120).
+        interval: Interval in minutes for grouping (default: 5).
+
+    Returns:
+        DataFrame with columns ['minute', 'mean', 'std1_lower', 'std1_upper', 'std2_lower', 'std2_upper'].
+    """
+    all_data = pd.DataFrame()
+
+    for day, data in all_processed.items():
+        if 'error' in data:
+            continue
+            
+        day_mp = merged_df[merged_df['dayAndNightOf'] == day]
+        if day_mp.empty or pd.isna(day_mp['MP_cr_datetime'].iloc[0]):
+            continue
+            
+        mp_time = day_mp['MP_cr_datetime'].iloc[0]
+        df = data['df']
+        
+        period_start = mp_time - pd.Timedelta(minutes=minutes)
+        period_data = df[(df['time'] >= period_start) & (df['time'] <= mp_time)].copy()
+        
+        if period_data.empty:
+            continue
+        
+        period_data['minutes_before_mp'] = (mp_time - period_data['time']).dt.total_seconds() / 60
+        all_data = pd.concat([all_data, period_data[['minutes_before_mp', 'Temp']]])
+
+    if all_data.empty:
+        return None
+
+    all_data['minute'] = (all_data['minutes_before_mp'] // interval) * interval
+    stats = all_data.groupby('minute')['Temp'].agg(['mean', 'std']).reset_index()
+    stats = stats[stats['minute'] <= minutes]
+
+    stats_with_bands = pd.DataFrame({
+        'minute': stats['minute'],
+        'mean': stats['mean'],
+        'std1_lower': stats['mean'] - stats['std'],
+        'std1_upper': stats['mean'] + stats['std'],
+        'std2_lower': stats['mean'] - 2 * stats['std'],
+        'std2_upper': stats['mean'] + 2 * stats['std']
+    })
+
+    return stats_with_bands
+
+def plot_post_mp_periods_matplotlib(all_processed, merged_df, minutes=120):
+    fig, ax = plt.subplots(figsize=(12, 6))
+    
+    # Create a DataFrame to store all resampled data
+    all_data = pd.DataFrame()
+    
+    # First pass: collect all temperature data
+    for day, data in all_processed.items():
+        if 'error' in data:
+            continue
+            
+        day_mp = merged_df[merged_df['dayAndNightOf'] == day]
+        if day_mp.empty or pd.isna(day_mp['MP_cr_datetime'].iloc[0]):
+            continue
+            
+        mp_time = day_mp['MP_cr_datetime'].iloc[0]
+        
+        df = data['df']
+        period_end = mp_time + pd.Timedelta(minutes=minutes)
+        period_data = df[(df['time'] >= mp_time) & (df['time'] <= period_end)].copy()
+        
+        if period_data.empty:
+            continue
+        
+        period_data['minutes_after_mp'] = (period_data['time'] - mp_time).dt.total_seconds() / 60
+        
+        ax.plot(period_data['minutes_after_mp'], 
+                period_data['Temp'],
+                alpha=0.3,
+                color='gray',
+                linewidth=1)
+        
+        all_data = pd.concat([all_data, period_data[['minutes_after_mp', 'Temp']]])
+    
+    # Calculate and plot temperature statistics
+    if not all_data.empty:
+        all_data['minute'] = all_data['minutes_after_mp'].round()
+        stats = all_data.groupby('minute')['Temp'].agg(['mean', 'std']).reset_index()
+        stats = stats[stats['minute'] <= minutes]
+        
+        ax.plot(stats['minute'], stats['mean'], 
+                color='red', 
+                linewidth=2, 
+                label='Mean Temp')
+        
+        ax.fill_between(stats['minute'], 
+                       stats['mean'] - stats['std'],
+                       stats['mean'] + stats['std'],
+                       color='red', alpha=0.2, label='±1σ Temp')
+        ax.fill_between(stats['minute'],
+                       stats['mean'] - 2*stats['std'],
+                       stats['mean'] + 2*stats['std'],
+                       color='red', alpha=0.1, label='±2σ Temp')
+    
+    ax.set_xlabel('Minutes after MP', fontsize=12)
+    ax.set_ylabel('Temperature (°C)', fontsize=12)
+    ax.set_title(f'Temperature Patterns in the {minutes} Minutes Following MP', fontsize=14, pad=20)
+    
+    ax.set_xlim(0, minutes)
+    ax.grid(True, linestyle='--', alpha=0.7)
+    ax.legend()
+    
+    plt.tight_layout()
+    
+    return fig
+
+
+def calc_post_mp_stats(all_processed, merged_df, minutes=120, interval=5):
+    """
+    Calculate temperature statistics (mean, std dev 1 & 2) for each interval after MP.
+
+    Args:
+        all_processed: Dictionary containing processed data for each day.
+        merged_df: DataFrame with merged circadian rhythm data.
+        minutes: Total minutes after MP to analyze (default: 120).
+        interval: Interval in minutes for grouping (default: 5).
+
+    Returns:
+        DataFrame with columns ['minute', 'mean', 'std1_lower', 'std1_upper', 'std2_lower', 'std2_upper'].
+    """
+    all_data = pd.DataFrame()
+
+    for day, data in all_processed.items():
+        if 'error' in data:
+            continue
+            
+        day_mp = merged_df[merged_df['dayAndNightOf'] == day]
+        if day_mp.empty or pd.isna(day_mp['MP_cr_datetime'].iloc[0]):
+            continue
+            
+        mp_time = day_mp['MP_cr_datetime'].iloc[0]
+        df = data['df']
+        
+        period_end = mp_time + pd.Timedelta(minutes=minutes)
+        period_data = df[(df['time'] >= mp_time) & (df['time'] <= period_end)].copy()
+        
+        if period_data.empty:
+            continue
+        
+        period_data['minutes_after_mp'] = (period_data['time'] - mp_time).dt.total_seconds() / 60
+        all_data = pd.concat([all_data, period_data[['minutes_after_mp', 'Temp']]])
+
+    if all_data.empty:
+        return None
+
+    all_data['minute'] = (all_data['minutes_after_mp'] // interval) * interval
+    stats = all_data.groupby('minute')['Temp'].agg(['mean', 'std']).reset_index()
+    stats = stats[stats['minute'] <= minutes]
+
+    stats_with_bands = pd.DataFrame({
+        'minute': stats['minute'],
+        'mean': stats['mean'],
+        'std1_lower': stats['mean'] - stats['std'],
+        'std1_upper': stats['mean'] + stats['std'],
+        'std2_lower': stats['mean'] - 2 * stats['std'],
+        'std2_upper': stats['mean'] + 2 * stats['std']
+    })
+
+    return stats_with_bands
