@@ -148,12 +148,12 @@ def cached_post_human_pipeline(log, dir_name: str, input_file: str, stats_df: pd
         if not any(col for col in out.columns if col == 'minsSinceAsleep'):
             log("Cached file " + cached + " is missing minsSinceAsleep, rebuilding")
             return regenerate()
-        if not any(col for col in out.columns if col == 'SettlingScorePrediction'):
-            log("Cached file " + cached + " is missing SettlingScorePrediction, rebuilding")
-            return regenerate()
-        if not any(col for col in out.columns if col == 'SettlingV4ScorePrediction'):
-            log("Cached file " + cached + " is missing SettlingV4ScorePrediction, rebuilding")
-            return regenerate()
+        # if not any(col for col in out.columns if col == 'SettlingScorePrediction'):
+        #     log("Cached file " + cached + " is missing SettlingScorePrediction, rebuilding")
+        #     return regenerate()
+        # if not any(col for col in out.columns if col == 'SettlingV4ScorePrediction'):
+        #     log("Cached file " + cached + " is missing SettlingV4ScorePrediction, rebuilding")
+        #     return regenerate()
         if post_yasa_modification_date > modification_date:
             log("Post-YASA file " + post_yasa_csv_file + f" mod date {post_yasa_modification_date} is > {modification_date}, rebuilding")
             return regenerate()
