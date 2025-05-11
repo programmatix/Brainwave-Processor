@@ -61,8 +61,8 @@ def upload_dir_to_gcs_skipping_existing(log, bucket_name, source_dir, destinatio
             for file in files:
                 file_path = os.path.join(root, file)
                 file_mod_time = os.path.getmtime(file_path)
-                log(f"File {file_path} modified at {datetime.fromtimestamp(file_mod_time)}")
                 if file_mod_time > local_md5_mod_time:
+                    log(f"File {file_path} modified at {datetime.fromtimestamp(file_mod_time)}, after Md5 file {local_md5_mod_time_dt}")
                     files_modified = True
                     break
             if files_modified:
