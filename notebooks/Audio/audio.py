@@ -18,11 +18,37 @@ def load_audio_as_ogg(buffer):
 
     #ogg = pyogg.OpusFile("C:\\Users\\graha\\AppData\\Local\\Temp\\tmpxxtfwd25.opus")
     ogg = pyogg.OpusFile(temp_filename)
+
+    print("\nRead Ogg Opus file")
+    print("Channels:\n  ", ogg.channels)
+    print("Frequency (samples per second):\n  ",ogg.frequency)
+    print("Buffer Length (bytes):\n  ", len(ogg.buffer))
+
     #import numpy as np
     #data_array = np.ctypeslib.as_array(ogg.buffer, shape=(ogg.buffer_length,))
     data_array = ogg.as_array()
+    
+    print(f"Original audio data shape: {data_array.shape}")
+    print(f"Original audio data type: {data_array.dtype}")
+    print(f"Original audio data range: {np.min(data_array)} to {np.max(data_array)}")
+    print(f"Original audio data mean: {np.mean(data_array)}")
+    print(f"Original audio data std dev: {np.std(data_array)}")
+    print(f"Sample rate: {ogg.frequency} Hz")
+    print(f"Original duration: {len(data_array) / ogg.frequency:.2f} seconds")
+    
     # Remove the first second of audio
-    data_array = data_array[ogg.frequency:]
+    # data_array = data_array[ogg.frequency:]
+    
+    # print(f"After trimming first second - new duration: {len(data_array) / ogg.frequency:.2f} seconds")
+    
+    # Check if the audio data needs to be scaled down (if values are too large)
+    # max_abs_val = np.max(np.abs(data_array))
+    # if max_abs_val > 100:
+    #     print(f"Audio data has unusually large values (max abs: {max_abs_val}), scaling down")
+    #     # Scale down to range [-1, 1]
+    #     data_array = data_array / max_abs_val
+    #     print(f"After scaling - new range: {np.min(data_array)} to {np.max(data_array)}")
+    
     return data_array, ogg, temp_filename
 
 
@@ -137,8 +163,24 @@ def is_silence_in_opus(audio_data, sample_rate, threshold_db=-50, min_silence_du
 def get_audio(sftp, remote_dir: str, filename: str):
     copied = copy_audio_file(sftp, remote_dir, filename)
     data_array, ogg, temp_filename = load_audio_as_ogg(copied.getvalue())
+    display_waveform(data_array, ogg.frequency, use_db=True)
     display_waveform(data_array, ogg.frequency)
+    # display_waveform_audacity_style(data_array, ogg.frequency)
     return data_array, ogg
+
+
+import librosa
+import librosa.display
+import matplotlib.pyplot as plt
+
+def load_and_display_wav_audio(file_path: str, use_db=False):
+    # Load the WAV file from the local path
+    audio_data, sample_rate = librosa.load(file_path, sr=None)
+    
+    # Display the waveform
+    display_waveform(audio_data, sample_rate, use_db=use_db)
+    
+    return audio_data, sample_rate
 
 
 import numpy as np
@@ -196,8 +238,20 @@ def play_audio(data_array, ogg, duration=None, gain=1.0):
     else:
         data_to_play = data_array
 
+    # Print information about the audio data
+    print(f"Audio data before gain - min: {np.min(data_to_play)}, max: {np.max(data_to_play)}")
+    
+    # Normalize the audio data if values are too large
+    # max_abs_val = np.max(np.abs(data_to_play))
+    # if max_abs_val > 100:
+    #     print(f"Audio data has unusually large values (max abs: {max_abs_val}), normalizing")
+    #     # Normalize to range [-1, 1] before applying gain
+    #     data_to_play = data_to_play / max_abs_val
+    
     # Apply gain by multiplying the audio data
     data_to_play = (data_to_play * gain).astype(data_to_play.dtype)
+    
+    print(f"Audio data after processing - min: {np.min(data_to_play)}, max: {np.max(data_to_play)}")
 
     # Play the audio
     play_obj = sa.play_buffer(data_to_play,
@@ -217,57 +271,113 @@ import tempfile
 import os
 import matplotlib.pyplot as plt
 
-def display_waveform(audio_data, sample_rate, figsize=(12, 4)):
+def display_waveform(audio_data, sample_rate, figsize=(12, 4), use_db=False):
     """
-    Display the waveform for an Opus audio buffer.
+    Display the waveform for an audio buffer.
     
     Args:
-        opus_buffer (BytesIO): BytesIO object containing Opus audio data
+        audio_data: Audio data array
+        sample_rate: Sample rate in Hz
         figsize (tuple): Figure size (width, height) in inches
+        use_db (bool): If True, display amplitude in decibels
     """
-    # Convert to wav and get audio data
-    #audio_data, sample_rate = opus_to_wav_buffer(opus_buffer)
-    
     # Create time axis
     time = np.arange(0, len(audio_data)) / sample_rate
+    
+    # Print detailed information about the audio data
+    print(f"Audio data shape: {audio_data.shape}")
+    print(f"Audio data type: {audio_data.dtype}")
+    print(f"Audio data range: {np.min(audio_data)} to {np.max(audio_data)}")
+    print(f"Audio data mean: {np.mean(audio_data)}")
+    print(f"Audio data std dev: {np.std(audio_data)}")
+    print(f"Audio data RMS: {np.sqrt(np.mean(np.square(audio_data)))}")
+    print(f"Sample rate: {sample_rate} Hz")
+    print(f"Duration: {len(audio_data) / sample_rate:.2f} seconds")
     
     # Plot waveform
     plt.figure(figsize=figsize)
     
-    # if len(audio_data.shape) > 1:
-    #     # Stereo
-    #     plt.plot(time, audio_data[:, 0], label='Left channel', alpha=0.7)
-    #     plt.plot(time, audio_data[:, 1], label='Right channel', alpha=0.7)
-    #     plt.legend()
-    # else:
-        # Mono
-    plt.plot(time, audio_data)
+    if use_db:
+        # Convert to decibels
+        epsilon = 1e-10  # To avoid log(0)
+        db_data = 20 * np.log10(np.abs(audio_data) + epsilon)
+        
+        # Set a reasonable floor for dB values (e.g., -60 dB)
+        # db_floor = -60
+        # db_data = np.maximum(db_data, db_floor)
+        
+        plt.plot(time, db_data)
+        plt.title('Audio Waveform (dB Scale)')
+        plt.ylabel('Amplitude (dB)')
+        # plt.ylim(db_floor, 5)  # Set y-axis limits for better visualization
+    else:
+        # Original amplitude scale
+        plt.plot(time, audio_data)
+        # Set y-axis limits to reflect actual amplitude
+        max_amp = np.max(np.abs(audio_data))
+        plt.ylim(-max_amp * 1.1, max_amp * 1.1)
+        plt.title('Audio Waveform (Original Scale)')
+        plt.ylabel('Amplitude')
     
-    plt.title('Audio Waveform')
     plt.xlabel('Time (seconds)')
-    plt.ylabel('Amplitude')
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.show()
     
+def display_waveform_audacity_style(audio_data, sample_rate, figsize=(12, 4)):
+    # Create time axis
+    time = np.arange(0, len(audio_data)) / sample_rate
+    
+    # Calculate RMS in small windows (similar to Audacity's envelope view)
+    window_size = int(sample_rate / 100)  # 10ms windows
+    num_windows = len(audio_data) // window_size
+    rms_values = np.zeros(num_windows)
+    
+    for i in range(num_windows):
+        start = i * window_size
+        end = start + window_size
+        window_data = audio_data[start:end]
+        rms_values[i] = np.sqrt(np.mean(np.square(window_data)))
+    
+    # Convert to dB with Audacity-like scale
+    epsilon = 1e-10
+    db_values = 20 * np.log10(rms_values + epsilon)
+    
+    # Plot with Audacity-like style
+    plt.figure(figsize=figsize)
+    plt.plot(np.linspace(0, len(audio_data)/sample_rate, len(rms_values)), db_values)
+    plt.ylim(-60, 0)
+    plt.title('Audio Waveform (Audacity-like dB Scale)')
+    plt.xlabel('Time (seconds)')
+    plt.ylabel('Amplitude (dB)')
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+    # Also plot a normalized version for better visualization if not in dB mode
+    # if not use_db:
+    #     plt.figure(figsize=figsize)
+        
+    #     # Normalize the audio data to range [-1, 1]
+    #     if np.max(np.abs(audio_data)) > 0:
+    #         normalized_audio = audio_data / np.max(np.abs(audio_data))
+    #         plt.plot(time, normalized_audio)
+    #         plt.ylim(-1.1, 1.1)
+    #         plt.title('Audio Waveform (Normalized to [-1, 1])')
+    #         plt.xlabel('Time (seconds)')
+    #         plt.ylabel('Normalized Amplitude')
+    #         plt.grid(True, alpha=0.3)
+    #         plt.tight_layout()
+    #         plt.show()
+    
     # Also display a spectrogram
     # plt.figure(figsize=figsize)
     
-    # # Convert to mono if stereo
-    # if len(audio_data.shape) > 1:
-    #     audio_data = np.mean(audio_data, axis=1)
-    
-    # # Calculate spectrogram
-    # D = librosa.amplitude_to_db(
-    #     np.abs(librosa.stft(audio_data)), ref=np.max
-    # )
-    
-    # # Plot spectrogram
-    # librosa.display.specshow(
-    #     D, sr=sample_rate, x_axis='time', y_axis='log'
-    # )
-    # plt.colorbar(format='%+2.0f dB')
+    # # Compute and plot the spectrogram
+    # plt.specgram(audio_data, Fs=sample_rate, cmap='viridis')
     # plt.title('Spectrogram')
+    # plt.xlabel('Time (seconds)')
+    # plt.ylabel('Frequency (Hz)')
+    # plt.colorbar(label='Intensity (dB)')
     # plt.tight_layout()
     # plt.show()
 
@@ -423,10 +533,16 @@ import json
 from datetime import datetime
 
 
-best_silence_detection_params = {'window_size': 2048,
+best_silence_detection_params_tonor = {'window_size': 2048,
  'threshold_multiplier': 1.5,
  'min_event_duration': 0.2,
  'merge_distance': 0.3}
+
+best_silence_detection_params_new_mic = {'window_size': 512,
+ 'threshold_multiplier': 1.2,
+ 'min_event_duration': 0.05,
+ 'merge_distance': 0.3}
+
 
 def save_events_metadata(events, original_filename, sftp, remote_dir):
     """
@@ -463,7 +579,7 @@ def save_events_metadata(events, original_filename, sftp, remote_dir):
 
 
 
-def train_find_audio_events(sftp, remote_dir):
+def train_find_audio_events_tonor(sftp, remote_dir):
     tests = {
         "recording_20250404_011856.opus": {
             "expected_events": 0
@@ -652,6 +768,148 @@ def train_find_audio_events(sftp, remote_dir):
     
     return best_params
 
+
+def train_find_audio_events_new_mic(sftp, remote_dir):
+    tests = {
+        "recording_20250513_054004.opus": {
+            "min_events": 2
+        },
+        
+    }
+    talking = [
+    ]
+    for t in talking:
+        tests[t] = {
+            "min_events": 3 # Arbitrary
+        }
+
+    very_subtle_noises = [
+        "recording_20250513_054835.opus"
+    ]
+    for v in very_subtle_noises:
+        tests[v] = {
+            "min_events": 1
+        }
+    silence = [
+        "recording_20250513_054535.opus"
+    ]
+    for s in silence:
+        tests[s] = {
+            "expected_events": 0
+        }
+    
+    # Parameter ranges to search
+    param_grid = {
+        "amplitude_threshold": [160, 170, 180, 190, 200, 210, 220, 230, 240, 250],
+        "min_event_duration": [0.05, 0.1, 0.2],
+        "merge_distance": [0.3, 0.5, 0.7]
+    }
+    
+    # Cache for audio data
+    audio_cache = {}
+    
+    # Load all audio files once
+    for filename in tests.keys():
+        if filename not in audio_cache:
+            copied = copy_audio_file(sftp, remote_dir, filename)
+            data_array, ogg, temp_filename = load_audio_as_ogg(copied.getvalue())
+            audio_cache[filename] = {
+                "data_array": data_array,
+                "sample_rate": ogg.frequency
+            }
+    
+    best_params = None
+    best_error = float('inf')
+
+    # Try all parameter combinations
+    for amplitude_threshold in param_grid["amplitude_threshold"]:
+        for min_duration in param_grid["min_event_duration"]:
+            for merge_dist in param_grid["merge_distance"]:
+                total_error = 0
+                
+                # Test current parameters on all test cases
+                for filename, expected in tests.items():
+                    cached_audio = audio_cache[filename]
+                    
+                    events = find_audio_events_amplitude(
+                        cached_audio["data_array"], 
+                        cached_audio["sample_rate"], 
+                        filename,
+                        amplitude_threshold=amplitude_threshold,
+                        min_event_duration=min_duration,
+                        merge_distance=merge_dist,
+                        visualize=False
+                    )
+                    
+                    num_events = len(events)
+                    error = 0
+                    
+                    # Calculate error based on test requirements
+                    if "expected_events" in expected:
+                        # Exact number of events required
+                        error = abs(num_events - expected["expected_events"])
+                    
+                    if "expected_non_zero_events" in expected and num_events == 0:
+                        # Add error if we expect non-zero events but found none
+                        error += 1
+                        
+                    if "min_events" in expected and num_events < expected["min_events"]:
+                        # Add error for falling short of minimum events
+                        error += expected["min_events"] - num_events
+                    
+                    total_error += error
+                    
+                    # Early stopping if this parameter set isn't going to be better
+                    if total_error >= best_error:
+                        break
+                
+                # Update best parameters if current combination is better
+                if total_error < best_error:
+                    best_error = total_error
+                    best_params = {
+                        "amplitude_threshold": amplitude_threshold,
+                        "min_event_duration": min_duration,
+                        "merge_distance": merge_dist
+                    }
+                    
+                    # If we found perfect parameters, stop searching
+                    if total_error == 0:
+                        print("Found perfect parameters!")
+                        print(best_params)
+                        print("\nEvents found in each file:")
+                        for filename, expected in tests.items():
+                            events = find_audio_events_amplitude(
+                                audio_cache[filename]["data_array"],
+                                audio_cache[filename]["sample_rate"],
+                                filename,
+                                **best_params,
+                                visualize=False
+                            )
+                            print(f"{filename}: {len(events)} events")
+                            if "min_events" in expected:
+                                print(f"  (minimum required: {expected['min_events']})")
+                        return best_params
+
+    print("Best parameters found (but not perfect):")
+    print(best_params)
+    print(f"Total error: {best_error}")
+    
+    print("\nEvents found in each file:")
+    for filename, expected in tests.items():
+        events = find_audio_events_amplitude(
+            audio_cache[filename]["data_array"],
+            audio_cache[filename]["sample_rate"],
+            filename,
+            **best_params,
+            visualize=False
+        )
+        print(f"{filename}: {len(events)} events")
+        if "min_events" in expected:
+            print(f"  (minimum required: {expected['min_events']})")
+    
+    return best_params
+
+
 def play_audio_widget(data_array, ogg, duration=None):
     """
     Create an interactive audio player widget in Jupyter notebook
@@ -661,6 +919,17 @@ def play_audio_widget(data_array, ogg, duration=None):
         data_to_play = data_array[:samples]
     else:
         data_to_play = data_array
+    
+    # Print information about the audio data
+    print(f"Audio data - min: {np.min(data_to_play)}, max: {np.max(data_to_play)}")
+    
+    # Normalize the audio data if values are too large
+    # max_abs_val = np.max(np.abs(data_to_play))
+    # if max_abs_val > 100:
+    #     print(f"Audio data has unusually large values (max abs: {max_abs_val}), normalizing")
+    #     # Normalize to range [-1, 1] before applying gain
+    #     data_to_play = data_to_play / max_abs_val
+    #     print(f"After normalization - min: {np.min(data_to_play)}, max: {np.max(data_to_play)}")
     
     # Convert to WAV in memory
     wav_buffer = io.BytesIO()
@@ -709,4 +978,220 @@ def play_audio_widget(data_array, ogg, duration=None):
     
     # Stack widgets vertically
     return widgets.VBox([gain_slider, player_output])
+
+
+def find_audio_events_amplitude(audio_data, sample_rate, filename,
+                     amplitude_threshold=200,
+                     min_event_duration=0.1,
+                     merge_distance=0.5,
+                     figsize=(15, 10),
+                     visualize=True):
+    """
+    Find periods of audio that exceed a specific amplitude threshold.
+    Returns list of dicts with event details and displays visualizations of the process.
+    
+    Parameters:
+    -----------
+    audio_data : array_like
+        The audio data array
+    sample_rate : int
+        Sample rate in Hz
+    filename : str
+        Original filename (used to parse timestamp)
+    amplitude_threshold : float
+        Absolute amplitude threshold for event detection
+    min_event_duration : float
+        Minimum duration of events in seconds
+    merge_distance : float
+        Maximum gap between events to merge them in seconds
+    figsize : tuple
+        Figure size for visualization (width, height) in inches
+    visualize : bool
+        Whether to generate and display visualizations
+    
+    Returns:
+    --------
+    list
+        List of event dictionaries
+    """
+    # Parse recording start time from filename
+    # Expected format: recording_YYYYMMDD_HHMMSS.opus
+    timestamp_str = filename.split('recording_')[1].split('.')[0]
+    recording_start = datetime.strptime(timestamp_str, '%Y%m%d_%H%M%S')
+    
+    # Calculate max amplitude in windows
+    window_size = 1024  # Fixed window size for amplitude calculation
+    window_amplitudes = []
+    window_times = []
+    
+    for i in range(0, len(audio_data), window_size):
+        chunk = audio_data[i:i+window_size]
+        if len(chunk) > 0:
+            max_amp = np.max(np.abs(chunk))
+            window_amplitudes.append(max_amp)
+            window_times.append(i / sample_rate)
+    
+    if not window_amplitudes:
+        return []
+    
+    amplitudes = np.array(window_amplitudes)
+    
+    # Find regions above threshold
+    above_threshold = amplitudes > amplitude_threshold
+    changes = np.diff(above_threshold.astype(int))
+    start_indices = np.where(changes == 1)[0]
+    end_indices = np.where(changes == -1)[0]
+    
+    if len(start_indices) == 0:
+        if visualize:
+            # Create visualization even if no events found
+            plt.figure(figsize=figsize)
+            
+            # Plot 1: Original Audio Waveform
+            plt.subplot(3, 1, 1)
+            time_axis = np.linspace(0, len(audio_data)/sample_rate, len(audio_data))
+            plt.plot(time_axis, audio_data)
+            plt.title('Original Audio Waveform')
+            plt.ylabel('Amplitude')
+            plt.grid(True, alpha=0.3)
+            
+            # Plot 2: Max Amplitude per Window
+            plt.subplot(3, 1, 2)
+            plt.plot(window_times, amplitudes)
+            plt.axhline(y=amplitude_threshold, color='r', linestyle='--', label=f'Threshold ({amplitude_threshold})')
+            plt.title('Maximum Amplitude per Window')
+            plt.ylabel('Amplitude')
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            
+            # Plot 3: Silence Detection
+            plt.subplot(3, 1, 3)
+            plt.plot(window_times, above_threshold.astype(int), drawstyle='steps-post')
+            plt.title('Event Detection')
+            plt.ylabel('Audio Event (1=Sound, 0=Silence)')
+            plt.xlabel('Time (seconds)')
+            plt.yticks([0, 1], ['Below Threshold', 'Above Threshold'])
+            plt.grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            plt.show()
+        return []
+    
+    if above_threshold[0]:
+        start_indices = np.insert(start_indices, 0, 0)
+    if above_threshold[-1]:
+        end_indices = np.append(end_indices, len(above_threshold) - 1)
+    
+    start_samples = start_indices * window_size
+    end_samples = end_indices * window_size
+    
+    merge_samples = int(merge_distance * sample_rate)
+    min_samples = int(min_event_duration * sample_rate)
+    
+    events = []
+    current_start = start_samples[0]
+    current_end = end_samples[0]
+    
+    # Track merged regions for visualization
+    merged_starts = [current_start / sample_rate]
+    merged_ends = []
+    
+    for i in range(1, len(start_samples)):
+        if start_samples[i] - current_end < merge_samples:
+            # This is a merge
+            current_end = end_samples[i]
+        else:
+            merged_ends.append(current_end / sample_rate)
+            if current_end - current_start >= min_samples:
+                event_dict = create_event_dict(
+                    audio_data[current_start:current_end],
+                    current_start,
+                    current_end,
+                    sample_rate,
+                    recording_start
+                )
+                events.append(event_dict)
+            current_start = start_samples[i]
+            current_end = end_samples[i]
+            merged_starts.append(current_start / sample_rate)
+    
+    merged_ends.append(current_end / sample_rate)
+    
+    if current_end - current_start >= min_samples:
+        event_dict = create_event_dict(
+            audio_data[current_start:current_end],
+            current_start,
+            current_end,
+            sample_rate,
+            recording_start
+        )
+        events.append(event_dict)
+    
+    if visualize:
+        # Create visualization
+        plt.figure(figsize=figsize)
+        
+        # Plot 1: Original Audio Waveform with Events
+        plt.subplot(4, 1, 1)
+        time_axis = np.linspace(0, len(audio_data)/sample_rate, len(audio_data))
+        plt.plot(time_axis, audio_data)
+        
+        # Mark final events
+        for event in events:
+            plt.axvspan(event['start_time'], event['end_time'], color='green', alpha=0.2)
+        
+        plt.title('Original Audio Waveform with Detected Events')
+        plt.ylabel('Amplitude')
+        plt.grid(True, alpha=0.3)
+        
+        # Plot 2: Max Amplitude per Window
+        plt.subplot(4, 1, 2)
+        plt.plot(window_times, amplitudes)
+        plt.axhline(y=amplitude_threshold, color='r', linestyle='--', label=f'Threshold ({amplitude_threshold})')
+        plt.title('Maximum Amplitude per Window')
+        plt.ylabel('Amplitude')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        # Plot 3: Initial Event Detection
+        plt.subplot(4, 1, 3)
+        plt.plot(window_times, above_threshold.astype(int), drawstyle='steps-post')
+        
+        # Mark the raw detected events before merging
+        for start_idx, end_idx in zip(start_indices, end_indices):
+            start_time = start_idx * window_size / sample_rate
+            end_time = end_idx * window_size / sample_rate
+            plt.axvspan(start_time, end_time, color='blue', alpha=0.2)
+        
+        plt.title('Initial Event Detection')
+        plt.ylabel('Above Threshold')
+        plt.yticks([0, 1], ['No', 'Yes'])
+        plt.grid(True, alpha=0.3)
+        
+        # Plot 4: Final Events After Merging and Minimum Duration Filter
+        plt.subplot(4, 1, 4)
+        plt.plot(window_times, above_threshold.astype(int) * 0, drawstyle='steps-post')  # Empty plot for scale
+        
+        # Mark the merged events
+        for start, end in zip(merged_starts, merged_ends):
+            duration = end - start
+            if duration >= min_event_duration:
+                plt.axvspan(start, end, color='green', alpha=0.4, label='Accepted Event')
+            else:
+                plt.axvspan(start, end, color='red', alpha=0.2, label='Rejected (Too Short)')
+        
+        plt.title(f'Final Events (After Merging {merge_distance}s gaps and Min Duration {min_event_duration}s Filter)')
+        plt.ylabel('Events')
+        plt.xlabel('Time (seconds)')
+        plt.grid(True, alpha=0.3)
+        
+        # Remove duplicate labels
+        handles, labels = plt.gca().get_legend_handles_labels()
+        by_label = dict(zip(labels, handles))
+        plt.legend(by_label.values(), by_label.keys())
+        
+        plt.tight_layout()
+        plt.show()
+    
+    return events
 

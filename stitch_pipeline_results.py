@@ -169,7 +169,7 @@ from sleep_events import convert_timestamps_to_uk_optimised
 def stitch_day_optimised(input_dir: str,
                          dir_name: str,
                          force: bool = False,
-                         remove_non_main_eeg: bool = True,
+                         remove_non_main_eeg: bool = False, # See Pipelines.md for why
                          include_microwakings: bool = False):
 
 
